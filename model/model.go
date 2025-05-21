@@ -1,4 +1,4 @@
-package elk_coordinator
+package model
 
 import (
 	"errors"
