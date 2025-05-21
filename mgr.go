@@ -3,6 +3,9 @@ package elk_coordinator
 import (
 	"context"
 	"elk_coordinator/data"
+	"elk_coordinator/leader"
+	"elk_coordinator/model"
+	"elk_coordinator/utils"
 	"fmt"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
@@ -18,7 +21,7 @@ type Mgr struct {
 	Namespace     string
 	DataStore     data.DataStore
 	TaskProcessor Processor
-	Logger        Logger
+	Logger        utils.Logger
 
 	// 配置选项
 	HeartbeatInterval       time.Duration // 心跳间隔
@@ -60,14 +63,14 @@ func NewMgr(namespace string, dataStore data.DataStore, processor Processor, opt
 		Namespace:     namespace,
 		DataStore:     dataStore,
 		TaskProcessor: processor,
-		Logger:        &defaultLogger{},
+		Logger:        utils.NewDefaultLogger(),
 
 		// 默认配置
-		HeartbeatInterval:       DefaultHeartbeatInterval,
-		LeaderElectionInterval:  DefaultLeaderElectionInterval,
-		PartitionLockExpiry:     DefaultPartitionLockExpiry,
-		LeaderLockExpiry:        DefaultLeaderLockExpiry,
-		WorkerPartitionMultiple: DefaultWorkerPartitionMultiple,
+		HeartbeatInterval:       model.DefaultHeartbeatInterval,
+		LeaderElectionInterval:  model.DefaultLeaderElectionInterval,
+		PartitionLockExpiry:     model.DefaultPartitionLockExpiry,
+		LeaderLockExpiry:        model.DefaultLeaderLockExpiry,
+		WorkerPartitionMultiple: model.DefaultWorkerPartitionMultiple,
 
 		// 任务窗口默认配置
 		UseTaskWindow:  false,
@@ -75,8 +78,8 @@ func NewMgr(namespace string, dataStore data.DataStore, processor Processor, opt
 
 		// 指标收集默认配置
 		UseTaskMetrics:          true,
-		MetricsUpdateInterval:   DefaultCapacityUpdateInterval,
-		RecentPartitionsToTrack: DefaultRecentPartitions,
+		MetricsUpdateInterval:   DefaultCapacityUpdateInterval, // 使用心跳间隔作为默认指标更新间隔
+		RecentPartitionsToTrack: DefaultRecentPartitions,       // 默认记录最近10个分区的处理速度
 		Metrics: &WorkerMetrics{
 			ProcessingSpeed:     0.0,
 			SuccessRate:         1.0,
@@ -99,7 +102,7 @@ func NewMgr(namespace string, dataStore data.DataStore, processor Processor, opt
 // SetLogger 已被选项模式替代，保留用于向后兼容
 //
 // 推荐使用 WithLogger 选项代替
-func (m *Mgr) SetLogger(logger Logger) {
+func (m *Mgr) SetLogger(logger utils.Logger) {
 	m.Logger.Warnf("SetLogger 方法已过时，请使用 WithLogger 选项")
 	m.Logger = logger
 }
@@ -172,7 +175,7 @@ func (m *Mgr) nodeKeeper(ctx context.Context) {
 			m.Logger.Infof("节点维护任务停止 (心跳上下文取消)")
 			return
 		case <-ticker.C:
-			heartbeatKey := fmt.Sprintf(HeartbeatFmtFmt, m.Namespace, m.ID)
+			heartbeatKey := fmt.Sprintf(model.HeartbeatFmtFmt, m.Namespace, m.ID)
 			err := m.DataStore.SetHeartbeat(ctx, heartbeatKey, time.Now().Format(time.RFC3339))
 			if err != nil {
 				m.Logger.Warnf("发送心跳失败: %v", err)
@@ -183,8 +186,8 @@ func (m *Mgr) nodeKeeper(ctx context.Context) {
 
 // registerNode 注册节点到系统
 func (m *Mgr) registerNode(ctx context.Context) error {
-	heartbeatKey := fmt.Sprintf(HeartbeatFmtFmt, m.Namespace, m.ID)
-	workersKey := fmt.Sprintf(WorkersKeyFmt, m.Namespace)
+	heartbeatKey := fmt.Sprintf(model.HeartbeatFmtFmt, m.Namespace, m.ID)
+	workersKey := fmt.Sprintf(model.WorkersKeyFmt, m.Namespace)
 
 	err := m.DataStore.RegisterWorker(
 		ctx,
@@ -204,7 +207,7 @@ func (m *Mgr) registerNode(ctx context.Context) error {
 
 // getActiveWorkers 获取活跃节点列表
 func (m *Mgr) getActiveWorkers(ctx context.Context) ([]string, error) {
-	pattern := fmt.Sprintf(HeartbeatFmtFmt, m.Namespace, "*")
+	pattern := fmt.Sprintf(model.HeartbeatFmtFmt, m.Namespace, "*")
 	keys, err := m.DataStore.GetKeys(ctx, pattern)
 	if err != nil {
 		return nil, errors.Wrap(err, "获取心跳失败")
@@ -216,7 +219,7 @@ func (m *Mgr) getActiveWorkers(ctx context.Context) ([]string, error) {
 
 	for _, key := range keys {
 		// 从key中提取节点ID
-		prefix := fmt.Sprintf(HeartbeatFmtFmt, m.Namespace, "")
+		prefix := fmt.Sprintf(model.HeartbeatFmtFmt, m.Namespace, "")
 		nodeID := key[len(prefix):]
 
 		// 获取最后心跳时间
@@ -242,14 +245,34 @@ func (m *Mgr) getActiveWorkers(ctx context.Context) ([]string, error) {
 	return activeWorkers, nil
 }
 
+// Lead 处理Leader相关的工作
+func (m *Mgr) Lead(ctx context.Context) error {
+	m.Logger.Infof("启动Leader选举与工作任务")
+
+	// 创建Leader的配置
+	leaderInstance := &leader.Leader{
+		NodeID:                  m.ID,
+		Namespace:               m.Namespace,
+		DataStore:               m.DataStore,
+		Logger:                  m.Logger,
+		ElectionInterval:        m.LeaderElectionInterval,
+		LockExpiry:              m.LeaderLockExpiry,
+		WorkerPartitionMultiple: m.WorkerPartitionMultiple,
+		ValidHeartbeatDuration:  m.HeartbeatInterval * 3,
+	}
+
+	// 调用leader包的Lead方法
+	return leaderInstance.Lead(ctx)
+}
+
 // SetWorkerPartitionMultiple 已被选项模式替代，保留用于向后兼容
 //
 // 推荐使用 WithWorkerPartitionMultiple 选项代替
 func (m *Mgr) SetWorkerPartitionMultiple(multiple int64) {
 	m.Logger.Warnf("SetWorkerPartitionMultiple 方法已过时，请使用 WithWorkerPartitionMultiple 选项")
 	if multiple <= 0 {
-		m.Logger.Warnf("无效的工作节点分区倍数: %d，使用默认值 %d", multiple, DefaultWorkerPartitionMultiple)
-		m.WorkerPartitionMultiple = DefaultWorkerPartitionMultiple
+		m.Logger.Warnf("无效的工作节点分区倍数: %d，使用默认值 %d", multiple, model.DefaultWorkerPartitionMultiple)
+		m.WorkerPartitionMultiple = model.DefaultWorkerPartitionMultiple
 		return
 	}
 	m.WorkerPartitionMultiple = multiple

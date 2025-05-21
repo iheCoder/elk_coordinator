@@ -2,15 +2,14 @@ package model
 
 import (
 	"errors"
-	"log"
 	"time"
 )
 
 // 任务处理相关的常量
 const (
-	taskRetryDelay     = 1 * time.Second        // 任务获取失败后的重试延迟
-	noTaskDelay        = 2 * time.Second        // 无可用任务时的等待时间
-	taskCompletedDelay = 500 * time.Millisecond // 任务完成后的延迟，避免立即抢占下一个任务
+	TaskRetryDelay     = 1 * time.Second        // 任务获取失败后的重试延迟
+	NoTaskDelay        = 2 * time.Second        // 无可用任务时的等待时间
+	TaskCompletedDelay = 500 * time.Millisecond // 任务完成后的延迟，避免立即抢占下一个任务
 )
 
 // 分区状态常量
@@ -75,31 +74,4 @@ type SyncStatus struct {
 	GlobalMaxID       int64                  `json:"global_max_id"`
 	PartitionStatus   map[int]PartitionInfo  `json:"partition_status"`
 	AdditionalInfo    map[string]interface{} `json:"additional_info,omitempty"`
-}
-
-// Logger 定义日志接口
-type Logger interface {
-	Infof(format string, args ...interface{})
-	Warnf(format string, args ...interface{})
-	Errorf(format string, args ...interface{})
-	Debugf(format string, args ...interface{})
-}
-
-// defaultLogger 提供简单的默认日志实现
-type defaultLogger struct{}
-
-func (l *defaultLogger) Infof(format string, args ...interface{}) {
-	log.Printf("[INFO] "+format, args...)
-}
-
-func (l *defaultLogger) Warnf(format string, args ...interface{}) {
-	log.Printf("[WARN] "+format, args...)
-}
-
-func (l *defaultLogger) Errorf(format string, args ...interface{}) {
-	log.Printf("[ERROR] "+format, args...)
-}
-
-func (l *defaultLogger) Debugf(format string, args ...interface{}) {
-	log.Printf("[DEBUG] "+format, args...)
 }

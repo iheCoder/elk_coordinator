@@ -1,6 +1,8 @@
 package elk_coordinator
 
 import (
+	"elk_coordinator/model"
+	"elk_coordinator/utils"
 	"time"
 )
 
@@ -8,7 +10,7 @@ import (
 type MgrOption func(*Mgr)
 
 // WithLogger 设置自定义日志记录器
-func WithLogger(logger Logger) MgrOption {
+func WithLogger(logger utils.Logger) MgrOption {
 	return func(m *Mgr) {
 		m.Logger = logger
 	}
@@ -59,7 +61,7 @@ func WithLeaderLockExpiry(expiry time.Duration) MgrOption {
 func WithWorkerPartitionMultiple(multiple int64) MgrOption {
 	return func(m *Mgr) {
 		if multiple <= 0 {
-			multiple = DefaultWorkerPartitionMultiple
+			multiple = model.DefaultWorkerPartitionMultiple
 		}
 		m.WorkerPartitionMultiple = multiple
 	}

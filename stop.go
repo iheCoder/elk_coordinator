@@ -2,6 +2,7 @@ package elk_coordinator
 
 import (
 	"context"
+	"elk_coordinator/model"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -16,7 +17,7 @@ func (m *Mgr) Stop() {
 	m.Logger.Infof("正在停止管理器 %s", m.ID)
 
 	// 1. 立即标记节点为退出状态，便于其他节点感知
-	exitingKey := fmt.Sprintf(ExitingNodeFmt, m.Namespace, m.ID)
+	exitingKey := fmt.Sprintf(model.ExitingNodeFmt, m.Namespace, m.ID)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -37,14 +38,14 @@ func (m *Mgr) Stop() {
 	go m.asyncReleaseAllLocks()
 
 	// 4. 删除心跳和节点注册（允许超时后被其他节点清理）
-	heartbeatKey := fmt.Sprintf(HeartbeatFmtFmt, m.Namespace, m.ID)
+	heartbeatKey := fmt.Sprintf(model.HeartbeatFmtFmt, m.Namespace, m.ID)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		m.DataStore.DeleteKey(ctx, heartbeatKey)
 
 		// 注销节点
-		workersKey := fmt.Sprintf(WorkersKeyFmt, m.Namespace)
+		workersKey := fmt.Sprintf(model.WorkersKeyFmt, m.Namespace)
 		m.DataStore.UnregisterWorker(ctx, workersKey, m.ID, heartbeatKey)
 	}()
 
@@ -62,7 +63,7 @@ func (m *Mgr) asyncReleaseAllLocks() {
 	m.mu.RUnlock()
 
 	if isLeader {
-		leaderLockKey := fmt.Sprintf(LeaderLockKeyFmt, m.Namespace)
+		leaderLockKey := fmt.Sprintf(model.LeaderLockKeyFmt, m.Namespace)
 		if err := m.DataStore.ReleaseLock(ctx, leaderLockKey, m.ID); err != nil {
 			m.Logger.Warnf("释放Leader锁失败: %v", err)
 		} else {
@@ -71,7 +72,7 @@ func (m *Mgr) asyncReleaseAllLocks() {
 	}
 
 	// 快速获取并释放所有分区锁
-	partitionInfoKey := fmt.Sprintf(PartitionInfoKeyFmt, m.Namespace)
+	partitionInfoKey := fmt.Sprintf(model.PartitionInfoKeyFmt, m.Namespace)
 	partitionsData, err := m.DataStore.GetPartitions(ctx, partitionInfoKey)
 	if err != nil {
 		m.Logger.Warnf("获取分区信息失败: %v", err)
@@ -83,7 +84,7 @@ func (m *Mgr) asyncReleaseAllLocks() {
 		return
 	}
 
-	var partitionMap map[int]PartitionInfo
+	var partitionMap map[int]model.PartitionInfo
 	if err := json.Unmarshal([]byte(partitionsData), &partitionMap); err != nil {
 		m.Logger.Warnf("解析分区信息失败: %v", err)
 		return
@@ -111,7 +112,7 @@ func (m *Mgr) asyncReleaseAllLocks() {
 			wg.Add(1)
 			go func(partitionID int) {
 				defer wg.Done()
-				lockKey := fmt.Sprintf(PartitionLockFmtFmt, m.Namespace, partitionID)
+				lockKey := fmt.Sprintf(model.PartitionLockFmtFmt, m.Namespace, partitionID)
 				if err := m.DataStore.ReleaseLock(ctx, lockKey, m.ID); err != nil {
 					m.Logger.Warnf("释放分区 %d 锁失败: %v", partitionID, err)
 				}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"elk_coordinator/data"
 	"elk_coordinator/model"
+	"elk_coordinator/utils"
 	"encoding/json"
 	"fmt"
 	"github.com/pkg/errors"
@@ -16,7 +17,7 @@ type Leader struct {
 	NodeID    string
 	Namespace string
 	DataStore data.DataStore
-	Logger    model.Logger
+	Logger    utils.Logger
 	Planer    PartitionPlaner
 
 	// 配置选项

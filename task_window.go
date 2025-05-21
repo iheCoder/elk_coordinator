@@ -2,6 +2,7 @@ package elk_coordinator
 
 import (
 	"context"
+	"elk_coordinator/model"
 )
 
 // 任务窗口相关常量
@@ -12,9 +13,9 @@ const (
 // TaskWindow 处理任务窗口，用于异步获取和处理分区任务
 type TaskWindow struct {
 	mgr        *Mgr
-	windowSize int                // 窗口大小（队列中允许的最大任务数）
-	taskQueue  chan PartitionInfo // 任务队列
-	fetchDone  chan struct{}      // 通知获取新任务的信号
+	windowSize int                      // 窗口大小（队列中允许的最大任务数）
+	taskQueue  chan model.PartitionInfo // 任务队列
+	fetchDone  chan struct{}            // 通知获取新任务的信号
 }
 
 // NewTaskWindow 创建一个新的任务窗口
@@ -27,8 +28,8 @@ func NewTaskWindow(mgr *Mgr) *TaskWindow {
 	return &TaskWindow{
 		mgr:        mgr,
 		windowSize: windowSize,
-		taskQueue:  make(chan PartitionInfo, windowSize), // 队列缓冲区大小等于窗口大小
-		fetchDone:  make(chan struct{}, 1),               // 缓冲为1，避免阻塞处理协程
+		taskQueue:  make(chan model.PartitionInfo, windowSize), // 队列缓冲区大小等于窗口大小
+		fetchDone:  make(chan struct{}, 1),                     // 缓冲为1，避免阻塞处理协程
 	}
 }
 
@@ -83,7 +84,7 @@ func (tw *TaskWindow) fillTaskQueue(ctx context.Context) {
 		// 尝试获取一个新任务
 		task, err := tw.mgr.acquirePartitionTask(ctx)
 		if err != nil {
-			if err != ErrNoAvailablePartition {
+			if err != model.ErrNoAvailablePartition {
 				tw.mgr.Logger.Warnf("获取分区任务失败: %v", err)
 			}
 			break // 无法获取更多任务，退出循环
