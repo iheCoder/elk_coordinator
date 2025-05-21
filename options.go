@@ -119,3 +119,19 @@ func WithRecentPartitionsTracking(count int) MgrOption {
 		m.RecentPartitionsToTrack = count
 	}
 }
+
+// WithStaleTaskReclaimMultiplier sets the multiplier for PartitionLockExpiry to determine when a task is considered stale.
+// A stale task (Claimed or Running but not updated for StaleTaskReclaimMultiplier * PartitionLockExpiry)
+// can be reclaimed by another worker. The default multiplier is DefaultStaleTaskReclaimMultiplier (e.g., 3.0).
+func WithStaleTaskReclaimMultiplier(multiplier float64) MgrOption {
+	return func(m *Mgr) {
+		if multiplier <= 0 {
+			// Logger might not be initialized yet if this option is set before WithLogger.
+			// So, we can't use m.Logger here reliably without checking for nil.
+			// For simplicity, we'll just set to default. A more robust solution might queue warnings.
+			m.StaleTaskReclaimMultiplier = DefaultStaleTaskReclaimMultiplier
+		} else {
+			m.StaleTaskReclaimMultiplier = multiplier
+		}
+	}
+}
