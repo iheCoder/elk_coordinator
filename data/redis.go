@@ -16,7 +16,7 @@ type RedisDataStore struct {
 
 // Options configures the Redis data store
 type Options struct {
-	KeyPrefix     string
+	// KeyPrefix string // Removed KeyPrefix
 	DefaultExpiry time.Duration
 	MaxRetries    int
 	RetryDelay    time.Duration
@@ -26,7 +26,7 @@ type Options struct {
 // DefaultOptions returns default Redis data store options
 func DefaultOptions() *Options {
 	return &Options{
-		KeyPrefix:     "dist:",
+		// KeyPrefix:     "dist:", // Removed KeyPrefix
 		DefaultExpiry: 24 * time.Hour,
 		MaxRetries:    3,
 		RetryDelay:    100 * time.Millisecond,
@@ -46,14 +46,9 @@ func NewRedisDataStore(redisClient *redis.Client, opts *Options) *RedisDataStore
 	}
 }
 
-// prefixKey adds the configured prefix to keys
-func (d *RedisDataStore) prefixKey(key string) string {
-	return d.opts.KeyPrefix + key
-}
-
 // AcquireLock attempts to acquire a distributed lock
 func (d *RedisDataStore) AcquireLock(ctx context.Context, key string, value string, expiry time.Duration) (bool, error) {
-	return d.rds.SetNX(ctx, d.prefixKey(key), value, expiry).Result()
+	return d.rds.SetNX(ctx, key, value, expiry).Result()
 }
 
 // RenewLock renews a distributed lock if it's still owned by the caller
@@ -65,7 +60,7 @@ func (d *RedisDataStore) RenewLock(ctx context.Context, key string, value string
 			return 0
 		end
 	`
-	result, err := d.rds.Eval(ctx, script, []string{d.prefixKey(key)}, value, expiry.Milliseconds()).Result()
+	result, err := d.rds.Eval(ctx, script, []string{key}, value, expiry.Milliseconds()).Result()
 	if err != nil {
 		return false, err
 	}
@@ -75,7 +70,7 @@ func (d *RedisDataStore) RenewLock(ctx context.Context, key string, value string
 
 // CheckLock checks if a lock exists and is owned by the caller
 func (d *RedisDataStore) CheckLock(ctx context.Context, key string, expectedValue string) (bool, error) {
-	val, err := d.rds.Get(ctx, d.prefixKey(key)).Result()
+	val, err := d.rds.Get(ctx, key).Result()
 	if err == redis.Nil {
 		return false, nil // Key doesn't exist
 	}
@@ -95,106 +90,103 @@ func (d *RedisDataStore) ReleaseLock(ctx context.Context, key string, value stri
 			return 0
 		end
 	`
-	_, err := d.rds.Eval(ctx, script, []string{d.prefixKey(key)}, value).Result()
+	_, err := d.rds.Eval(ctx, script, []string{key}, value).Result()
 	return err
 }
 
 // GetLockOwner gets the current owner of a lock
 func (d *RedisDataStore) GetLockOwner(ctx context.Context, key string) (string, error) {
-	return d.rds.Get(ctx, d.prefixKey(key)).Result()
+	return d.rds.Get(ctx, key).Result()
 }
 
 // SetHeartbeat sets a heartbeat with default expiry
 func (d *RedisDataStore) SetHeartbeat(ctx context.Context, key string, value string) error {
 	// Set heartbeat with 3 minute expiry
-	return d.rds.Set(ctx, d.prefixKey(key), value, 3*time.Minute).Err()
+	return d.rds.Set(ctx, key, value, 3*time.Minute).Err()
 }
 
 // GetHeartbeat gets a heartbeat value
 func (d *RedisDataStore) GetHeartbeat(ctx context.Context, key string) (string, error) {
-	return d.rds.Get(ctx, d.prefixKey(key)).Result()
+	return d.rds.Get(ctx, key).Result()
 }
 
-// GetKeys gets keys matching a pattern
+// GetKeys gets keys matching a pattern.
+// The pattern is passed directly to Redis. Callers are responsible for including any desired prefixes in the pattern.
 func (d *RedisDataStore) GetKeys(ctx context.Context, pattern string) ([]string, error) {
-	keys, err := d.rds.Keys(ctx, d.prefixKey(pattern)).Result()
+	keys, err := d.rds.Keys(ctx, pattern).Result()
 	if err != nil {
 		return nil, err
 	}
-
-	// Remove prefix from keys before returning
-	prefixLen := len(d.opts.KeyPrefix)
-	for i := range keys {
-		if len(keys[i]) > prefixLen {
-			keys[i] = keys[i][prefixLen:]
-		}
-	}
-
+	// No longer stripping prefixes, return keys as is.
 	return keys, nil
 }
 
 // DeleteKey deletes a key
 func (d *RedisDataStore) DeleteKey(ctx context.Context, key string) error {
-	return d.rds.Del(ctx, d.prefixKey(key)).Err()
+	return d.rds.Del(ctx, key).Err()
 }
 
 // SetPartitions saves partition information
 func (d *RedisDataStore) SetPartitions(ctx context.Context, key string, value string) error {
-	return d.rds.Set(ctx, d.prefixKey(key), value, d.opts.DefaultExpiry).Err()
+	return d.rds.Set(ctx, key, value, d.opts.DefaultExpiry).Err()
 }
 
 // GetPartitions gets partition information
 func (d *RedisDataStore) GetPartitions(ctx context.Context, key string) (string, error) {
-	return d.rds.Get(ctx, d.prefixKey(key)).Result()
+	return d.rds.Get(ctx, key).Result()
 }
 
 // SetSyncStatus sets the synchronization status
 func (d *RedisDataStore) SetSyncStatus(ctx context.Context, key string, value string) error {
-	return d.rds.Set(ctx, d.prefixKey(key), value, d.opts.DefaultExpiry).Err()
+	return d.rds.Set(ctx, key, value, d.opts.DefaultExpiry).Err()
 }
 
 // GetSyncStatus gets the synchronization status
 func (d *RedisDataStore) GetSyncStatus(ctx context.Context, key string) (string, error) {
-	return d.rds.Get(ctx, d.prefixKey(key)).Result()
+	return d.rds.Get(ctx, key).Result()
 }
 
-// RegisterWorker registers a worker and its heartbeat
+// RegisterWorker registers a worker and its heartbeat.
+// workersKey and heartbeatKey should be the full Redis keys.
 func (d *RedisDataStore) RegisterWorker(ctx context.Context, workersKey, workerID string, heartbeatKey string, heartbeatValue string) error {
 	pipe := d.rds.Pipeline()
 
 	// Add to workers set
-	pipe.SAdd(ctx, d.prefixKey(workersKey), workerID)
-	pipe.Expire(ctx, d.prefixKey(workersKey), d.opts.DefaultExpiry)
+	pipe.SAdd(ctx, workersKey, workerID)
+	pipe.Expire(ctx, workersKey, d.opts.DefaultExpiry)
 
 	// Set heartbeat
-	pipe.Set(ctx, d.prefixKey(heartbeatKey), heartbeatValue, 3*time.Minute)
+	pipe.Set(ctx, heartbeatKey, heartbeatValue, 3*time.Minute)
 
 	_, err := pipe.Exec(ctx)
 	return err
 }
 
-// UnregisterWorker unregisters a worker and removes its heartbeat
+// UnregisterWorker unregisters a worker and removes its heartbeat.
+// workersKey and heartbeatKey should be the full Redis keys.
 func (d *RedisDataStore) UnregisterWorker(ctx context.Context, workersKey, workerID string, heartbeatKey string) error {
 	pipe := d.rds.Pipeline()
 
 	// Remove from workers set
-	pipe.SRem(ctx, d.prefixKey(workersKey), workerID)
+	pipe.SRem(ctx, workersKey, workerID)
 
 	// Delete heartbeat
-	pipe.Del(ctx, d.prefixKey(heartbeatKey))
+	pipe.Del(ctx, heartbeatKey)
 
 	_, err := pipe.Exec(ctx)
 	return err
 }
 
-// GetActiveWorkers gets all workers in the workers set
+// GetActiveWorkers gets all workers in the workers set.
+// workersKey should be the full Redis key.
 func (d *RedisDataStore) GetActiveWorkers(ctx context.Context, workersKey string) ([]string, error) {
-	return d.rds.SMembers(ctx, d.prefixKey(workersKey)).Result()
+	return d.rds.SMembers(ctx, workersKey).Result()
 }
 
-// IsWorkerActive checks if a worker's heartbeat exists
+// IsWorkerActive checks if a worker's heartbeat exists.
+// heartbeatKey should be the full Redis key.
 func (d *RedisDataStore) IsWorkerActive(ctx context.Context, heartbeatKey string) (bool, error) {
-	exists, err := d.rds.Exists(ctx, d.prefixKey(heartbeatKey)).Result()
+	exists, err := d.rds.Exists(ctx, heartbeatKey).Result()
 	if err != nil {
 		return false, err
 	}
@@ -203,17 +195,17 @@ func (d *RedisDataStore) IsWorkerActive(ctx context.Context, heartbeatKey string
 
 // IncrementCounter increments a counter by the specified amount
 func (d *RedisDataStore) IncrementCounter(ctx context.Context, counterKey string, increment int64) (int64, error) {
-	return d.rds.IncrBy(ctx, d.prefixKey(counterKey), increment).Result()
+	return d.rds.IncrBy(ctx, counterKey, increment).Result()
 }
 
 // SetCounter sets a counter value with expiry
 func (d *RedisDataStore) SetCounter(ctx context.Context, counterKey string, value int64, expiry time.Duration) error {
-	return d.rds.Set(ctx, d.prefixKey(counterKey), value, expiry).Err()
+	return d.rds.Set(ctx, counterKey, value, expiry).Err()
 }
 
 // GetCounter gets a counter value
 func (d *RedisDataStore) GetCounter(ctx context.Context, counterKey string) (int64, error) {
-	val, err := d.rds.Get(ctx, d.prefixKey(counterKey)).Result()
+	val, err := d.rds.Get(ctx, counterKey).Result()
 	if err == redis.Nil {
 		return 0, nil // Return 0 if key doesn't exist
 	}
@@ -295,18 +287,15 @@ func (d *RedisDataStore) TryLockWithTimeout(ctx context.Context, key string, val
 	return false, errors.New("timeout waiting for lock")
 }
 
-// ExecuteAtomically executes a Lua script atomically
+// ExecuteAtomically executes a Lua script atomically.
+// Keys provided in the `keys` slice should be full Redis keys.
 func (d *RedisDataStore) ExecuteAtomically(ctx context.Context, script string, keys []string, args ...interface{}) (interface{}, error) {
-	// Prefix all keys
-	prefixedKeys := make([]string, len(keys))
-	for i, key := range keys {
-		prefixedKeys[i] = d.prefixKey(key)
-	}
-
-	return d.rds.Eval(ctx, script, prefixedKeys, args...).Result()
+	// No longer prefixing keys here. Callers must provide full keys.
+	return d.rds.Eval(ctx, script, keys, args...).Result()
 }
 
-// MoveItem moves an item from one key to another
+// MoveItem moves an item from one key to another.
+// fromKey and toKey should be full Redis keys.
 func (d *RedisDataStore) MoveItem(ctx context.Context, fromKey, toKey string, item interface{}) error {
 	script := `
 		if redis.call("ZREM", KEYS[1], ARGV[1]) == 1 then
@@ -318,13 +307,13 @@ func (d *RedisDataStore) MoveItem(ctx context.Context, fromKey, toKey string, it
 	// Current timestamp as score
 	score := float64(time.Now().Unix())
 
-	_, err := d.rds.Eval(ctx, script, []string{d.prefixKey(fromKey), d.prefixKey(toKey)}, item, score).Result()
+	_, err := d.rds.Eval(ctx, script, []string{fromKey, toKey}, item, score).Result()
 	return err
 }
 
 // AddToQueue adds an item to a queue (sorted set)
 func (d *RedisDataStore) AddToQueue(ctx context.Context, queueKey string, item interface{}, score float64) error {
-	return d.rds.ZAdd(ctx, d.prefixKey(queueKey), redis.Z{
+	return d.rds.ZAdd(ctx, queueKey, redis.Z{
 		Score:  score,
 		Member: item,
 	}).Err()
@@ -333,20 +322,20 @@ func (d *RedisDataStore) AddToQueue(ctx context.Context, queueKey string, item i
 // GetFromQueue gets items from a queue
 func (d *RedisDataStore) GetFromQueue(ctx context.Context, queueKey string, count int64) ([]string, error) {
 	// Use ZRANGE to get lowest scoring elements
-	return d.rds.ZRange(ctx, d.prefixKey(queueKey), 0, count-1).Result()
+	return d.rds.ZRange(ctx, queueKey, 0, count-1).Result()
 }
 
 // RemoveFromQueue removes an item from a queue
 func (d *RedisDataStore) RemoveFromQueue(ctx context.Context, queueKey string, item interface{}) error {
-	return d.rds.ZRem(ctx, d.prefixKey(queueKey), item).Err()
+	return d.rds.ZRem(ctx, queueKey, item).Err()
 }
 
 // GetQueueLength gets the length of a queue
 func (d *RedisDataStore) GetQueueLength(ctx context.Context, queueKey string) (int64, error) {
-	return d.rds.ZCard(ctx, d.prefixKey(queueKey)).Result()
+	return d.rds.ZCard(ctx, queueKey).Result()
 }
 
 // SetKey sets a key with an expiry time
 func (d *RedisDataStore) SetKey(ctx context.Context, key string, value string, expiry time.Duration) error {
-	return d.rds.Set(ctx, d.prefixKey(key), value, expiry).Err()
+	return d.rds.Set(ctx, key, value, expiry).Err()
 }
