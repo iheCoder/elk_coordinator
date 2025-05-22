@@ -20,6 +20,7 @@ type DataStore interface {
 
 	// Key operations
 	SetKey(ctx context.Context, key string, value string, expiry time.Duration) error
+	GetKey(ctx context.Context, key string) (string, error)
 	GetKeys(ctx context.Context, pattern string) ([]string, error)
 	DeleteKey(ctx context.Context, key string) error
 

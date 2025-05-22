@@ -133,6 +133,11 @@ func (d *RedisDataStore) GetKeys(ctx context.Context, pattern string) ([]string,
 	return keys, nil
 }
 
+// GetKey gets a key's value
+func (d *RedisDataStore) GetKey(ctx context.Context, key string) (string, error) {
+	return d.rds.Get(ctx, d.prefixKey(key)).Result()
+}
+
 // DeleteKey deletes a key
 func (d *RedisDataStore) DeleteKey(ctx context.Context, key string) error {
 	return d.rds.Del(ctx, d.prefixKey(key)).Err()
