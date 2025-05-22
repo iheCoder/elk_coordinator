@@ -75,3 +75,8 @@ type SyncStatus struct {
 	PartitionStatus   map[int]PartitionInfo  `json:"partition_status"`
 	AdditionalInfo    map[string]interface{} `json:"additional_info,omitempty"`
 }
+
+// 任务窗口相关常量
+const (
+	DefaultTaskWindowSize = 3 // 默认任务窗口大小
+)

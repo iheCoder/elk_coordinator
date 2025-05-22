@@ -5,6 +5,7 @@ import (
 	"elk_coordinator/data"
 	"elk_coordinator/leader"
 	"elk_coordinator/model"
+	"elk_coordinator/task"
 	"elk_coordinator/utils"
 	"fmt"
 	"github.com/google/uuid"
@@ -20,7 +21,7 @@ type Mgr struct {
 	ID            string
 	Namespace     string
 	DataStore     data.DataStore
-	TaskProcessor Processor
+	TaskProcessor task.Processor
 	Logger        utils.Logger
 
 	// 配置选项
@@ -31,9 +32,11 @@ type Mgr struct {
 	WorkerPartitionMultiple int64         // 每个工作节点分配的分区倍数，用于计算ID探测范围
 
 	// 任务窗口相关配置
-	UseTaskWindow  bool        // 是否使用任务窗口（并行处理多个分区）
-	TaskWindowSize int         // 任务窗口大小（同时处理的最大分区数）
-	taskWindow     *TaskWindow // 任务窗口实例
+	UseTaskWindow  bool // 是否使用任务窗口（并行处理多个分区）
+	TaskWindowSize int  // 任务窗口大小（同时处理的最大分区数）
+
+	// 任务处理器和执行器
+	taskRunner *task.Runner
 
 	// 内部状态
 	isLeader        bool
@@ -47,7 +50,7 @@ type Mgr struct {
 }
 
 // NewMgr 创建一个新的管理器实例，使用选项模式配置可选参数
-func NewMgr(namespace string, dataStore data.DataStore, processor Processor, options ...MgrOption) *Mgr {
+func NewMgr(namespace string, dataStore data.DataStore, processor task.Processor, options ...MgrOption) *Mgr {
 	nodeID := generateNodeID()
 
 	// 创建带默认值的管理器
@@ -67,7 +70,7 @@ func NewMgr(namespace string, dataStore data.DataStore, processor Processor, opt
 
 		// 任务窗口默认配置
 		UseTaskWindow:  false,
-		TaskWindowSize: DefaultTaskWindowSize,
+		TaskWindowSize: model.DefaultTaskWindowSize,
 	}
 
 	// 应用所有选项
@@ -237,6 +240,26 @@ func (m *Mgr) Lead(ctx context.Context) error {
 
 	// 调用leader包的Lead方法
 	return leaderInstance.Lead(ctx)
+}
+
+// Handle 处理分区任务的主循环
+func (m *Mgr) Handle(ctx context.Context) error {
+	m.Logger.Infof("开始任务处理循环")
+
+	// 初始化任务执行器
+	m.taskRunner = task.NewRunner(task.RunnerConfig{
+		Namespace:           m.Namespace,
+		WorkerID:            m.ID,
+		PartitionLockExpiry: m.PartitionLockExpiry,
+		DataStore:           m.DataStore,
+		Processor:           m.TaskProcessor,
+		Logger:              m.Logger,
+		UseTaskWindow:       m.UseTaskWindow,
+		TaskWindowSize:      m.TaskWindowSize,
+	})
+
+	// 启动任务执行器并等待完成
+	return m.taskRunner.Start(m.workCtx)
 }
 
 // SetWorkerPartitionMultiple 已被选项模式替代，保留用于向后兼容

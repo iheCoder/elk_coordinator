@@ -8,11 +8,6 @@ import (
 	"time"
 )
 
-// 任务窗口相关常量
-const (
-	DefaultTaskWindowSize = 3 // 默认任务窗口大小
-)
-
 // TaskWindowConfig 任务窗口配置
 type TaskWindowConfig struct {
 	// 标识和配置
@@ -49,7 +44,7 @@ type TaskWindow struct {
 // NewTaskWindow 创建一个新的任务窗口
 func NewTaskWindow(config TaskWindowConfig) *TaskWindow {
 	// 设置合理的默认值
-	windowSize := DefaultTaskWindowSize
+	windowSize := model.DefaultTaskWindowSize
 	if config.WindowSize > 0 {
 		windowSize = config.WindowSize
 	}
