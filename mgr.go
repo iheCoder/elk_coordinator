@@ -35,13 +35,6 @@ type Mgr struct {
 	TaskWindowSize int         // 任务窗口大小（同时处理的最大分区数）
 	taskWindow     *TaskWindow // 任务窗口实例
 
-	// 性能指标和自适应处理参数
-	UseTaskMetrics          bool           // 是否使用任务指标
-	MetricsUpdateInterval   time.Duration  // 指标更新间隔
-	RecentPartitionsToTrack int            // 记录最近多少个分区的处理速度
-	Metrics                 *WorkerMetrics // 节点性能指标
-	metricsMutex            sync.RWMutex   // 指标访问互斥锁
-
 	// 内部状态
 	isLeader        bool
 	heartbeatCtx    context.Context
@@ -75,20 +68,6 @@ func NewMgr(namespace string, dataStore data.DataStore, processor Processor, opt
 		// 任务窗口默认配置
 		UseTaskWindow:  false,
 		TaskWindowSize: DefaultTaskWindowSize,
-
-		// 指标收集默认配置
-		UseTaskMetrics:          true,
-		MetricsUpdateInterval:   DefaultCapacityUpdateInterval, // 使用心跳间隔作为默认指标更新间隔
-		RecentPartitionsToTrack: DefaultRecentPartitions,       // 默认记录最近10个分区的处理速度
-		Metrics: &WorkerMetrics{
-			ProcessingSpeed:     0.0,
-			SuccessRate:         1.0,
-			AvgProcessingTime:   0,
-			TotalTasksCompleted: 0,
-			SuccessfulTasks:     0,
-			TotalItemsProcessed: 0,
-			LastUpdateTime:      time.Now(),
-		},
 	}
 
 	// 应用所有选项
@@ -135,11 +114,6 @@ func (m *Mgr) Start(ctx context.Context) error {
 
 	// 设置信号处理，捕获终止信号
 	go m.setupSignalHandler(ctx)
-
-	// 如果启用了指标收集，定期发布指标
-	if m.UseTaskMetrics {
-		go m.publishMetricsPeriodically(ctx)
-	}
 
 	return nil
 }
