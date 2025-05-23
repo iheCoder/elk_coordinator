@@ -1,0 +1,32 @@
+# IntelliJ IDEA / GoLand
+*.iml
+.idea/
+*.iws
+*.ipr
+.idea_modules/
+out/
+
+# XML files
+*.xml
+
+# Compiled Go files
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go specific
+*.test
+*.out
+/vendor/
+/go.work
+
+# macOS specific
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Logs
+*.log
+

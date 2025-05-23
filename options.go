@@ -72,7 +72,7 @@ func WithTaskWindow(windowSize int) MgrOption {
 	return func(m *Mgr) {
 		m.UseTaskWindow = true
 		if windowSize <= 0 {
-			windowSize = DefaultTaskWindowSize
+			windowSize = model.DefaultTaskWindowSize
 		}
 		m.TaskWindowSize = windowSize
 	}
