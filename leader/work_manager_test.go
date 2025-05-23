@@ -3,6 +3,7 @@ package leader
 import (
 	"context"
 	"elk_coordinator/model"
+	"elk_coordinator/test_utils"
 	"fmt"
 	"sync"
 	"testing"
@@ -11,12 +12,12 @@ import (
 
 // TestGetActiveWorkers 测试获取活跃节点列表
 func TestGetActiveWorkers(t *testing.T) {
-	mockStore := newMockDataStore()
+	mockStore := test_utils.NewMockDataStore()
 	workManager := NewWorkManager(WorkManagerConfig{
 		NodeID:                  "node1",
 		Namespace:               "test",
 		DataStore:               mockStore,
-		Logger:                  &mockLogger{},
+		Logger:                  &test_utils.MockLogger{},
 		WorkerPartitionMultiple: 2,
 		ValidHeartbeatDuration:  30 * time.Second,
 	})
@@ -29,9 +30,9 @@ func TestGetActiveWorkers(t *testing.T) {
 	expiredHeartbeat := now.Add(-time.Minute).Format(time.RFC3339) // 过期的心跳
 
 	// 添加测试数据
-	mockStore.heartbeats[fmt.Sprintf(model.HeartbeatFmtFmt, "test", "node1")] = validHeartbeat
-	mockStore.heartbeats[fmt.Sprintf(model.HeartbeatFmtFmt, "test", "node2")] = validHeartbeat
-	mockStore.heartbeats[fmt.Sprintf(model.HeartbeatFmtFmt, "test", "node3")] = expiredHeartbeat // 过期的
+	mockStore.Heartbeats[fmt.Sprintf(model.HeartbeatFmtFmt, "test", "node1")] = validHeartbeat
+	mockStore.Heartbeats[fmt.Sprintf(model.HeartbeatFmtFmt, "test", "node2")] = validHeartbeat
+	mockStore.Heartbeats[fmt.Sprintf(model.HeartbeatFmtFmt, "test", "node3")] = expiredHeartbeat // 过期的
 
 	// 测试获取活跃节点
 	activeWorkers, err := workManager.getActiveWorkers(ctx)
@@ -67,14 +68,14 @@ func TestGetActiveWorkers(t *testing.T) {
 	}
 
 	// 检查过期节点是否被清理
-	if _, exists := mockStore.heartbeats[fmt.Sprintf(model.HeartbeatFmtFmt, "test", "node3")]; exists {
+	if _, exists := mockStore.Heartbeats[fmt.Sprintf(model.HeartbeatFmtFmt, "test", "node3")]; exists {
 		t.Error("过期节点心跳未被清理")
 	}
 }
 
 // TestTryAllocatePartitions 测试尝试分配分区
 func TestTryAllocatePartitions(t *testing.T) {
-	mockStore := newMockDataStore()
+	mockStore := test_utils.NewMockDataStore()
 	mockPlaner := &mockPartitionPlaner{
 		nextMaxID: 1000,
 	}
@@ -83,7 +84,7 @@ func TestTryAllocatePartitions(t *testing.T) {
 		NodeID:                  "node1",
 		Namespace:               "test",
 		DataStore:               mockStore,
-		Logger:                  &mockLogger{},
+		Logger:                  &test_utils.MockLogger{},
 		WorkerPartitionMultiple: 2,
 		ValidHeartbeatDuration:  30 * time.Second,
 	})
@@ -91,7 +92,7 @@ func TestTryAllocatePartitions(t *testing.T) {
 	partitionMgr := NewPartitionManager(PartitionManagerConfig{
 		Namespace: "test",
 		DataStore: mockStore,
-		Logger:    &mockLogger{},
+		Logger:    &test_utils.MockLogger{},
 		Planer:    mockPlaner,
 	})
 
@@ -100,7 +101,7 @@ func TestTryAllocatePartitions(t *testing.T) {
 	// 设置一个有效的心跳
 	now := time.Now()
 	validHeartbeat := now.Format(time.RFC3339)
-	mockStore.heartbeats[fmt.Sprintf(model.HeartbeatFmtFmt, "test", "node1")] = validHeartbeat
+	mockStore.Heartbeats[fmt.Sprintf(model.HeartbeatFmtFmt, "test", "node1")] = validHeartbeat
 
 	// 测试 tryAllocatePartitions
 	workManager.tryAllocatePartitions(ctx, partitionMgr)
@@ -113,10 +114,10 @@ func TestTryAllocatePartitions(t *testing.T) {
 	}
 
 	// 测试没有活跃节点的情况
-	delete(mockStore.heartbeats, fmt.Sprintf(model.HeartbeatFmtFmt, "test", "node1"))
+	delete(mockStore.Heartbeats, fmt.Sprintf(model.HeartbeatFmtFmt, "test", "node1"))
 
 	// 先清除已有分区数据
-	delete(mockStore.partitionData, partitionKey)
+	delete(mockStore.PartitionData, partitionKey)
 
 	// 测试没有活跃节点时的分配
 	workManager.tryAllocatePartitions(ctx, partitionMgr)
@@ -128,9 +129,9 @@ func TestTryAllocatePartitions(t *testing.T) {
 	}
 }
 
-// TestRunPartitionAllocationLoop 测试分区分配循环
+// TestRunPartitionAllocationLoop 测试分区分配��环
 func TestRunPartitionAllocationLoop(t *testing.T) {
-	mockStore := newMockDataStore()
+	mockStore := test_utils.NewMockDataStore()
 	mockPlaner := &mockPartitionPlaner{
 		nextMaxID: 1000,
 	}
@@ -139,7 +140,7 @@ func TestRunPartitionAllocationLoop(t *testing.T) {
 		NodeID:                  "node1",
 		Namespace:               "test",
 		DataStore:               mockStore,
-		Logger:                  &mockLogger{},
+		Logger:                  &test_utils.MockLogger{},
 		WorkerPartitionMultiple: 2,
 		ValidHeartbeatDuration:  30 * time.Second,
 	})
@@ -147,14 +148,14 @@ func TestRunPartitionAllocationLoop(t *testing.T) {
 	partitionMgr := NewPartitionManager(PartitionManagerConfig{
 		Namespace: "test",
 		DataStore: mockStore,
-		Logger:    &mockLogger{},
+		Logger:    &test_utils.MockLogger{},
 		Planer:    mockPlaner,
 	})
 
 	// 设置一个有效的心跳
 	now := time.Now()
 	validHeartbeat := now.Format(time.RFC3339)
-	mockStore.heartbeats[fmt.Sprintf(model.HeartbeatFmtFmt, "test", "node1")] = validHeartbeat
+	mockStore.Heartbeats[fmt.Sprintf(model.HeartbeatFmtFmt, "test", "node1")] = validHeartbeat
 
 	// 创建一个短时间的上下文和主动取消的leader上下文
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)

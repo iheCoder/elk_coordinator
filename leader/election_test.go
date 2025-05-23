@@ -3,211 +3,22 @@ package leader
 import (
 	"context"
 	"elk_coordinator/model"
+	"elk_coordinator/test_utils"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
 )
 
-// mockDataStore 实现data.DataStore接口，用于测试
-type mockDataStore struct {
-	locks         map[string]string
-	heartbeats    map[string]string
-	partitionData map[string]string
-	lockMutex     sync.RWMutex
-}
-
-func newMockDataStore() *mockDataStore {
-	return &mockDataStore{
-		locks:         make(map[string]string),
-		heartbeats:    make(map[string]string),
-		partitionData: make(map[string]string),
-	}
-}
-
-// 实现AcquireLock方法
-func (m *mockDataStore) AcquireLock(ctx context.Context, key string, value string, expiry time.Duration) (bool, error) {
-	m.lockMutex.Lock()
-	defer m.lockMutex.Unlock()
-
-	if _, exists := m.locks[key]; exists {
-		return false, nil
-	}
-
-	m.locks[key] = value
-	return true, nil
-}
-
-// 实现RenewLock方法
-func (m *mockDataStore) RenewLock(ctx context.Context, key string, value string, expiry time.Duration) (bool, error) {
-	m.lockMutex.RLock()
-	defer m.lockMutex.RUnlock()
-
-	currentValue, exists := m.locks[key]
-	if !exists {
-		return false, nil
-	}
-
-	return currentValue == value, nil
-}
-
-// 实现GetLockOwner方法
-func (m *mockDataStore) GetLockOwner(ctx context.Context, key string) (string, error) {
-	m.lockMutex.RLock()
-	defer m.lockMutex.RUnlock()
-
-	value, exists := m.locks[key]
-	if !exists {
-		return "", fmt.Errorf("lock not found")
-	}
-	return value, nil
-}
-
-// 实现ReleaseLock方法
-func (m *mockDataStore) ReleaseLock(ctx context.Context, key string, value string) error {
-	m.lockMutex.Lock()
-	defer m.lockMutex.Unlock()
-
-	currentValue, exists := m.locks[key]
-	if !exists {
-		return nil
-	}
-
-	if currentValue == value {
-		delete(m.locks, key)
-	}
-	return nil
-}
-
-// 实现SetHeartbeat方法
-func (m *mockDataStore) SetHeartbeat(ctx context.Context, key string, value string) error {
-	m.heartbeats[key] = value
-	return nil
-}
-
-// 实现GetHeartbeat方法
-func (m *mockDataStore) GetHeartbeat(ctx context.Context, key string) (string, error) {
-	value, exists := m.heartbeats[key]
-	if !exists {
-		return "", fmt.Errorf("heartbeat not found")
-	}
-	return value, nil
-}
-
-// 实现GetKeys方法
-func (m *mockDataStore) GetKeys(ctx context.Context, pattern string) ([]string, error) {
-	// 简单实现，模拟模式匹配
-	var keys []string
-	prefix := pattern[:len(pattern)-1] // 去掉末尾的 '*'
-
-	for key := range m.heartbeats {
-		if len(key) >= len(prefix) && key[:len(prefix)] == prefix {
-			keys = append(keys, key)
-		}
-	}
-	return keys, nil
-}
-
-// 实现SetPartitions方法
-func (m *mockDataStore) SetPartitions(ctx context.Context, key string, value string) error {
-	m.partitionData[key] = value
-	return nil
-}
-
-// 实现GetPartitions方法
-func (m *mockDataStore) GetPartitions(ctx context.Context, key string) (string, error) {
-	value, exists := m.partitionData[key]
-	if !exists {
-		return "", nil
-	}
-	return value, nil
-}
-
-// 实现DeleteKey方法
-func (m *mockDataStore) DeleteKey(ctx context.Context, key string) error {
-	delete(m.heartbeats, key)
-	return nil
-}
-
-// 模拟logger - 简单实现，不发送日志到输出
-type mockLogger struct{}
-
-func (m *mockLogger) Debugf(format string, args ...interface{}) {}
-func (m *mockLogger) Infof(format string, args ...interface{})  {}
-func (m *mockLogger) Warnf(format string, args ...interface{})  {}
-func (m *mockLogger) Errorf(format string, args ...interface{}) {}
-
-// 其他DataStore接口方法的存根实现...
-func (m *mockDataStore) CheckLock(ctx context.Context, key string, expectedValue string) (bool, error) {
-	return false, nil
-}
-func (m *mockDataStore) GetSyncStatus(ctx context.Context, key string) (string, error) {
-	return "", nil
-}
-func (m *mockDataStore) SetSyncStatus(ctx context.Context, key string, value string) error {
-	return nil
-}
-func (m *mockDataStore) RegisterWorker(ctx context.Context, workersKey, workerID string, heartbeatKey string, heartbeatValue string) error {
-	return nil
-}
-func (m *mockDataStore) UnregisterWorker(ctx context.Context, workersKey, workerID string, heartbeatKey string) error {
-	return nil
-}
-func (m *mockDataStore) GetActiveWorkers(ctx context.Context, workersKey string) ([]string, error) {
-	return nil, nil
-}
-func (m *mockDataStore) IsWorkerActive(ctx context.Context, heartbeatKey string) (bool, error) {
-	return false, nil
-}
-func (m *mockDataStore) SetKey(ctx context.Context, key string, value string, expiry time.Duration) error {
-	return nil
-}
-func (m *mockDataStore) GetKey(ctx context.Context, key string) (string, error) {
-	return "", nil
-}
-func (m *mockDataStore) IncrementCounter(ctx context.Context, counterKey string, increment int64) (int64, error) {
-	return 0, nil
-}
-func (m *mockDataStore) SetCounter(ctx context.Context, counterKey string, value int64, expiry time.Duration) error {
-	return nil
-}
-func (m *mockDataStore) GetCounter(ctx context.Context, counterKey string) (int64, error) {
-	return 0, nil
-}
-func (m *mockDataStore) LockWithHeartbeat(ctx context.Context, key, value string, heartbeatInterval time.Duration) (bool, context.CancelFunc, error) {
-	return false, nil, nil
-}
-func (m *mockDataStore) TryLockWithTimeout(ctx context.Context, key string, value string, lockExpiry, waitTimeout time.Duration) (bool, error) {
-	return false, nil
-}
-func (m *mockDataStore) ExecuteAtomically(ctx context.Context, script string, keys []string, args ...interface{}) (interface{}, error) {
-	return nil, nil
-}
-func (m *mockDataStore) MoveItem(ctx context.Context, fromKey, toKey string, item interface{}) error {
-	return nil
-}
-func (m *mockDataStore) AddToQueue(ctx context.Context, queueKey string, item interface{}, score float64) error {
-	return nil
-}
-func (m *mockDataStore) GetFromQueue(ctx context.Context, queueKey string, count int64) ([]string, error) {
-	return nil, nil
-}
-func (m *mockDataStore) RemoveFromQueue(ctx context.Context, queueKey string, item interface{}) error {
-	return nil
-}
-func (m *mockDataStore) GetQueueLength(ctx context.Context, queueKey string) (int64, error) {
-	return 0, nil
-}
-
 // TestTryElect 测试选举方法
 func TestTryElect(t *testing.T) {
-	mockStore := newMockDataStore()
+	mockStore := test_utils.NewMockDataStore()
 
 	election := NewElection(ElectionConfig{
 		NodeID:           "node1",
 		Namespace:        "test",
 		DataStore:        mockStore,
-		Logger:           &mockLogger{},
+		Logger:           &test_utils.MockLogger{},
 		ElectionInterval: 1 * time.Second,
 		LockExpiry:       5 * time.Second,
 	})
@@ -234,7 +45,7 @@ func TestTryElect(t *testing.T) {
 		NodeID:           "node2",
 		Namespace:        "test",
 		DataStore:        mockStore,
-		Logger:           &mockLogger{},
+		Logger:           &test_utils.MockLogger{},
 		ElectionInterval: 1 * time.Second,
 		LockExpiry:       5 * time.Second,
 	})
@@ -247,13 +58,13 @@ func TestTryElect(t *testing.T) {
 
 // TestRenewLeaderLock 测试更新Leader锁
 func TestRenewLeaderLock(t *testing.T) {
-	mockStore := newMockDataStore()
+	mockStore := test_utils.NewMockDataStore()
 
 	election := NewElection(ElectionConfig{
 		NodeID:           "node1",
 		Namespace:        "test",
 		DataStore:        mockStore,
-		Logger:           &mockLogger{},
+		Logger:           &test_utils.MockLogger{},
 		ElectionInterval: 1 * time.Second,
 		LockExpiry:       5 * time.Second,
 	})
@@ -276,7 +87,7 @@ func TestRenewLeaderLock(t *testing.T) {
 		NodeID:           "node2",
 		Namespace:        "test",
 		DataStore:        mockStore,
-		Logger:           &mockLogger{},
+		Logger:           &test_utils.MockLogger{},
 		ElectionInterval: 1 * time.Second,
 		LockExpiry:       5 * time.Second,
 	})
@@ -288,13 +99,13 @@ func TestRenewLeaderLock(t *testing.T) {
 
 // TestGetLeaderInfo 测试获取Leader信息
 func TestGetLeaderInfo(t *testing.T) {
-	mockStore := newMockDataStore()
+	mockStore := test_utils.NewMockDataStore()
 
 	election := NewElection(ElectionConfig{
 		NodeID:           "node1",
 		Namespace:        "test",
 		DataStore:        mockStore,
-		Logger:           &mockLogger{},
+		Logger:           &test_utils.MockLogger{},
 		ElectionInterval: 1 * time.Second,
 		LockExpiry:       5 * time.Second,
 	})
@@ -319,13 +130,13 @@ func TestGetLeaderInfo(t *testing.T) {
 
 // TestStartRenewing 测试周期性更新锁
 func TestStartRenewing(t *testing.T) {
-	mockStore := newMockDataStore()
+	mockStore := test_utils.NewMockDataStore()
 
 	election := NewElection(ElectionConfig{
 		NodeID:           "node1",
 		Namespace:        "test",
 		DataStore:        mockStore,
-		Logger:           &mockLogger{},
+		Logger:           &test_utils.MockLogger{},
 		ElectionInterval: 1 * time.Second,
 		LockExpiry:       1 * time.Second, // 使用短的过期时间便于测试
 	})
@@ -371,7 +182,7 @@ func TestStartRenewing(t *testing.T) {
 
 // TestConcurrentElection 测试多节点同时竞选的竞态场景
 func TestConcurrentElection(t *testing.T) {
-	mockStore := newMockDataStore()
+	mockStore := test_utils.NewMockDataStore()
 
 	// 创建多个节点的选举实例
 	nodeCount := 5
@@ -383,7 +194,7 @@ func TestConcurrentElection(t *testing.T) {
 			NodeID:           nodeID,
 			Namespace:        "test",
 			DataStore:        mockStore,
-			Logger:           &mockLogger{},
+			Logger:           &test_utils.MockLogger{},
 			ElectionInterval: 1 * time.Second,
 			LockExpiry:       5 * time.Second,
 		})
@@ -433,14 +244,14 @@ func TestConcurrentElection(t *testing.T) {
 
 // TestReElectionAfterExpiry 测试锁到期后重新选举
 func TestReElectionAfterExpiry(t *testing.T) {
-	mockStore := newMockDataStore()
+	mockStore := test_utils.NewMockDataStore()
 
 	// 创建两个节点的选举实例
 	election1 := NewElection(ElectionConfig{
 		NodeID:           "node1",
 		Namespace:        "test",
 		DataStore:        mockStore,
-		Logger:           &mockLogger{},
+		Logger:           &test_utils.MockLogger{},
 		ElectionInterval: 1 * time.Second,
 		LockExpiry:       2 * time.Second, // 使用短的锁过期时间来测试
 	})
@@ -449,7 +260,7 @@ func TestReElectionAfterExpiry(t *testing.T) {
 		NodeID:           "node2",
 		Namespace:        "test",
 		DataStore:        mockStore,
-		Logger:           &mockLogger{},
+		Logger:           &test_utils.MockLogger{},
 		ElectionInterval: 1 * time.Second,
 		LockExpiry:       2 * time.Second,
 	})
@@ -474,9 +285,9 @@ func TestReElectionAfterExpiry(t *testing.T) {
 	}
 
 	// 模拟锁过期：删除锁
-	mockStore.lockMutex.Lock()
-	delete(mockStore.locks, leaderLockKey)
-	mockStore.lockMutex.Unlock()
+	mockStore.LockMutex.Lock()
+	delete(mockStore.Locks, leaderLockKey)
+	mockStore.LockMutex.Unlock()
 
 	// 现在node2应该能够成功选举
 	if !election2.TryElect(ctx) {
@@ -492,14 +303,14 @@ func TestReElectionAfterExpiry(t *testing.T) {
 
 // TestLeaderFailureAndRecovery 测试Leader故障恢复场景
 func TestLeaderFailureAndRecovery(t *testing.T) {
-	mockStore := newMockDataStore()
+	mockStore := test_utils.NewMockDataStore()
 
 	// 创建两个节点
 	node1 := NewElection(ElectionConfig{
 		NodeID:           "node1",
 		Namespace:        "test",
 		DataStore:        mockStore,
-		Logger:           &mockLogger{},
+		Logger:           &test_utils.MockLogger{},
 		ElectionInterval: 100 * time.Millisecond,
 		LockExpiry:       500 * time.Millisecond,
 	})
@@ -508,7 +319,7 @@ func TestLeaderFailureAndRecovery(t *testing.T) {
 		NodeID:           "node2",
 		Namespace:        "test",
 		DataStore:        mockStore,
-		Logger:           &mockLogger{},
+		Logger:           &test_utils.MockLogger{},
 		ElectionInterval: 100 * time.Millisecond,
 		LockExpiry:       500 * time.Millisecond,
 	})
@@ -571,7 +382,7 @@ func TestLeaderFailureAndRecovery(t *testing.T) {
 
 // TestLockRenewalPrevention 测试锁被抢占后无法续期的场景
 func TestLockRenewalPrevention(t *testing.T) {
-	mockStore := newMockDataStore()
+	mockStore := test_utils.NewMockDataStore()
 	leaderLockKey := fmt.Sprintf(model.LeaderLockKeyFmt, "test")
 
 	// 创建两个节点
@@ -579,7 +390,7 @@ func TestLockRenewalPrevention(t *testing.T) {
 		NodeID:           "node1",
 		Namespace:        "test",
 		DataStore:        mockStore,
-		Logger:           &mockLogger{},
+		Logger:           &test_utils.MockLogger{},
 		ElectionInterval: 100 * time.Millisecond,
 		LockExpiry:       500 * time.Millisecond,
 	})
@@ -592,9 +403,9 @@ func TestLockRenewalPrevention(t *testing.T) {
 	}
 
 	// 模拟锁被另一个节点获取（直接修改锁值）
-	mockStore.lockMutex.Lock()
-	mockStore.locks[leaderLockKey] = "node2" // 模拟锁被node2抢占
-	mockStore.lockMutex.Unlock()
+	mockStore.LockMutex.Lock()
+	mockStore.Locks[leaderLockKey] = "node2" // 模拟锁被node2抢占
+	mockStore.LockMutex.Unlock()
 
 	// 尝试续期，应该失败
 	renewalSuccess := node1.renewLeaderLock(leaderLockKey)
@@ -605,7 +416,7 @@ func TestLockRenewalPrevention(t *testing.T) {
 
 // TestMultipleElectionCycles 测试多次选举循环
 func TestMultipleElectionCycles(t *testing.T) {
-	mockStore := newMockDataStore()
+	mockStore := test_utils.NewMockDataStore()
 	leaderLockKey := fmt.Sprintf(model.LeaderLockKeyFmt, "test")
 
 	// 创建三个节点
@@ -617,7 +428,7 @@ func TestMultipleElectionCycles(t *testing.T) {
 			NodeID:           nodeID,
 			Namespace:        "test",
 			DataStore:        mockStore,
-			Logger:           &mockLogger{},
+			Logger:           &test_utils.MockLogger{},
 			ElectionInterval: 100 * time.Millisecond,
 			LockExpiry:       500 * time.Millisecond,
 		})
@@ -650,8 +461,8 @@ func TestMultipleElectionCycles(t *testing.T) {
 		}
 
 		// 释放锁，准备下一轮
-		mockStore.lockMutex.Lock()
-		delete(mockStore.locks, leaderLockKey)
-		mockStore.lockMutex.Unlock()
+		mockStore.LockMutex.Lock()
+		delete(mockStore.Locks, leaderLockKey)
+		mockStore.LockMutex.Unlock()
 	}
 }

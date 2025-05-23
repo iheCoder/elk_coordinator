@@ -2,6 +2,7 @@ package leader
 
 import (
 	"context"
+	"elk_coordinator/test_utils"
 	"sync"
 	"testing"
 	"time"
@@ -9,7 +10,7 @@ import (
 
 // TestNewLeaderManager 测试创建新的领导者管理器
 func TestNewLeaderManager(t *testing.T) {
-	mockStore := newMockDataStore()
+	mockStore := test_utils.NewMockDataStore()
 	mockPlaner := &mockPartitionPlaner{
 		suggestedPartitionSize: 2000,
 		nextMaxID:              5000,
@@ -20,7 +21,7 @@ func TestNewLeaderManager(t *testing.T) {
 		NodeID:                  "node1",
 		Namespace:               "test",
 		DataStore:               mockStore,
-		Logger:                  &mockLogger{},
+		Logger:                  &test_utils.MockLogger{},
 		Planer:                  mockPlaner,
 		ElectionInterval:        5 * time.Second,
 		LockExpiry:              30 * time.Second,
@@ -42,12 +43,12 @@ func TestNewLeaderManager(t *testing.T) {
 
 // TestIsLeader 测试领导者状态查询
 func TestIsLeader(t *testing.T) {
-	mockStore := newMockDataStore()
+	mockStore := test_utils.NewMockDataStore()
 	lm := NewLeaderManager(LeaderConfig{
 		NodeID:                  "node1",
 		Namespace:               "test",
 		DataStore:               mockStore,
-		Logger:                  &mockLogger{},
+		Logger:                  &test_utils.MockLogger{},
 		Planer:                  &mockPartitionPlaner{},
 		ElectionInterval:        5 * time.Second,
 		LockExpiry:              30 * time.Second,
@@ -73,12 +74,12 @@ func TestIsLeader(t *testing.T) {
 
 // TestBecomeLeader 测试成为领导者
 func TestBecomeLeader(t *testing.T) {
-	mockStore := newMockDataStore()
+	mockStore := test_utils.NewMockDataStore()
 	lm := NewLeaderManager(LeaderConfig{
 		NodeID:                  "node1",
 		Namespace:               "test",
 		DataStore:               mockStore,
-		Logger:                  &mockLogger{},
+		Logger:                  &test_utils.MockLogger{},
 		Planer:                  &mockPartitionPlaner{},
 		ElectionInterval:        5 * time.Second,
 		LockExpiry:              30 * time.Second,
@@ -97,12 +98,12 @@ func TestBecomeLeader(t *testing.T) {
 
 // TestRelinquishLeadership 测试放弃领导权
 func TestRelinquishLeadership(t *testing.T) {
-	mockStore := newMockDataStore()
+	mockStore := test_utils.NewMockDataStore()
 	lm := NewLeaderManager(LeaderConfig{
 		NodeID:                  "node1",
 		Namespace:               "test",
 		DataStore:               mockStore,
-		Logger:                  &mockLogger{},
+		Logger:                  &test_utils.MockLogger{},
 		Planer:                  &mockPartitionPlaner{},
 		ElectionInterval:        5 * time.Second,
 		LockExpiry:              30 * time.Second,
@@ -137,12 +138,12 @@ func TestRelinquishLeadership(t *testing.T) {
 
 // TestStartLeaderWork 测试启动领导者工作
 func TestStartLeaderWork(t *testing.T) {
-	mockStore := newMockDataStore()
+	mockStore := test_utils.NewMockDataStore()
 	lm := NewLeaderManager(LeaderConfig{
 		NodeID:                  "node1",
 		Namespace:               "test",
 		DataStore:               mockStore,
-		Logger:                  &mockLogger{},
+		Logger:                  &test_utils.MockLogger{},
 		Planer:                  &mockPartitionPlaner{},
 		ElectionInterval:        5 * time.Second,
 		LockExpiry:              30 * time.Second,
@@ -171,12 +172,12 @@ func TestStartLeaderWork(t *testing.T) {
 
 // TestPeriodicElection 测试周期性选举
 func TestPeriodicElection(t *testing.T) {
-	mockStore := newMockDataStore()
+	mockStore := test_utils.NewMockDataStore()
 	lm := NewLeaderManager(LeaderConfig{
 		NodeID:                  "node1",
 		Namespace:               "test",
 		DataStore:               mockStore,
-		Logger:                  &mockLogger{},
+		Logger:                  &test_utils.MockLogger{},
 		Planer:                  &mockPartitionPlaner{},
 		ElectionInterval:        5 * time.Second,
 		LockExpiry:              30 * time.Second,
@@ -205,9 +206,9 @@ func TestPeriodicElection(t *testing.T) {
 	lm.mu.Unlock()
 
 	// 修改mock以使下次选举失败
-	mockStore.lockMutex.Lock()
-	mockStore.locks[lm.election.config.Namespace+":leader"] = "node2" // 模拟另一个节点已经获取了锁
-	mockStore.lockMutex.Unlock()
+	mockStore.LockMutex.Lock()
+	mockStore.Locks[lm.election.config.Namespace+":leader"] = "node2" // 模拟另一个节点已经获取了锁
+	mockStore.LockMutex.Unlock()
 
 	// 执行周期性选举，但已经是领导者，不应该尝试选举
 	lm.periodicElection(ctx)
@@ -220,12 +221,12 @@ func TestPeriodicElection(t *testing.T) {
 
 // TestRunElectionLoopSimple 测试选举循环的简单场景
 func TestRunElectionLoopSimple(t *testing.T) {
-	mockStore := newMockDataStore()
+	mockStore := test_utils.NewMockDataStore()
 	lm := NewLeaderManager(LeaderConfig{
 		NodeID:                  "node1",
 		Namespace:               "test",
 		DataStore:               mockStore,
-		Logger:                  &mockLogger{},
+		Logger:                  &test_utils.MockLogger{},
 		Planer:                  &mockPartitionPlaner{},
 		ElectionInterval:        5 * time.Second,
 		LockExpiry:              30 * time.Second,
@@ -261,12 +262,12 @@ func TestRunElectionLoopSimple(t *testing.T) {
 
 // TestStart 测试启动方法
 func TestStart(t *testing.T) {
-	mockStore := newMockDataStore()
+	mockStore := test_utils.NewMockDataStore()
 	lm := NewLeaderManager(LeaderConfig{
 		NodeID:                  "node1",
 		Namespace:               "test",
 		DataStore:               mockStore,
-		Logger:                  &mockLogger{},
+		Logger:                  &test_utils.MockLogger{},
 		Planer:                  &mockPartitionPlaner{},
 		ElectionInterval:        5 * time.Second,
 		LockExpiry:              30 * time.Second,
@@ -302,12 +303,12 @@ func TestStart(t *testing.T) {
 
 // TestStop 测试停止方法
 func TestStop(t *testing.T) {
-	mockStore := newMockDataStore()
+	mockStore := test_utils.NewMockDataStore()
 	lm := NewLeaderManager(LeaderConfig{
 		NodeID:                  "node1",
 		Namespace:               "test",
 		DataStore:               mockStore,
-		Logger:                  &mockLogger{},
+		Logger:                  &test_utils.MockLogger{},
 		Planer:                  &mockPartitionPlaner{},
 		ElectionInterval:        5 * time.Second,
 		LockExpiry:              30 * time.Second,
