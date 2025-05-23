@@ -18,11 +18,12 @@ import (
 // Mgr 是一个分布式管理器，管理分区任务的执行
 type Mgr struct {
 	// 核心字段
-	ID            string
-	Namespace     string
-	DataStore     data.DataStore
-	TaskProcessor task.Processor
-	Logger        utils.Logger
+	ID              string
+	Namespace       string
+	DataStore       data.DataStore
+	TaskProcessor   task.Processor
+	PartitionPlaner leader.PartitionPlaner
+	Logger          utils.Logger
 
 	// 配置选项
 	HeartbeatInterval       time.Duration // 心跳间隔
@@ -49,17 +50,18 @@ type Mgr struct {
 	mu              sync.RWMutex
 }
 
-// NewMgr 创建一个新的管理器实例，使用选项模式配置可选参数
-func NewMgr(namespace string, dataStore data.DataStore, processor task.Processor, options ...MgrOption) *Mgr {
+// NewMgr 创建一个新的管理器实例
+func NewMgr(namespace string, dataStore data.DataStore, processor task.Processor, planer leader.PartitionPlaner, options ...MgrOption) *Mgr {
 	nodeID := generateNodeID()
 
 	// 创建带默认值的管理器
 	mgr := &Mgr{
-		ID:            nodeID,
-		Namespace:     namespace,
-		DataStore:     dataStore,
-		TaskProcessor: processor,
-		Logger:        utils.NewDefaultLogger(),
+		ID:              nodeID,
+		Namespace:       namespace,
+		DataStore:       dataStore,
+		TaskProcessor:   processor,
+		PartitionPlaner: planer,
+		Logger:          utils.NewDefaultLogger(),
 
 		// 默认配置
 		HeartbeatInterval:       model.DefaultHeartbeatInterval,
@@ -226,8 +228,8 @@ func (m *Mgr) getActiveWorkers(ctx context.Context) ([]string, error) {
 func (m *Mgr) Lead(ctx context.Context) error {
 	m.Logger.Infof("启动Leader选举与工作任务")
 
-	// 创建Leader的配置
-	leaderInstance := &leader.Leader{
+	// 创建LeaderManager配置
+	leaderConfig := leader.LeaderConfig{
 		NodeID:                  m.ID,
 		Namespace:               m.Namespace,
 		DataStore:               m.DataStore,
@@ -236,10 +238,12 @@ func (m *Mgr) Lead(ctx context.Context) error {
 		LockExpiry:              m.LeaderLockExpiry,
 		WorkerPartitionMultiple: m.WorkerPartitionMultiple,
 		ValidHeartbeatDuration:  m.HeartbeatInterval * 3,
+		Planer:                  m.PartitionPlaner, // 直接使用Mgr中的PartitionPlaner
 	}
 
-	// 调用leader包的Lead方法
-	return leaderInstance.Lead(ctx)
+	// 创建并启动LeaderManager
+	leaderManager := leader.NewLeaderManager(leaderConfig)
+	return leaderManager.Start(ctx)
 }
 
 // Handle 处理分区任务的主循环
