@@ -330,7 +330,8 @@ func TestStartRenewing(t *testing.T) {
 		LockExpiry:       1 * time.Second, // 使用短的过期时间便于测试
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	// 创建一个短暂的上下文，这会导致StartRenewing很快结束
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
 	// 先获取锁
@@ -353,19 +354,18 @@ func TestStartRenewing(t *testing.T) {
 	// 等待goroutine结束
 	wg.Wait()
 
-	// 由于上下文会超时，应该会调用回调函数
-	if callbackCalled {
-		t.Error("回调函数被调用，但不应该被调用")
+	// 在新的实现中，当上下文取消时回调函数会被调用
+	if !callbackCalled {
+		t.Error("回调函数未被调用，但应该被调用")
 	}
 
-	// 检查锁是否仍然存在
+	// 在新的实现中，锁会被主动释放，所以应该不存在或被其他人获取
 	leaderLockKey := fmt.Sprintf(model.LeaderLockKeyFmt, "test")
-	owner, err := mockStore.GetLockOwner(ctx, leaderLockKey)
-	if err != nil {
-		t.Errorf("获取锁所有者失败: %v", err)
-	}
-	if owner != "node1" {
-		t.Errorf("锁所有者不正确，期望 'node1'，得到 '%s'", owner)
+	_, err := mockStore.GetLockOwner(ctx, leaderLockKey)
+
+	// 期望返回错误，表明锁已被释放
+	if err == nil {
+		t.Error("锁仍然存在，但应该已被释放")
 	}
 }
 
