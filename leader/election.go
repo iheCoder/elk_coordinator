@@ -61,7 +61,11 @@ func (e *Election) StartRenewing(ctx context.Context, onLossCallback func()) {
 	for {
 		select {
 		case <-ctx.Done():
-			e.config.Logger.Infof("停止更新Leader锁")
+			e.config.Logger.Infof("停止更新Leader锁，执行回调")
+			// 在上下文取消时也应该执行回调，表示节点已不再是leader
+			onLossCallback()
+			// 主动释放锁，这样其他节点可以更快地成为新leader
+			e.releaseLeaderLock(leaderLockKey)
 			return
 		case <-ticker.C:
 			if !e.renewLeaderLock(leaderLockKey) {
@@ -89,6 +93,16 @@ func (e *Election) renewLeaderLock(leaderLockKey string) bool {
 	}
 
 	return true // 成功更新，继续保持领导权
+}
+
+// releaseLeaderLock 释放Leader锁
+func (e *Election) releaseLeaderLock(leaderLockKey string) {
+	ctx := context.Background()
+	if err := e.config.DataStore.ReleaseLock(ctx, leaderLockKey, e.config.NodeID); err != nil {
+		e.config.Logger.Warnf("释放Leader锁失败: %v", err)
+	} else {
+		e.config.Logger.Infof("成功释放Leader锁")
+	}
 }
 
 // GetLeaderInfo 获取当前领导者信息
