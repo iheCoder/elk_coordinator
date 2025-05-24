@@ -2,14 +2,17 @@ package task
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // CircuitBreakerConfig 熔断器配置
 type CircuitBreakerConfig struct {
 	ConsecutiveFailureThreshold int           // 连续失败触发熔断阈值
-	TotalFailureThreshold       int           // 总失败分区数阈值
+	TotalFailureThreshold       int           // 失败分区数阈值
 	OpenTimeout                 time.Duration // 熔断开启后等待恢复的时间
+	MaxHalfOpenRequests         int32         // Half-Open状态下最大探测请求数
+	FailureTimeWindow           time.Duration // 失败统计时间窗口
 }
 
 // CircuitBreakerState 熔断器状态
@@ -19,6 +22,22 @@ const (
 	CBStateHalfOpen = "halfopen" // 半开
 )
 
+// PartitionFailure 分区失败记录
+type PartitionFailure struct {
+	Error     error
+	Timestamp time.Time
+}
+
+// CircuitBreakerStats 熔断器统计信息
+type CircuitBreakerStats struct {
+	State               string    `json:"state"`
+	ConsecutiveFailures int       `json:"consecutive_failures"`
+	TotalFailures       int       `json:"total_failures"`
+	FailedPartitions    int       `json:"failed_partitions"`
+	HalfOpenRequests    int32     `json:"half_open_requests"`
+	LastStateChange     time.Time `json:"last_state_change"`
+}
+
 // CircuitBreaker 熔断器结构体
 // 仅实现核心功能，暂不集成到Runner
 // 支持并发安全
@@ -26,18 +45,27 @@ type CircuitBreaker struct {
 	config              CircuitBreakerConfig
 	state               string
 	consecutiveFailures int
-	totalFailures       int
-	failedPartitions    map[int]error // 记录失败分区及错误
+	totalFailures       int                      // 当前失败分区数量
+	failedPartitions    map[int]PartitionFailure // 记录失败分区及错误和时间
 	lastStateChange     time.Time
+	halfOpenRequests    int32 // 正在进行的探测请求数
 	mu                  sync.Mutex
 }
 
 // NewCircuitBreaker 创建熔断器实例
 func NewCircuitBreaker(cfg CircuitBreakerConfig) *CircuitBreaker {
+	// 设置默认值
+	if cfg.MaxHalfOpenRequests <= 0 {
+		cfg.MaxHalfOpenRequests = 1
+	}
+	if cfg.FailureTimeWindow <= 0 {
+		cfg.FailureTimeWindow = 5 * time.Minute
+	}
+
 	return &CircuitBreaker{
 		config:           cfg,
 		state:            CBStateClosed,
-		failedPartitions: make(map[int]error),
+		failedPartitions: make(map[int]PartitionFailure),
 		lastStateChange:  time.Now(),
 	}
 }
@@ -47,29 +75,65 @@ func (cb *CircuitBreaker) RecordFailure(partitionID int, err error) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	cb.consecutiveFailures++
-	cb.totalFailures++
-	cb.failedPartitions[partitionID] = err
+	// 清理过期的失败记录
+	cb.cleanExpiredFailures()
 
-	if cb.state == CBStateClosed && cb.consecutiveFailures >= cb.config.ConsecutiveFailureThreshold {
-		cb.state = CBStateOpen
-		cb.lastStateChange = time.Now()
+	// 记录失败
+	wasNew := false
+	if _, exists := cb.failedPartitions[partitionID]; !exists {
+		cb.totalFailures++
+		wasNew = true
+	}
+	cb.failedPartitions[partitionID] = PartitionFailure{
+		Error:     err,
+		Timestamp: time.Now(),
 	}
 
-	if cb.totalFailures >= cb.config.TotalFailureThreshold {
+	// 只有新的失败才增加连续失败计数
+	if wasNew {
+		cb.consecutiveFailures++
+	}
+
+	// 如果在Half-Open状态下失败，直接转为Open
+	if cb.state == CBStateHalfOpen {
 		cb.state = CBStateOpen
 		cb.lastStateChange = time.Now()
+		atomic.StoreInt32(&cb.halfOpenRequests, 0)
+		return
+	}
+
+	// 检查是否需要触发熔断
+	if cb.state == CBStateClosed {
+		if cb.consecutiveFailures >= cb.config.ConsecutiveFailureThreshold ||
+			cb.totalFailures >= cb.config.TotalFailureThreshold {
+			cb.state = CBStateOpen
+			cb.lastStateChange = time.Now()
+		}
 	}
 }
 
 // RecordSuccess 记录成功处理，重置连续失败计数
-func (cb *CircuitBreaker) RecordSuccess() {
+func (cb *CircuitBreaker) RecordSuccess(partitionID int) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
+
+	// 清理该分区的失败记录
+	if _, exists := cb.failedPartitions[partitionID]; exists {
+		delete(cb.failedPartitions, partitionID)
+		cb.totalFailures--
+	}
+
+	// 重置连续失败计数
 	cb.consecutiveFailures = 0
+
+	// 如果在Half-Open状态下成功，转为Closed
 	if cb.state == CBStateHalfOpen {
+		atomic.AddInt32(&cb.halfOpenRequests, -1)
 		cb.state = CBStateClosed
 		cb.lastStateChange = time.Now()
+		// 成功恢复时，清理所有历史失败记录
+		cb.failedPartitions = make(map[int]PartitionFailure)
+		cb.totalFailures = 0
 	}
 }
 
@@ -78,6 +142,9 @@ func (cb *CircuitBreaker) AllowRequest() bool {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
+	// 清理过期的失败记录
+	cb.cleanExpiredFailures()
+
 	switch cb.state {
 	case CBStateClosed:
 		return true
@@ -85,13 +152,39 @@ func (cb *CircuitBreaker) AllowRequest() bool {
 		if time.Since(cb.lastStateChange) > cb.config.OpenTimeout {
 			cb.state = CBStateHalfOpen
 			cb.lastStateChange = time.Now()
+			atomic.StoreInt32(&cb.halfOpenRequests, 1)
 			return true
 		}
 		return false
 	case CBStateHalfOpen:
-		return true
+		if atomic.LoadInt32(&cb.halfOpenRequests) < cb.config.MaxHalfOpenRequests {
+			atomic.AddInt32(&cb.halfOpenRequests, 1)
+			return true
+		}
+		return false
 	default:
 		return true
+	}
+}
+
+// cleanExpiredFailures 清理过期的失败记录（需要在持有锁时调用）
+func (cb *CircuitBreaker) cleanExpiredFailures() {
+	if cb.config.FailureTimeWindow <= 0 {
+		return
+	}
+
+	now := time.Now()
+	expiredPartitions := make([]int, 0)
+
+	for partitionID, failure := range cb.failedPartitions {
+		if now.Sub(failure.Timestamp) > cb.config.FailureTimeWindow {
+			expiredPartitions = append(expiredPartitions, partitionID)
+		}
+	}
+
+	for _, partitionID := range expiredPartitions {
+		delete(cb.failedPartitions, partitionID)
+		cb.totalFailures--
 	}
 }
 
@@ -106,11 +199,33 @@ func (cb *CircuitBreaker) State() string {
 func (cb *CircuitBreaker) FailedPartitions() map[int]error {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
+
+	// 清理过期的失败记录
+	cb.cleanExpiredFailures()
+
 	result := make(map[int]error, len(cb.failedPartitions))
 	for k, v := range cb.failedPartitions {
-		result[k] = v
+		result[k] = v.Error
 	}
 	return result
+}
+
+// GetStats 获取熔断器统计信息
+func (cb *CircuitBreaker) GetStats() CircuitBreakerStats {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	// 清理过期的失败记录
+	cb.cleanExpiredFailures()
+
+	return CircuitBreakerStats{
+		State:               cb.state,
+		ConsecutiveFailures: cb.consecutiveFailures,
+		TotalFailures:       cb.totalFailures,
+		FailedPartitions:    len(cb.failedPartitions),
+		HalfOpenRequests:    atomic.LoadInt32(&cb.halfOpenRequests),
+		LastStateChange:     cb.lastStateChange,
+	}
 }
 
 // Reset 重置熔断器状态
@@ -120,6 +235,7 @@ func (cb *CircuitBreaker) Reset() {
 	cb.state = CBStateClosed
 	cb.consecutiveFailures = 0
 	cb.totalFailures = 0
-	cb.failedPartitions = make(map[int]error)
+	cb.failedPartitions = make(map[int]PartitionFailure)
 	cb.lastStateChange = time.Now()
+	atomic.StoreInt32(&cb.halfOpenRequests, 0)
 }
