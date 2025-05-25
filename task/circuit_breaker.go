@@ -185,6 +185,17 @@ func (cb *CircuitBreaker) cleanExpiredFailures() {
 	for _, partitionID := range expiredPartitions {
 		delete(cb.failedPartitions, partitionID)
 		cb.totalFailures--
+		if cb.consecutiveFailures > 0 {
+			cb.consecutiveFailures--
+		}
+	}
+
+	// 如果在清理后，熔断器处于Open状态，但连续失败数和总失败数都低于阈值，则重置为Closed状态
+	if cb.state == CBStateOpen &&
+		cb.consecutiveFailures < cb.config.ConsecutiveFailureThreshold &&
+		cb.totalFailures < cb.config.TotalFailureThreshold {
+		cb.state = CBStateClosed
+		cb.lastStateChange = time.Now()
 	}
 }
 
