@@ -250,20 +250,27 @@ func (m *Mgr) Lead(ctx context.Context) error {
 func (m *Mgr) Handle(ctx context.Context) error {
 	m.Logger.Infof("开始任务处理循环")
 
-	// 初始化任务执行器
-	m.taskRunner = task.NewRunner(task.RunnerConfig{
+	// 创建任务窗口配置
+	windowConfig := task.TaskWindowConfig{
 		Namespace:           m.Namespace,
 		WorkerID:            m.ID,
+		WindowSize:          m.TaskWindowSize,
 		PartitionLockExpiry: m.PartitionLockExpiry,
 		DataStore:           m.DataStore,
 		Processor:           m.TaskProcessor,
 		Logger:              m.Logger,
-		UseTaskWindow:       m.UseTaskWindow,
-		TaskWindowSize:      m.TaskWindowSize,
-	})
+		// TaskWindow会内部创建Runner并具备熔断器功能
+	}
 
-	// 启动任务执行器并等待完成
-	return m.taskRunner.Start(m.workCtx)
+	// 创建任务窗口
+	taskWindow := task.NewTaskWindow(windowConfig)
+
+	// 启动任务窗口处理
+	taskWindow.Start(m.workCtx)
+
+	// Handle不返回错误，除非上下文取消
+	<-m.workCtx.Done()
+	return m.workCtx.Err()
 }
 
 // SetWorkerPartitionMultiple 已被选项模式替代，保留用于向后兼容
