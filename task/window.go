@@ -20,6 +20,9 @@ type TaskWindowConfig struct {
 	DataStore data.DataStore
 	Processor Processor
 	Logger    utils.Logger
+
+	// 熔断器配置（可选）
+	CircuitBreaker *CircuitBreaker // 可以直接提供熔断器实例
 }
 
 // TaskWindow 处理任务窗口，用于异步获取和处理分区任务
@@ -34,6 +37,9 @@ type TaskWindow struct {
 	dataStore data.DataStore
 	processor Processor
 	logger    utils.Logger
+
+	// 熔断器
+	circuitBreaker *CircuitBreaker
 
 	// 内部状态
 	taskQueue chan model.PartitionInfo // 任务队列
@@ -61,6 +67,7 @@ func NewTaskWindow(config TaskWindowConfig) *TaskWindow {
 		dataStore:           config.DataStore,
 		processor:           config.Processor,
 		logger:              config.Logger,
+		circuitBreaker:      config.CircuitBreaker, // 传递熔断器
 	}
 
 	return &TaskWindow{
@@ -74,6 +81,9 @@ func NewTaskWindow(config TaskWindowConfig) *TaskWindow {
 		dataStore: config.DataStore,
 		processor: config.Processor,
 		logger:    config.Logger,
+
+		// 熔断器
+		circuitBreaker: config.CircuitBreaker,
 
 		// 内部状态
 		taskQueue: make(chan model.PartitionInfo, windowSize), // 队列缓冲区大小等于窗口大小

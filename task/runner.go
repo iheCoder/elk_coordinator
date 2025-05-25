@@ -28,6 +28,9 @@ type Runner struct {
 	useTaskWindow  bool
 	taskWindowSize int
 
+	// 熔断器
+	circuitBreaker *CircuitBreaker
+
 	// 内部状态
 	taskWindow *TaskWindow
 	workCtx    context.Context
@@ -49,6 +52,10 @@ type RunnerConfig struct {
 	// 窗口设置（可选）
 	UseTaskWindow  bool
 	TaskWindowSize int
+
+	// 熔断器配置（可选）
+	CircuitBreaker       *CircuitBreaker       // 可以直接提供熔断器实例
+	CircuitBreakerConfig *CircuitBreakerConfig // 或者提供熔断器配置，会自动创建熔断器实例
 }
 
 // NewRunner 创建新的任务执行器
@@ -68,6 +75,23 @@ func NewRunner(config RunnerConfig) *Runner {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// 初始化熔断器
+	if config.CircuitBreaker == nil {
+		// 优先使用用户提供的熔断器配置
+		if config.CircuitBreakerConfig != nil {
+			config.CircuitBreaker = NewCircuitBreaker(*config.CircuitBreakerConfig)
+		} else {
+			// 使用默认熔断器配置
+			config.CircuitBreaker = NewCircuitBreaker(CircuitBreakerConfig{
+				ConsecutiveFailureThreshold: 3,                // 默认3次连续失败触发熔断
+				TotalFailureThreshold:       5,                // 默认5个分区失败触发熔断
+				OpenTimeout:                 30 * time.Second, // 熔断开启30秒后尝试恢复
+				MaxHalfOpenRequests:         2,                // 半开状态下允许2个请求尝试
+				FailureTimeWindow:           5 * time.Minute,  // 失败统计时间窗口
+			})
+		}
+	}
+
 	return &Runner{
 		// 标识和配置
 		namespace:           config.Namespace,
@@ -82,6 +106,9 @@ func NewRunner(config RunnerConfig) *Runner {
 		// 窗口设置
 		useTaskWindow:  config.UseTaskWindow,
 		taskWindowSize: config.TaskWindowSize,
+
+		// 熔断器
+		circuitBreaker: config.CircuitBreaker,
 
 		// 内部状态
 		workCtx:    ctx,
@@ -130,6 +157,7 @@ func (r *Runner) handleWithTaskWindow(ctx context.Context) error {
 		Processor:           r.processor,
 		Logger:              r.logger,
 		PartitionLockExpiry: r.partitionLockExpiry,
+		CircuitBreaker:      r.circuitBreaker, // 传递熔断器配置
 	})
 
 	// 启动任务窗口处理
@@ -302,6 +330,17 @@ func (r *Runner) executeProcessorTask(ctx context.Context, task model.PartitionI
 	options["partition_id"] = task.PartitionID
 	options["worker_id"] = r.workerID
 
+	// 如果配置了熔断器，等待熔断器允许执行
+	if r.circuitBreaker != nil {
+		partitionID := task.PartitionID
+		// 等待熔断器允许执行或超时
+		if err := r.circuitBreaker.WaitUntilAllowed(execCtx); err != nil {
+			r.logger.Warnf("等待熔断器允许执行失败: %v", err)
+			return 0, err
+		}
+		r.logger.Debugf("熔断器允许分区 %d 处理", partitionID)
+	}
+
 	// 启动处理，并捕获上下文超时
 	processDone := make(chan struct {
 		count int64
@@ -337,6 +376,18 @@ func (r *Runner) executeProcessorTask(ctx context.Context, task model.PartitionI
 	case result := <-processDone:
 		processCount = result.count
 		processErr = result.err
+	}
+
+	// 根据处理结果更新熔断器状态
+	if r.circuitBreaker != nil {
+		partitionID := task.PartitionID
+		if processErr != nil {
+			r.logger.Warnf("分区 %d 处理失败，记录到熔断器: %v", partitionID, processErr)
+			r.circuitBreaker.RecordFailure(partitionID, processErr)
+		} else {
+			r.logger.Debugf("分区 %d 处理成功，更新熔断器状态", partitionID)
+			r.circuitBreaker.RecordSuccess(partitionID)
+		}
 	}
 
 	return processCount, processErr
