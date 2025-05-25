@@ -34,8 +34,8 @@ type TaskWindow struct {
 	partitionLockExpiry time.Duration
 
 	// 依赖组件
-	dataStore data.DataStore
-	processor Processor
+	dataStore data.DataStore // 保留DataStore用于可能的未来扩展或直接操作
+	processor Processor      // 保留Processor用于可能的未来扩展或直接操作
 	logger    utils.Logger
 
 	// 熔断器
@@ -59,16 +59,16 @@ func NewTaskWindow(config TaskWindowConfig) *TaskWindow {
 		config.Logger = utils.NewDefaultLogger()
 	}
 
-	// 创建一个Runner实例，但不启动它，只用于执行底层任务处理
-	runner := &Runner{
-		namespace:           config.Namespace,
-		workerID:            config.WorkerID,
-		partitionLockExpiry: config.PartitionLockExpiry,
-		dataStore:           config.DataStore,
-		processor:           config.Processor,
-		logger:              config.Logger,
-		circuitBreaker:      config.CircuitBreaker, // 传递熔断器
-	}
+	// 创建一个Runner实例
+	runner := NewRunner(RunnerConfig{
+		Namespace:           config.Namespace,
+		WorkerID:            config.WorkerID,
+		PartitionLockExpiry: config.PartitionLockExpiry,
+		DataStore:           config.DataStore,
+		Processor:           config.Processor,
+		Logger:              config.Logger,
+		CircuitBreaker:      config.CircuitBreaker, // 传递熔断器
+	})
 
 	return &TaskWindow{
 		// 标识和配置

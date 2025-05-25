@@ -274,8 +274,6 @@ func setupTestRunner(dataStore data.DataStore, processor Processor, logger *test
 		DataStore:           dataStore,
 		Processor:           processor,
 		Logger:              logger,
-		UseTaskWindow:       false,
-		TaskWindowSize:      3,
 	}
 	return NewRunner(config)
 }
@@ -294,8 +292,7 @@ func TestRunner_NewRunner(t *testing.T) {
 	assert.Equal(t, "test-namespace", runner.namespace)
 	assert.Equal(t, "test-worker", runner.workerID)
 	assert.Equal(t, 3*time.Minute, runner.partitionLockExpiry)
-	assert.False(t, runner.useTaskWindow)
-	assert.Equal(t, 3, runner.taskWindowSize)
+	assert.NotNil(t, runner.circuitBreaker, "应该初始化默认熔断器")
 }
 
 // TestRunner_AcquirePartitionTask_Success 测试成功获取可用分区任务的场景

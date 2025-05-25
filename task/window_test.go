@@ -179,7 +179,6 @@ func TestRunner_ConcurrentAccess(t *testing.T) {
 				DataStore:           mockDataStore,
 				Processor:           mockProcessor,
 				Logger:              mockLogger,
-				UseTaskWindow:       false,
 			}
 
 			runner := NewRunner(config)

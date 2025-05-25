@@ -24,17 +24,8 @@ type Runner struct {
 	processor Processor
 	logger    utils.Logger
 
-	// 窗口设置
-	useTaskWindow  bool
-	taskWindowSize int
-
 	// 熔断器
 	circuitBreaker *CircuitBreaker
-
-	// 内部状态
-	taskWindow *TaskWindow
-	workCtx    context.Context
-	cancelWork context.CancelFunc
 }
 
 // RunnerConfig 用于配置任务执行器
@@ -48,10 +39,6 @@ type RunnerConfig struct {
 	DataStore data.DataStore
 	Processor Processor
 	Logger    utils.Logger
-
-	// 窗口设置（可选）
-	UseTaskWindow  bool
-	TaskWindowSize int
 
 	// 熔断器配置（可选）
 	CircuitBreaker       *CircuitBreaker       // 可以直接提供熔断器实例
@@ -68,12 +55,6 @@ func NewRunner(config RunnerConfig) *Runner {
 	if config.PartitionLockExpiry <= 0 {
 		config.PartitionLockExpiry = 3 * time.Minute
 	}
-
-	if config.TaskWindowSize <= 0 {
-		config.TaskWindowSize = 3
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
 
 	// 初始化熔断器
 	if config.CircuitBreaker == nil {
@@ -103,67 +84,9 @@ func NewRunner(config RunnerConfig) *Runner {
 		processor: config.Processor,
 		logger:    config.Logger,
 
-		// 窗口设置
-		useTaskWindow:  config.UseTaskWindow,
-		taskWindowSize: config.TaskWindowSize,
-
 		// 熔断器
 		circuitBreaker: config.CircuitBreaker,
-
-		// 内部状态
-		workCtx:    ctx,
-		cancelWork: cancel,
 	}
-}
-
-// Start 启动任务处理循环
-func (r *Runner) Start(ctx context.Context) error {
-	r.logger.Infof("开始任务处理循环")
-
-	// 如果启用了任务窗口，使用异步并行处理模式
-	if r.useTaskWindow {
-		r.logger.Infof("使用任务窗口模式，窗口大小: %d", r.taskWindowSize)
-		return r.handleWithTaskWindow(ctx)
-	}
-
-	// 否则使用传统模式（单任务串行处理）
-	for {
-		select {
-		case <-ctx.Done():
-			r.logger.Infof("任务处理循环停止 (上下文取消)")
-			return ctx.Err()
-		case <-r.workCtx.Done():
-			r.logger.Infof("任务处理循环停止 (工作上下文取消)")
-			return nil
-		default:
-			r.executeTaskCycle(ctx)
-		}
-	}
-}
-
-// Stop 停止任务处理循环
-func (r *Runner) Stop() {
-	r.cancelWork()
-}
-
-// handleWithTaskWindow 使用任务窗口处理分区任务
-func (r *Runner) handleWithTaskWindow(ctx context.Context) error {
-	// 初始化任务窗口
-	r.taskWindow = NewTaskWindow(TaskWindowConfig{
-		Namespace:           r.namespace,
-		WorkerID:            r.workerID,
-		WindowSize:          r.taskWindowSize,
-		DataStore:           r.dataStore,
-		Processor:           r.processor,
-		Logger:              r.logger,
-		PartitionLockExpiry: r.partitionLockExpiry,
-		CircuitBreaker:      r.circuitBreaker, // 传递熔断器配置
-	})
-
-	// 启动任务窗口处理
-	r.taskWindow.Start(r.workCtx)
-
-	return nil
 }
 
 // acquirePartitionTask 获取一个可用的分区任务
@@ -434,49 +357,16 @@ func (r *Runner) savePartitions(ctx context.Context, partitions map[int]model.Pa
 	return r.dataStore.SetPartitions(ctx, partitionInfoKey, string(updatedData))
 }
 
-// executeTaskCycle 执行单个任务处理周期
-func (r *Runner) executeTaskCycle(ctx context.Context) {
-	// 获取分区任务
-	// 小心获取分区任务时的分布式竞争问题
-	task, err := r.acquirePartitionTask(ctx)
-
-	if err == nil {
-		// 处理分区任务
-		r.logger.Infof("获取到分区任务 %d, 范围 [%d, %d]",
-			task.PartitionID, task.MinID, task.MaxID)
-
-		if processErr := r.processPartitionTask(ctx, task); processErr != nil {
-			r.handleTaskError(ctx, task, processErr)
-		}
-
-		// 处理完成后休息一下，避免立即抢占下一个任务
-		time.Sleep(model.TaskCompletedDelay)
-	} else {
-		r.handleAcquisitionError(err)
-	}
-}
-
 // handleTaskError 处理任务执行错误
 func (r *Runner) handleTaskError(ctx context.Context, task model.PartitionInfo, processErr error) {
 	r.logger.Errorf("处理分区 %d 失败: %v", task.PartitionID, processErr)
 
 	// 更新分区状态为失败
-	task.Status = model.StatusFailed
-	if updateErr := r.updatePartitionStatus(ctx, task); updateErr != nil {
-		r.logger.Warnf("更新分区状态失败: %v", updateErr)
+	// 注意：这里不直接修改task.Status，而是通过updateTaskStatus来确保一致性
+	if updateErr := r.updateTaskStatus(ctx, task, model.StatusFailed); updateErr != nil {
+		r.logger.Warnf("更新分区 %d 状态为失败时再次失败: %v", task.PartitionID, updateErr)
 	}
-}
-
-// handleAcquisitionError 处理任务获取错误
-func (r *Runner) handleAcquisitionError(err error) {
-	if errors.Is(err, model.ErrNoAvailablePartition) {
-		// 没有可用分区，等待一段时间再检查
-		time.Sleep(model.NoTaskDelay)
-	} else {
-		// 其他错误
-		r.logger.Warnf("获取分区任务失败: %v", err)
-		time.Sleep(model.TaskRetryDelay)
-	}
+	// 锁的释放由 processPartitionTask 的 defer 语句处理，或者在错误路径中显式处理
 }
 
 // shouldReclaimPartition 判断一个分区是否应该被重新获取
