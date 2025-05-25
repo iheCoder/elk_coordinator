@@ -73,14 +73,14 @@ func TestRecordFailure_TransitionsToOpen_ConsecutiveThreshold(t *testing.T) {
 
 	cb.RecordFailure(1, errTest)
 	assertStats(t, cb, CBStateClosed, 1, 1, 1, 0)
-	if !cb.AllowRequest() {
-		t.Error("AllowRequest should return true in Closed state")
+	if !cb.AllowProcess() {
+		t.Error("AllowProcess should return true in Closed state")
 	}
 
 	cb.RecordFailure(2, errTest) // Meets ConsecutiveFailureThreshold
 	assertStats(t, cb, CBStateOpen, 2, 2, 2, 0)
-	if cb.AllowRequest() {
-		t.Error("AllowRequest should return false in Open state")
+	if cb.AllowProcess() {
+		t.Error("AllowProcess should return false in Open state")
 	}
 }
 
@@ -124,8 +124,8 @@ func TestRecordSuccess_ResetsCounters_And_PartitionFailures_InClosedState(t *tes
 }
 
 // TestAllowRequest_OpenToHalfOpen_AfterTimeout tests transition from Open to HalfOpen.
-// Scenario: Trip to Open, wait for OpenTimeout, call AllowRequest.
-// Expected Result: State becomes CBStateHalfOpen, AllowRequest returns true, halfOpenRequests is 1.
+// Scenario: Trip to Open, wait for OpenTimeout, call AllowProcess.
+// Expected Result: State becomes CBStateHalfOpen, AllowProcess returns true, halfOpenRequests is 1.
 func TestAllowRequest_OpenToHalfOpen_AfterTimeout(t *testing.T) {
 	openTimeout := 50 * time.Millisecond
 	cfg := CircuitBreakerConfig{ConsecutiveFailureThreshold: 1, OpenTimeout: openTimeout, MaxHalfOpenRequests: 1}
@@ -133,14 +133,14 @@ func TestAllowRequest_OpenToHalfOpen_AfterTimeout(t *testing.T) {
 
 	cb.RecordFailure(1, errTest) // Trip to Open
 	assertStats(t, cb, CBStateOpen, 1, 1, 1, 0)
-	if cb.AllowRequest() {
-		t.Error("AllowRequest should be false immediately after tripping to Open")
+	if cb.AllowProcess() {
+		t.Error("AllowProcess should be false immediately after tripping to Open")
 	}
 
 	time.Sleep(openTimeout + 10*time.Millisecond) // Wait for OpenTimeout to expire
 
-	if !cb.AllowRequest() { // This should transition to HalfOpen and allow the request
-		t.Error("AllowRequest should return true to transition to HalfOpen")
+	if !cb.AllowProcess() { // This should transition to HalfOpen and allow the request
+		t.Error("AllowProcess should return true to transition to HalfOpen")
 	}
 	assertStats(t, cb, CBStateHalfOpen, 1, 1, 1, 1)
 }
@@ -154,7 +154,7 @@ func TestHalfOpen_Success_TransitionsToClosed(t *testing.T) {
 
 	cb.RecordFailure(1, errTest)                      // Open
 	time.Sleep(cfg.OpenTimeout + 10*time.Millisecond) // Wait for timeout
-	cb.AllowRequest()                                 // HalfOpen, request allowed
+	cb.AllowProcess()                                 // HalfOpen, request allowed
 	assertStats(t, cb, CBStateHalfOpen, 1, 1, 1, 1)
 
 	cb.RecordSuccess(1)                           // Success in HalfOpen
@@ -170,7 +170,7 @@ func TestHalfOpen_Failure_TransitionsToOpen(t *testing.T) {
 
 	cb.RecordFailure(1, errTest)                      // Open
 	time.Sleep(cfg.OpenTimeout + 10*time.Millisecond) // Wait for timeout
-	cb.AllowRequest()                                 // HalfOpen, request allowed
+	cb.AllowProcess()                                 // HalfOpen, request allowed
 	assertStats(t, cb, CBStateHalfOpen, 1, 1, 1, 1)
 
 	cb.RecordFailure(2, errTest)                // Failure in HalfOpen (can be same or different partition)
@@ -189,8 +189,8 @@ func TestHalfOpen_RespectsMaxHalfOpenRequests(t *testing.T) {
 	time.Sleep(cfg.OpenTimeout + 10*time.Millisecond) // Wait for timeout
 
 	for i := int32(0); i < maxHalfOpen; i++ {
-		if !cb.AllowRequest() {
-			t.Errorf("AllowRequest should return true for half-open request #%d", i+1)
+		if !cb.AllowProcess() {
+			t.Errorf("AllowProcess should return true for half-open request #%d", i+1)
 		}
 		if atomic.LoadInt32(&cb.halfOpenRequests) != i+1 {
 			t.Errorf("Expected halfOpenRequests %d, got %d", i+1, atomic.LoadInt32(&cb.halfOpenRequests))
@@ -198,8 +198,8 @@ func TestHalfOpen_RespectsMaxHalfOpenRequests(t *testing.T) {
 		assertStats(t, cb, CBStateHalfOpen, 1, 1, 1, i+1)
 	}
 
-	if cb.AllowRequest() { // This one should be denied
-		t.Error("AllowRequest should return false when MaxHalfOpenRequests is reached")
+	if cb.AllowProcess() { // This one should be denied
+		t.Error("AllowProcess should return false when MaxHalfOpenRequests is reached")
 	}
 	assertStats(t, cb, CBStateHalfOpen, 1, 1, 1, maxHalfOpen)
 }
@@ -216,8 +216,8 @@ func TestReset_ResetsToClosedState(t *testing.T) {
 
 	cb.Reset()
 	assertStats(t, cb, CBStateClosed, 0, 0, 0, 0)
-	if !cb.AllowRequest() {
-		t.Error("AllowRequest should return true after Reset")
+	if !cb.AllowProcess() {
+		t.Error("AllowProcess should return true after Reset")
 	}
 }
 
@@ -287,7 +287,7 @@ func TestGetStats_ReturnsCorrectStats(t *testing.T) {
 	openTime := statsOpen.LastStateChange
 
 	time.Sleep(cfg.OpenTimeout + 10*time.Millisecond)
-	cb.AllowRequest() // HalfOpen
+	cb.AllowProcess() // HalfOpen
 	statsHalfOpen := cb.GetStats()
 	if statsHalfOpen.State != CBStateHalfOpen {
 		t.Errorf("Expected state HalfOpen, got %s", statsHalfOpen.State)
@@ -369,8 +369,8 @@ func TestRecordSuccess_InHalfOpen_ClearsAllFailuresOnTransitionToClosed(t *testi
 	assertStats(t, cb, CBStateOpen, 1, 2, 2, 0)
 
 	time.Sleep(cfg.OpenTimeout + 10*time.Millisecond) // Wait for timeout
-	if !cb.AllowRequest() {                           // Transition to HalfOpen
-		t.Fatal("AllowRequest should succeed for HalfOpen transition")
+	if !cb.AllowProcess() {                           // Transition to HalfOpen
+		t.Fatal("AllowProcess should succeed for HalfOpen transition")
 	}
 	assertStats(t, cb, CBStateHalfOpen, 1, 2, 2, 1)
 
@@ -399,7 +399,7 @@ func TestState_ReturnsCurrentState(t *testing.T) {
 	}
 
 	time.Sleep(cfg.OpenTimeout + 10*time.Millisecond)
-	cb.AllowRequest() // Transition to HalfOpen
+	cb.AllowProcess() // Transition to HalfOpen
 	if cb.State() != CBStateHalfOpen {
 		t.Errorf("Expected state %s, got %s", CBStateHalfOpen, cb.State())
 	}
@@ -421,10 +421,10 @@ func TestRecordSuccess_WhenAlreadyClosed(t *testing.T) {
 	assertStats(t, cb, CBStateClosed, 0, 0, 0, 0)
 }
 
-// TestAllowRequest_OpenState_StaysOpenBeforeTimeout tests that AllowRequest returns false
+// TestAllowRequest_OpenState_StaysOpenBeforeTimeout tests that AllowProcess returns false
 // and state remains Open if OpenTimeout has not passed.
-// Scenario: Breaker is Open. Call AllowRequest before OpenTimeout.
-// Expected Result: AllowRequest returns false, state remains Open.
+// Scenario: Breaker is Open. Call AllowProcess before OpenTimeout.
+// Expected Result: AllowProcess returns false, state remains Open.
 func TestAllowRequest_OpenState_StaysOpenBeforeTimeout(t *testing.T) {
 	openTimeout := 100 * time.Millisecond
 	cfg := CircuitBreakerConfig{ConsecutiveFailureThreshold: 1, OpenTimeout: openTimeout}
@@ -435,8 +435,8 @@ func TestAllowRequest_OpenState_StaysOpenBeforeTimeout(t *testing.T) {
 
 	time.Sleep(openTimeout / 2) // Wait for less than OpenTimeout
 
-	if cb.AllowRequest() {
-		t.Error("AllowRequest should return false in Open state before timeout")
+	if cb.AllowProcess() {
+		t.Error("AllowProcess should return false in Open state before timeout")
 	}
 	assertStats(t, cb, CBStateOpen, 1, 1, 1, 0) // State should remain Open
 }
@@ -451,7 +451,7 @@ func TestRecordFailure_InHalfOpen_WithDifferentPartition(t *testing.T) {
 
 	cb.RecordFailure(1, errTest) // Partition 1 fails, trips to Open
 	time.Sleep(cfg.OpenTimeout + 10*time.Millisecond)
-	cb.AllowRequest() // Allows request for partition 1 (hypothetically), transitions to HalfOpen
+	cb.AllowProcess() // Allows request for partition 1 (hypothetically), transitions to HalfOpen
 	assertStats(t, cb, CBStateHalfOpen, 1, 1, 1, 1)
 
 	cb.RecordFailure(2, errors.New("failure on partition 2")) // Failure on a different partition (2)

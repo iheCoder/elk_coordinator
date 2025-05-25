@@ -1,6 +1,7 @@
 package task
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -137,8 +138,8 @@ func (cb *CircuitBreaker) RecordSuccess(partitionID int) {
 	}
 }
 
-// AllowRequest 判断当前是否允许处理新任务
-func (cb *CircuitBreaker) AllowRequest() bool {
+// AllowProcess 判断当前是否允许处理新任务
+func (cb *CircuitBreaker) AllowProcess() bool {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
@@ -249,4 +250,43 @@ func (cb *CircuitBreaker) Reset() {
 	cb.failedPartitions = make(map[int]PartitionFailure)
 	cb.lastStateChange = time.Now()
 	atomic.StoreInt32(&cb.halfOpenRequests, 0)
+}
+
+// WaitUntilAllowed 等待直到熔断器允许执行，或者上下文取消
+// 如果熔断器已经允许执行，立即返回nil
+// 如果熔断器处于开启状态，阻塞等待直到变为半开或关闭状态
+// 如果上下文被取消，返回上下文的错误
+func (cb *CircuitBreaker) WaitUntilAllowed(ctx context.Context) error {
+	// 立即检查是否允许执行
+	if cb.AllowProcess() {
+		return nil
+	}
+
+	// 设置默认的等待间隔时间
+	retryInterval := 500 * time.Millisecond
+	if cb.config.OpenTimeout > 0 {
+		// 使用OpenTimeout的1/10作为重试间隔，最少100ms，最多1秒
+		calculatedInterval := cb.config.OpenTimeout / 10
+		if calculatedInterval < 100*time.Millisecond {
+			calculatedInterval = 100 * time.Millisecond
+		} else if calculatedInterval > time.Second {
+			calculatedInterval = time.Second
+		}
+		retryInterval = calculatedInterval
+	}
+
+	// 定期检查熔断器状态直到允许或上下文取消
+	ticker := time.NewTicker(retryInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if cb.AllowProcess() {
+				return nil
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
