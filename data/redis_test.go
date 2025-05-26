@@ -615,3 +615,65 @@ func TestRedisDataStore_IntegrationScenario(t *testing.T) {
 	assert.Equal(t, "completed", retrievedPartitions[1].Status)
 	assert.Equal(t, "running", retrievedPartitions[2].Status)
 }
+
+// TestHashPartitionOperations 测试Hash分区操作
+func TestHashPartitionOperations(t *testing.T) {
+	ds, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	key := "test:partitions"
+
+	// 测试 HSetPartition
+	err := ds.HSetPartition(ctx, key, "1", `{"id":1,"status":"pending"}`)
+	assert.NoError(t, err)
+
+	// 测试 HGetPartition
+	val, err := ds.HGetPartition(ctx, key, "1")
+	assert.NoError(t, err)
+	assert.Equal(t, `{"id":1,"status":"pending"}`, val)
+
+	// 测试 HSetPartitionsInTx
+	partitions := map[string]string{
+		"2": `{"id":2,"status":"running"}`,
+		"3": `{"id":3,"status":"completed"}`,
+	}
+	err = ds.HSetPartitionsInTx(ctx, key, partitions)
+	assert.NoError(t, err)
+
+	// 测试 HGetAllPartitions
+	allPartitions, err := ds.HGetAllPartitions(ctx, key)
+	assert.NoError(t, err)
+	assert.Equal(t, 3, len(allPartitions))
+	assert.Equal(t, `{"id":1,"status":"pending"}`, allPartitions["1"])
+	assert.Equal(t, `{"id":2,"status":"running"}`, allPartitions["2"])
+	assert.Equal(t, `{"id":3,"status":"completed"}`, allPartitions["3"])
+
+	// 测试 HDeletePartition
+	err = ds.HDeletePartition(ctx, key, "3")
+	assert.NoError(t, err)
+
+	// 验证删除结果
+	allPartitions, err = ds.HGetAllPartitions(ctx, key)
+	assert.NoError(t, err)
+	assert.Equal(t, 2, len(allPartitions))
+	assert.Equal(t, `{"id":1,"status":"pending"}`, allPartitions["1"])
+	assert.Equal(t, `{"id":2,"status":"running"}`, allPartitions["2"])
+
+	// 测试 HUpdatePartitionWithVersion
+	partitionWithVersion := `{"id":1,"status":"running","version":2}`
+	success, err := ds.HUpdatePartitionWithVersion(ctx, key, "1", partitionWithVersion, 2)
+	assert.NoError(t, err)
+	assert.True(t, success)
+
+	// 尝试使用旧版本更新（应该失败）
+	partitionWithOldVersion := `{"id":1,"status":"failed","version":1}`
+	success, err = ds.HUpdatePartitionWithVersion(ctx, key, "1", partitionWithOldVersion, 1)
+	assert.NoError(t, err)
+	assert.False(t, success)
+
+	// 验证版本控制有效
+	val, err = ds.HGetPartition(ctx, key, "1")
+	assert.NoError(t, err)
+	assert.Equal(t, partitionWithVersion, val) // 应该仍然是版本2的数据
+}

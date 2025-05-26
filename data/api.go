@@ -28,6 +28,14 @@ type DataStore interface {
 	SetPartitions(ctx context.Context, key string, value string) error
 	GetPartitions(ctx context.Context, key string) (string, error)
 
+	// Hash-based partition operations (新增，更高效的分区存储)
+	HSetPartition(ctx context.Context, key string, field string, value string) error
+	HGetPartition(ctx context.Context, key string, field string) (string, error)
+	HGetAllPartitions(ctx context.Context, key string) (map[string]string, error)
+	HUpdatePartitionWithVersion(ctx context.Context, key string, field string, value string, version int64) (bool, error)
+	HSetPartitionsInTx(ctx context.Context, key string, partitions map[string]string) error
+	HDeletePartition(ctx context.Context, key string, field string) error
+
 	// Status operations
 	SetSyncStatus(ctx context.Context, key string, value string) error
 	GetSyncStatus(ctx context.Context, key string) (string, error)

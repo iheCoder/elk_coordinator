@@ -355,3 +355,111 @@ func (d *RedisDataStore) GetQueueLength(ctx context.Context, queueKey string) (i
 func (d *RedisDataStore) SetKey(ctx context.Context, key string, value string, expiry time.Duration) error {
 	return d.rds.Set(ctx, d.prefixKey(key), value, expiry).Err()
 }
+
+// HSetPartition 在Redis Hash中设置特定分区字段
+func (d *RedisDataStore) HSetPartition(ctx context.Context, key string, field string, value string) error {
+	return d.rds.HSet(ctx, d.prefixKey(key), field, value).Err()
+}
+
+// HGetPartition 从Redis Hash中获取特定分区字段
+func (d *RedisDataStore) HGetPartition(ctx context.Context, key string, field string) (string, error) {
+	return d.rds.HGet(ctx, d.prefixKey(key), field).Result()
+}
+
+// HGetAllPartitions 从Redis Hash中获取所有分区字段
+func (d *RedisDataStore) HGetAllPartitions(ctx context.Context, key string) (map[string]string, error) {
+	return d.rds.HGetAll(ctx, d.prefixKey(key)).Result()
+}
+
+// HUpdatePartitionWithVersion 使用版本号实现乐观锁更新分区
+// 返回布尔值表示是否更新成功（如果版本不匹配，则更新失败）
+func (d *RedisDataStore) HUpdatePartitionWithVersion(ctx context.Context, key string, field string, value string, version int64) (bool, error) {
+	// Redis Lua脚本，实现版本检查和条件更新
+	script := `
+		local currentData = redis.call('HGET', KEYS[1], KEYS[2])
+		if not currentData then
+			-- 字段不存在，直接设置
+			redis.call('HSET', KEYS[1], KEYS[2], ARGV[1])
+			return 1
+		end
+		
+		local currentVersion = tonumber(cjson.decode(currentData)['version'] or 0)
+		local newVersion = tonumber(ARGV[2])
+		
+		if newVersion > currentVersion then
+			-- 版本更新，允许写入
+			redis.call('HSET', KEYS[1], KEYS[2], ARGV[1])
+			return 1
+		else
+			-- 版本冲突，拒绝写入
+			return 0
+		end
+	`
+
+	result, err := d.rds.Eval(ctx, script, []string{d.prefixKey(key), field}, value, version).Result()
+	if err != nil {
+		return false, err
+	}
+
+	return result.(int64) == 1, nil
+}
+
+// HSetPartitionsInTx 使用事务批量设置多个分区，保证原子性
+func (d *RedisDataStore) HSetPartitionsInTx(ctx context.Context, key string, partitions map[string]string) error {
+	prefixedKey := d.prefixKey(key)
+
+	// 最大重试次数
+	maxRetries := d.opts.MaxRetries
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// 使用WATCH监视key变化
+		txf := func(tx *redis.Tx) error {
+			pipe := tx.TxPipeline()
+
+			// 批量设置Hash字段
+			for field, value := range partitions {
+				pipe.HSet(ctx, prefixedKey, field, value)
+			}
+
+			// 设置过期时间
+			pipe.Expire(ctx, prefixedKey, d.opts.DefaultExpiry)
+
+			// 执行事务
+			_, err := pipe.Exec(ctx)
+			return err
+		}
+
+		// 执行带WATCH的事务
+		err := d.rds.Watch(ctx, txf, prefixedKey)
+
+		if err == nil {
+			// 事务成功
+			return nil
+		}
+
+		if err != redis.TxFailedErr {
+			// 如果错误不是事务冲突错误，直接返回
+			return err
+		}
+
+		// 事务冲突，使用指数退避策略
+		backoff := d.opts.RetryDelay << uint(attempt)
+		if backoff > d.opts.MaxRetryDelay {
+			backoff = d.opts.MaxRetryDelay
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+			// 等待后继续重试
+		}
+	}
+
+	return errors.New("达到最大重试次数，仍未能成功更新分区")
+}
+
+// HDeletePartition 删除Redis Hash中的特定分区字段
+func (d *RedisDataStore) HDeletePartition(ctx context.Context, key string, field string) error {
+	return d.rds.HDel(ctx, d.prefixKey(key), field).Err()
+}
