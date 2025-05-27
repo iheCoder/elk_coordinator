@@ -12,15 +12,6 @@ const (
 	TaskCompletedDelay = 500 * time.Millisecond // 任务完成后的延迟，避免立即抢占下一个任务
 )
 
-// 分区状态常量
-const (
-	StatusPending   = "pending"
-	StatusClaimed   = "claimed"
-	StatusRunning   = "running"
-	StatusCompleted = "completed"
-	StatusFailed    = "failed"
-)
-
 // 默认系统配置常量
 const (
 	// 时间相关默认设置
@@ -49,21 +40,11 @@ const (
 
 // 系统错误定义
 var (
-	ErrNoAvailablePartition = errors.New("no available partition to claim")
-	ErrMaxRetriesExceeded   = errors.New("maximum retry attempts exceeded")
+	ErrNoAvailablePartition   = errors.New("no available partition to claim")
+	ErrMaxRetriesExceeded     = errors.New("maximum retry attempts exceeded")
+	ErrOptimisticLockFailed   = errors.New("optimistic lock failed: version mismatch")
+	ErrPartitionAlreadyExists = errors.New("partition already exists")
 )
-
-// PartitionInfo stores partition information
-type PartitionInfo struct {
-	PartitionID   int                    `json:"partition_id"`
-	MinID         int64                  `json:"min_id"`
-	MaxID         int64                  `json:"max_id"`
-	WorkerID      string                 `json:"worker_id"`
-	LastHeartbeat time.Time              `json:"last_heartbeat"`
-	Status        string                 `json:"status"` // pending, running, completed, failed
-	UpdatedAt     time.Time              `json:"updated_at"`
-	Options       map[string]interface{} `json:"options,omitempty"` // Optional parameters for the partition
-}
 
 // SyncStatus stores global synchronization status
 type SyncStatus struct {
