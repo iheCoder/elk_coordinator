@@ -363,7 +363,14 @@ func (d *RedisDataStore) HSetPartition(ctx context.Context, key string, field st
 
 // HGetPartition 从Redis Hash中获取特定分区字段
 func (d *RedisDataStore) HGetPartition(ctx context.Context, key string, field string) (string, error) {
-	return d.rds.HGet(ctx, d.prefixKey(key), field).Result()
+	val, err := d.rds.HGet(ctx, d.prefixKey(key), field).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return "", ErrNotFound // 将 redis.Nil 映射到 data.ErrNotFound
+		}
+		return "", err
+	}
+	return val, nil
 }
 
 // HGetAllPartitions 从Redis Hash中获取所有分区字段
@@ -372,36 +379,73 @@ func (d *RedisDataStore) HGetAllPartitions(ctx context.Context, key string) (map
 }
 
 // HUpdatePartitionWithVersion 使用版本号实现乐观锁更新分区
-// 返回布尔值表示是否更新成功（如果版本不匹配，则更新失败）
-func (d *RedisDataStore) HUpdatePartitionWithVersion(ctx context.Context, key string, field string, value string, version int64) (bool, error) {
+// value 参数现在是 *model.PartitionInfo 类型
+// expectedVersion 是期望的当前存储中的版本号，如果为0，则表示期望字段不存在（用于创建）
+func (d *RedisDataStore) HUpdatePartitionWithVersion(ctx context.Context, key string, field string, partitionInfoJSON string, expectedVersion int64) (bool, error) {
 	// Redis Lua脚本，实现版本检查和条件更新
+	// ARGV[1] is the new partition data (JSON string)
+	// ARGV[2] is the expected current version in the store for an update, or 0 for creation.
 	script := `
 		local currentData = redis.call('HGET', KEYS[1], KEYS[2])
+		local newPartitionData = ARGV[1]
+		local expectedCurrentVersion = tonumber(ARGV[2])
+
 		if not currentData then
-			-- 字段不存在，直接设置
-			redis.call('HSET', KEYS[1], KEYS[2], ARGV[1])
-			return 1
-		end
-		
-		local currentVersion = tonumber(cjson.decode(currentData)['version'] or 0)
-		local newVersion = tonumber(ARGV[2])
-		
-		if newVersion > currentVersion then
-			-- 版本更新，允许写入
-			redis.call('HSET', KEYS[1], KEYS[2], ARGV[1])
-			return 1
+			-- Field does not exist. 
+			-- If expectedCurrentVersion is 0, this is a create operation.
+			if expectedCurrentVersion == 0 then
+				redis.call('HSET', KEYS[1], KEYS[2], newPartitionData)
+				return 1 -- Success (created)
+			else
+				-- Field does not exist, but we expected a version > 0 (i.e., an update on existing).
+				return 0 -- Failure (optimistic lock failed - record gone)
+			end
 		else
-			-- 版本冲突，拒绝写入
-			return 0
+			-- Field exists. This is an update operation.
+			local decodedData = cjson.decode(currentData)
+			local actualCurrentVersion = tonumber(decodedData['version'] or 0)
+
+			if actualCurrentVersion == expectedCurrentVersion then
+				-- Versions match, proceed with update.
+				redis.call('HSET', KEYS[1], KEYS[2], newPartitionData)
+				return 1 -- Success (updated)
+			else
+				-- Version conflict.
+				return 0 -- Failure (optimistic lock failed - version mismatch)
+			end
 		end
 	`
 
-	result, err := d.rds.Eval(ctx, script, []string{d.prefixKey(key), field}, value, version).Result()
+	result, err := d.rds.Eval(ctx, script, []string{d.prefixKey(key), field}, partitionInfoJSON, expectedVersion).Result()
 	if err != nil {
-		return false, err
+		// Check for specific Redis errors if necessary, e.g., script execution error
+		// For now, wrap the error for clarity.
+		return false, errors.Wrapf(err, "failed to execute HUpdatePartitionWithVersion script for key %s, field %s", key, field)
 	}
 
-	return result.(int64) == 1, nil
+	// Check the result from the Lua script
+	if result == nil {
+		return false, errors.New("HUpdatePartitionWithVersion script returned nil result")
+	}
+
+	// The script returns 1 for success, 0 for optimistic lock failure.
+	// Other return values or types would indicate an issue with the script itself.
+	responseCode, ok := result.(int64)
+	if !ok {
+		return false, errors.Errorf("HUpdatePartitionWithVersion script returned unexpected type: %T, value: %v", result, result)
+	}
+
+	if responseCode == 1 {
+		return true, nil // Success
+	}
+
+	// responseCode == 0, means optimistic lock failure (either version mismatch or record gone when expected)
+	// Distinguish between creation failure (already exists) and update failure (version mismatch or gone)
+	if expectedVersion == 0 { // Attempted to create
+		return false, ErrPartitionAlreadyExists // Or a more generic creation conflict error
+	} else { // Attempted to update
+		return false, ErrOptimisticLockFailed
+	}
 }
 
 // HSetPartitionsInTx 使用事务批量设置多个分区，保证原子性
