@@ -101,9 +101,13 @@ func (r *Runner) acquirePartitionTask(ctx context.Context) (model.PartitionInfo,
 		return model.PartitionInfo{}, model.ErrNoAvailablePartition
 	}
 
-	// 寻找可用的分区
+	// 按优先级顺序获取分区:
+	// 1. 先尝试获取Pending状态的分区
+	// 2. 然后尝试获取可重新获取的Claimed状态的分区
+	// 3. 最后才尝试获取可重新获取的Running状态的分区
+
+	// 1. 先查找并处理Pending状态的分区
 	for partitionID, partition := range partitions {
-		// 优先处理Pending状态的分区
 		if partition.Status == model.StatusPending && partition.WorkerID == "" {
 			// 尝试锁定这个分区
 			lockKey := fmt.Sprintf(model.PartitionLockFmtFmt, r.namespace, partitionID)
@@ -124,21 +128,51 @@ func (r *Runner) acquirePartitionTask(ctx context.Context) (model.PartitionInfo,
 			}
 
 			return partition, nil
-		} else if r.shouldReclaimPartition(partition) {
-			// 检查是否有长时间未更新的运行中分区（可能出现问题的分区）
-			// 注意：这里我们需要更加谨慎，只尝试获取明显过期的分区
+		}
+	}
+
+	// 2. 如果没有Pending状态的分区，查找可重新获取的Claimed状态分区
+	for partitionID, partition := range partitions {
+		if partition.Status == model.StatusClaimed && r.shouldReclaimPartition(partition) {
 			lockKey := fmt.Sprintf(model.PartitionLockFmtFmt, r.namespace, partitionID)
 			locked, err := r.acquirePartitionLock(ctx, lockKey, partitionID)
 			if err != nil || !locked {
 				continue
 			}
 
-			r.logger.Infof("重新获取可能卡住的分区 %d，上次更新时间: %v",
+			r.logger.Infof("重新获取超时的已认领分区 %d，上次更新时间: %v",
 				partitionID, partition.UpdatedAt)
 
 			// 重新获取该分区
 			partition.WorkerID = r.workerID
 			partition.Status = model.StatusClaimed
+			partition.UpdatedAt = time.Now()
+
+			if err := r.updatePartitionStatus(ctx, partition); err != nil {
+				// 如果更新失败，释放锁
+				r.dataStore.ReleaseLock(ctx, lockKey, r.workerID)
+				return model.PartitionInfo{}, errors.Wrap(err, "更新分区状态失败")
+			}
+
+			return partition, nil
+		}
+	}
+
+	// 3. 最后才尝试获取可重新获取的Running状态分区（这种情况最谨慎处理）
+	for partitionID, partition := range partitions {
+		if partition.Status == model.StatusRunning && r.shouldReclaimPartition(partition) {
+			lockKey := fmt.Sprintf(model.PartitionLockFmtFmt, r.namespace, partitionID)
+			locked, err := r.acquirePartitionLock(ctx, lockKey, partitionID)
+			if err != nil || !locked {
+				continue
+			}
+
+			r.logger.Warnf("重新获取可能卡住的运行分区 %d，上次更新时间: %v，这可能导致重复处理",
+				partitionID, partition.UpdatedAt)
+
+			// 重新获取该分区
+			partition.WorkerID = r.workerID
+			partition.Status = model.StatusClaimed // 重置为claimed状态，从头开始处理
 			partition.UpdatedAt = time.Now()
 
 			if err := r.updatePartitionStatus(ctx, partition); err != nil {
