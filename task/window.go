@@ -17,7 +17,10 @@ type TaskWindowConfig struct {
 	PartitionLockExpiry time.Duration
 
 	// 依赖组件
-	DataStore data.DataStore
+	DataStore interface {
+		data.LockOperations
+		data.HashPartitionOperations
+	}
 	Processor Processor
 	Logger    utils.Logger
 
@@ -34,8 +37,7 @@ type TaskWindow struct {
 	partitionLockExpiry time.Duration
 
 	// 依赖组件
-	dataStore data.DataStore // 保留DataStore用于可能的未来扩展或直接操作
-	processor Processor      // 保留Processor用于可能的未来扩展或直接操作
+	processor Processor // 保留Processor用于可能的未来扩展或直接操作
 	logger    utils.Logger
 
 	// 熔断器
@@ -78,7 +80,6 @@ func NewTaskWindow(config TaskWindowConfig) *TaskWindow {
 		partitionLockExpiry: config.PartitionLockExpiry,
 
 		// 依赖组件
-		dataStore: config.DataStore,
 		processor: config.Processor,
 		logger:    config.Logger,
 

@@ -18,7 +18,10 @@ type Runner struct {
 	partitionLockExpiry time.Duration
 
 	// 依赖组件
-	dataStore data.DataStore
+	dataStore interface {
+		data.LockOperations
+		data.HashPartitionOperations
+	}
 	processor Processor
 	logger    utils.Logger
 
@@ -34,7 +37,10 @@ type RunnerConfig struct {
 	PartitionLockExpiry time.Duration
 
 	// 依赖组件
-	DataStore data.DataStore
+	DataStore interface {
+		data.LockOperations
+		data.HashPartitionOperations
+	}
 	Processor Processor
 	Logger    utils.Logger
 
