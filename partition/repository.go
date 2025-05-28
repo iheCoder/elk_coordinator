@@ -21,13 +21,13 @@ const (
 
 // Repository 处理分区数据的访问和生命周期管理。
 type Repository struct {
-	store  data.DataStore // 数据存储接口，例如 RedisDataStore
-	logger utils.Logger   // 日志记录器
+	store  data.HashPartitionOperations // 分区存储接口，使用最小接口而不是完整DataStore
+	logger utils.Logger                 // 日志记录器
 }
 
 // NewRepository 创建一个新的分区仓库实例。
 // 现在需要一个 utils.Logger 实例。
-func NewRepository(store data.DataStore, logger utils.Logger) *Repository {
+func NewRepository(store data.HashPartitionOperations, logger utils.Logger) *Repository {
 	if logger == nil {
 		panic("logger cannot be nil") // 日志记录器不能为空
 	}
@@ -202,7 +202,6 @@ func (s *Repository) GetFilteredPartitions(ctx context.Context, filters GetParti
 
 // DeletePartition 从存储中删除一个分区。
 func (s *Repository) DeletePartition(ctx context.Context, partitionID int) error {
-	// 根据 DataStore 接口，已更正为使用 HDeletePartition
 	err := s.store.HDeletePartition(ctx, partitionHashKey, strconv.Itoa(partitionID))
 	if err != nil {
 		s.logger.Errorf("删除分区 %d 失败: %v", partitionID, err)

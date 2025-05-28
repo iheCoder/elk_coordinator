@@ -49,17 +49,17 @@ type SimplePartitionOperations interface {
 
 // HashPartitionOperations 定义基于哈希的分区操作接口
 type HashPartitionOperations interface {
-	// 设置哈希分区字段
+	// HSetPartition 设置哈希分区字段
 	HSetPartition(ctx context.Context, key string, field string, value string) error
-	// 获取哈希分区字段
+	// HGetPartition 获取哈希分区字段
 	HGetPartition(ctx context.Context, key string, field string) (string, error)
-	// 获取所有哈希分区字段
+	// HGetAllPartitions 获取所有哈希分区字段
 	HGetAllPartitions(ctx context.Context, key string) (map[string]string, error)
-	// 版本化更新哈希分区字段
+	// HUpdatePartitionWithVersion 版本化更新哈希分区字段
 	HUpdatePartitionWithVersion(ctx context.Context, key string, field string, value string, version int64) (bool, error)
-	// 事务中批量设置哈希分区
+	// HSetPartitionsInTx 事务中批量设置哈希分区
 	HSetPartitionsInTx(ctx context.Context, key string, partitions map[string]string) error
-	// 删除哈希分区字段
+	// HDeletePartition 删除哈希分区字段
 	HDeletePartition(ctx context.Context, key string, field string) error
 }
 
