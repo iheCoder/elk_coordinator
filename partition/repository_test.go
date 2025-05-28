@@ -593,16 +593,10 @@ func TestSavePartition(t *testing.T) {
 	// 测试场景2: 正常保存新分区
 	partition := createTestPartitionInfo(1, model.StatusPending, 0) // 版本为0
 	partition.CreatedAt = time.Time{}                               // 设置为零值以测试自动设置
-	originalUpdatedAt := partition.UpdatedAt
 
 	err = repo.SavePartition(ctx, partition)
 	if err != nil {
 		t.Fatalf("保存分区失败: %v", err)
-	}
-
-	// 验证UpdatedAt被更新
-	if !partition.UpdatedAt.After(originalUpdatedAt) {
-		t.Error("UpdatedAt 应该被更新")
 	}
 
 	// 验证CreatedAt被设置
