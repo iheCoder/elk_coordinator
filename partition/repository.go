@@ -272,7 +272,9 @@ func (s *Repository) SavePartition(ctx context.Context, partitionInfo *model.Par
 	if partitionInfo == nil {
 		return errors.New("SavePartition 的 partitionInfo 不能为空")
 	}
-	partitionInfo.UpdatedAt = time.Now()
+	if partitionInfo.UpdatedAt.IsZero() {
+		partitionInfo.UpdatedAt = time.Now()
+	}
 
 	if partitionInfo.CreatedAt.IsZero() {
 		partitionInfo.CreatedAt = partitionInfo.UpdatedAt
