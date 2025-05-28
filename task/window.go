@@ -19,7 +19,7 @@ type TaskWindowConfig struct {
 	// 依赖组件
 	DataStore interface {
 		data.LockOperations
-		data.HashPartitionOperations
+		data.SimplePartitionOperations
 	}
 	Processor Processor
 	Logger    utils.Logger

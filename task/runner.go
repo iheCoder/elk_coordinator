@@ -20,7 +20,7 @@ type Runner struct {
 	// 依赖组件
 	dataStore interface {
 		data.LockOperations
-		data.HashPartitionOperations
+		data.SimplePartitionOperations
 	}
 	processor Processor
 	logger    utils.Logger
@@ -39,7 +39,7 @@ type RunnerConfig struct {
 	// 依赖组件
 	DataStore interface {
 		data.LockOperations
-		data.HashPartitionOperations
+		data.SimplePartitionOperations
 	}
 	Processor Processor
 	Logger    utils.Logger
