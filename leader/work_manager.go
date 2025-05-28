@@ -17,9 +17,12 @@ type WorkManager struct {
 
 // WorkManagerConfig 工作管理器配置
 type WorkManagerConfig struct {
-	NodeID                  string
-	Namespace               string
-	DataStore               data.DataStore
+	NodeID    string
+	Namespace string
+	DataStore interface {
+		data.KeyOperations
+		data.HeartbeatOperations
+	}
 	Logger                  utils.Logger
 	WorkerPartitionMultiple int64         // 每个工作节点分配的分区倍数
 	ValidHeartbeatDuration  time.Duration // 有效心跳持续时间

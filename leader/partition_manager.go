@@ -19,7 +19,7 @@ type PartitionManager struct {
 // PartitionManagerConfig 分区管理器配置
 type PartitionManagerConfig struct {
 	Namespace string
-	DataStore data.DataStore
+	DataStore data.SimplePartitionOperations
 	Logger    utils.Logger
 	Planer    PartitionPlaner
 }

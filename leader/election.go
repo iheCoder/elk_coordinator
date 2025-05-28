@@ -19,7 +19,7 @@ type Election struct {
 type ElectionConfig struct {
 	NodeID           string
 	Namespace        string
-	DataStore        data.DataStore
+	DataStore        data.LockOperations // 使用LockOperations接口替代DataStore
 	Logger           utils.Logger
 	ElectionInterval time.Duration
 	LockExpiry       time.Duration

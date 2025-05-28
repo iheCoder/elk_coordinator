@@ -59,9 +59,14 @@ func NewLeaderManager(config LeaderConfig) *LeaderManager {
 
 // LeaderConfig 配置领导者管理器
 type LeaderConfig struct {
-	NodeID                  string
-	Namespace               string
-	DataStore               data.DataStore
+	NodeID    string
+	Namespace string
+	DataStore interface {
+		data.LockOperations
+		data.KeyOperations
+		data.HeartbeatOperations
+		data.SimplePartitionOperations
+	}
 	Logger                  utils.Logger
 	Planer                  PartitionPlaner
 	ElectionInterval        time.Duration
