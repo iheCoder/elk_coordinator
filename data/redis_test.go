@@ -3,9 +3,15 @@ package data
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
+	"math/rand"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -676,4 +682,632 @@ func TestHashPartitionOperations(t *testing.T) {
 	val, err = ds.HGetPartition(ctx, key, "1")
 	assert.NoError(t, err)
 	assert.Equal(t, partitionWithVersion, val) // 应该仍然是版本2的数据
+}
+
+// TestRedisDataStore_SetKey 测试SetKey方法
+func TestRedisDataStore_SetKey(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	key := "test_set_key"
+	value := "test_value"
+	expiry := 1 * time.Minute
+
+	// 设置键值
+	err := store.SetKey(ctx, key, value, expiry)
+	assert.NoError(t, err)
+
+	// 获取键值验证
+	val, err := store.GetKey(ctx, key)
+	assert.NoError(t, err)
+	assert.Equal(t, value, val)
+}
+
+// TestRedisDataStore_HUpdatePartitionWithVersionErrors 测试乐观锁更新的各种错误情况
+func TestRedisDataStore_HUpdatePartitionWithVersionErrors(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	key := "test:partition:errors"
+
+	// 测试场景1: 创建新分区
+	partitionNew := `{"id":1,"status":"new","version":1}`
+	success, err := store.HUpdatePartitionWithVersion(ctx, key, "1", partitionNew, 0) // 0表示预期字段不存在
+	assert.NoError(t, err)
+	assert.True(t, success)
+
+	// 测试场景2: 尝试创建一个已存在的分区（应该失败）
+	partitionDuplicate := `{"id":1,"status":"duplicate","version":1}`
+	success, err = store.HUpdatePartitionWithVersion(ctx, key, "1", partitionDuplicate, 0)
+	assert.Error(t, err)
+	assert.Equal(t, ErrPartitionAlreadyExists, err)
+	assert.False(t, success)
+
+	// 测试场景3: 尝试更新不存在的分区
+	success, err = store.HUpdatePartitionWithVersion(ctx, key, "nonexistent", `{"id":99,"status":"missing","version":1}`, 1)
+	assert.Error(t, err)
+	assert.Equal(t, ErrOptimisticLockFailed, err)
+	assert.False(t, success)
+
+	// 测试场景4: 正常更新，版本号递增
+	partitionUpdated := `{"id":1,"status":"updated","version":2}`
+	success, err = store.HUpdatePartitionWithVersion(ctx, key, "1", partitionUpdated, 1)
+	assert.NoError(t, err)
+	assert.True(t, success)
+
+	// 验证更新后的值
+	val, err := store.HGetPartition(ctx, key, "1")
+	assert.NoError(t, err)
+	assert.Equal(t, partitionUpdated, val)
+}
+
+// TestHashPartitionOperations_ConcurrentAccess 测试Hash分区操作的并发访问
+func TestHashPartitionOperations_ConcurrentAccess(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	key := "test:concurrent:partitions"
+	numWorkers := 5
+	numPartitions := 10
+
+	// 初始化分区
+	for i := 1; i <= numPartitions; i++ {
+		partition := fmt.Sprintf(`{"id":%d,"status":"pending","version":1,"worker_id":""}`, i)
+		err := store.HSetPartition(ctx, key, strconv.Itoa(i), partition)
+		assert.NoError(t, err)
+	}
+
+	// 并发读取测试
+	t.Run("ConcurrentReads", func(t *testing.T) {
+		var wg sync.WaitGroup
+		errChan := make(chan error, numWorkers)
+
+		for i := 0; i < numWorkers; i++ {
+			wg.Add(1)
+			go func(workerID int) {
+				defer wg.Done()
+				for j := 1; j <= numPartitions; j++ {
+					_, err := store.HGetPartition(ctx, key, strconv.Itoa(j))
+					if err != nil {
+						errChan <- fmt.Errorf("worker %d 读取分区 %d 失败: %v", workerID, j, err)
+						return
+					}
+				}
+			}(i)
+		}
+
+		wg.Wait()
+		close(errChan)
+
+		// 检查是否有错误
+		for err := range errChan {
+			t.Error(err)
+		}
+	})
+
+	// 并发获取所有分区测试
+	t.Run("ConcurrentGetAll", func(t *testing.T) {
+		var wg sync.WaitGroup
+		errors := make(chan error, numWorkers)
+
+		for i := 0; i < numWorkers; i++ {
+			wg.Add(1)
+			go func(workerID int) {
+				defer wg.Done()
+				allPartitions, err := store.HGetAllPartitions(ctx, key)
+				if err != nil {
+					errors <- fmt.Errorf("worker %d 获取所有分区失败: %v", workerID, err)
+					return
+				}
+				if len(allPartitions) != numPartitions {
+					errors <- fmt.Errorf("worker %d 期望 %d 个分区，实际获得 %d 个", workerID, numPartitions, len(allPartitions))
+				}
+			}(i)
+		}
+
+		wg.Wait()
+		close(errors)
+
+		for err := range errors {
+			t.Error(err)
+		}
+	})
+}
+
+// TestHashPartitionOperations_OptimisticLockingConflicts 测试乐观锁并发冲突
+func TestHashPartitionOperations_OptimisticLockingConflicts(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	key := "test:optimistic:partitions"
+	partitionID := "1"
+
+	// 初始化分区
+	initialPartition := `{"id":1,"status":"pending","version":1,"worker_id":""}`
+	err := store.HSetPartition(ctx, key, partitionID, initialPartition)
+	assert.NoError(t, err)
+
+	// 测试多个工作节点同时尝试更新同一分区
+	t.Run("ConcurrentOptimisticUpdates", func(t *testing.T) {
+		numWorkers := 5
+		var wg sync.WaitGroup
+		successCount := int32(0)
+		failureCount := int32(0)
+
+		for i := 0; i < numWorkers; i++ {
+			wg.Add(1)
+			go func(workerID int) {
+				defer wg.Done()
+
+				// 尝试更新分区状态
+				updatedPartition := fmt.Sprintf(`{"id":1,"status":"running","version":2,"worker_id":"worker_%d"}`, workerID)
+				success, err := store.HUpdatePartitionWithVersion(ctx, key, partitionID, updatedPartition, 1)
+
+				if err != nil {
+					// 如果是乐观锁失败，这是预期的
+					if errors.Is(err, ErrOptimisticLockFailed) {
+						atomic.AddInt32(&failureCount, 1)
+					} else {
+						t.Errorf("worker %d 遇到意外错误: %v", workerID, err)
+					}
+				} else if success {
+					atomic.AddInt32(&successCount, 1)
+				} else {
+					atomic.AddInt32(&failureCount, 1)
+				}
+			}(i)
+		}
+
+		wg.Wait()
+
+		// 只有一个工作节点应该成功
+		assert.Equal(t, int32(1), successCount, "应该只有一个工作节点成功更新")
+		assert.Equal(t, int32(numWorkers-1), failureCount, "其他工作节点应该失败")
+
+		// 验证最终状态
+		finalPartition, err := store.HGetPartition(ctx, key, partitionID)
+		assert.NoError(t, err)
+		assert.Contains(t, finalPartition, `"version":2`)
+		assert.Contains(t, finalPartition, `"status":"running"`)
+	})
+}
+
+// TestHashPartitionOperations_ConcurrentTransactions 测试并发事务操作
+func TestHashPartitionOperations_ConcurrentTransactions(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	key := "test:tx:partitions"
+	numWorkers := 3
+
+	// 测试并发批量设置分区
+	t.Run("ConcurrentBatchSet", func(t *testing.T) {
+		var wg sync.WaitGroup
+		errChan := make(chan error, numWorkers)
+
+		for i := 0; i < numWorkers; i++ {
+			wg.Add(1)
+			go func(workerID int) {
+				defer wg.Done()
+
+				// 每个工作节点设置不同的分区集合
+				partitions := make(map[string]string)
+				start := workerID * 10
+				for j := 0; j < 5; j++ {
+					partitionID := strconv.Itoa(start + j)
+					partition := fmt.Sprintf(`{"id":%d,"status":"pending","version":1,"worker_id":"worker_%d"}`, start+j, workerID)
+					partitions[partitionID] = partition
+				}
+
+				err := store.HSetPartitionsInTx(ctx, key, partitions)
+				if err != nil {
+					errChan <- fmt.Errorf("worker %d 批量设置失败: %v", workerID, err)
+				}
+			}(i)
+		}
+
+		wg.Wait()
+		close(errChan)
+
+		for err := range errChan {
+			t.Error(err)
+		}
+
+		// 验证所有分区都被正确设置
+		allPartitions, err := store.HGetAllPartitions(ctx, key)
+		assert.NoError(t, err)
+		expectedCount := numWorkers * 5
+		assert.Equal(t, expectedCount, len(allPartitions))
+	})
+}
+
+// TestHashPartitionOperations_PartitionContention 测试分区竞争场景
+func TestHashPartitionOperations_PartitionContention(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	key := "test:contention:partitions"
+	numWorkers := 10
+	numPartitions := 5
+
+	// 初始化分区
+	for i := 1; i <= numPartitions; i++ {
+		partition := fmt.Sprintf(`{"id":%d,"status":"pending","version":1,"worker_id":""}`, i)
+		err := store.HSetPartition(ctx, key, strconv.Itoa(i), partition)
+		assert.NoError(t, err)
+	}
+
+	// 模拟多个工作节点竞争获取分区
+	t.Run("WorkerPartitionContention", func(t *testing.T) {
+		var wg sync.WaitGroup
+		claimedPartitions := sync.Map{}
+
+		for i := 0; i < numWorkers; i++ {
+			wg.Add(1)
+			go func(workerID int) {
+				defer wg.Done()
+
+				// 每个工作节点尝试获取一个分区
+				for partitionID := 1; partitionID <= numPartitions; partitionID++ {
+					pid := strconv.Itoa(partitionID)
+
+					// 读取当前分区状态
+					currentPartition, err := store.HGetPartition(ctx, key, pid)
+					if err != nil {
+						continue
+					}
+
+					// 解析当前版本
+					var partitionData map[string]interface{}
+					if err := json.Unmarshal([]byte(currentPartition), &partitionData); err != nil {
+						continue
+					}
+
+					// 检查分区是否可用
+					status, _ := partitionData["status"].(string)
+					if status != "pending" {
+						continue
+					}
+
+					version, _ := partitionData["version"].(float64)
+					currentVersion := int64(version)
+
+					// 尝试声明分区
+					claimedPartition := fmt.Sprintf(`{"id":%d,"status":"claimed","version":%d,"worker_id":"worker_%d"}`,
+						partitionID, currentVersion+1, workerID)
+
+					success, err := store.HUpdatePartitionWithVersion(ctx, key, pid, claimedPartition, currentVersion)
+					if err == nil && success {
+						claimedPartitions.Store(fmt.Sprintf("worker_%d", workerID), partitionID)
+						break // 成功获取一个分区后退出
+					}
+				}
+			}(i)
+		}
+
+		wg.Wait()
+
+		// 统计成功获取分区的工作节点数量
+		claimedCount := 0
+		claimedPartitions.Range(func(key, value interface{}) bool {
+			claimedCount++
+			t.Logf("工作节点 %s 成功获取分区 %v", key, value)
+			return true
+		})
+
+		// 最多只能有 numPartitions 个工作节点成功获取分区
+		assert.LessOrEqual(t, claimedCount, numPartitions, "成功获取分区的工作节点数量不应超过分区总数")
+
+		// 验证没有分区被重复分配
+		partitionAssignments := make(map[int]string)
+		claimedPartitions.Range(func(workerKey, partitionValue interface{}) bool {
+			worker := workerKey.(string)
+			partition := partitionValue.(int)
+
+			if existingWorker, exists := partitionAssignments[partition]; exists {
+				t.Errorf("分区 %d 被重复分配给工作节点 %s 和 %s", partition, existingWorker, worker)
+			}
+			partitionAssignments[partition] = worker
+			return true
+		})
+	})
+}
+
+// TestHashPartitionOperations_VersionProgression 测试版本号递进的并发安全性
+func TestHashPartitionOperations_VersionProgression(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	key := "test:version:partitions"
+	partitionID := "1"
+	numUpdates := 20
+
+	// 初始化分区
+	initialPartition := `{"id":1,"status":"pending","version":1,"worker_id":"initial"}`
+	err := store.HSetPartition(ctx, key, partitionID, initialPartition)
+	assert.NoError(t, err)
+
+	// 串行更新测试版本递进
+	t.Run("SerialVersionProgression", func(t *testing.T) {
+		currentVersion := int64(1)
+
+		for i := 0; i < numUpdates; i++ {
+			updatedPartition := fmt.Sprintf(`{"id":1,"status":"updating","version":%d,"worker_id":"updater_%d"}`,
+				currentVersion+1, i)
+
+			success, err := store.HUpdatePartitionWithVersion(ctx, key, partitionID, updatedPartition, currentVersion)
+			assert.NoError(t, err)
+			assert.True(t, success, "更新 %d 应该成功", i)
+
+			currentVersion++
+		}
+
+		// 验证最终版本
+		finalPartition, err := store.HGetPartition(ctx, key, partitionID)
+		assert.NoError(t, err)
+		assert.Contains(t, finalPartition, fmt.Sprintf(`"version":%d`, currentVersion))
+	})
+
+	// 并发更新测试 - 模拟版本冲突处理
+	t.Run("ConcurrentVersionConflicts", func(t *testing.T) {
+		// 重置分区状态
+		resetPartition := `{"id":1,"status":"pending","version":1,"worker_id":""}`
+		err := store.HSetPartition(ctx, key, partitionID, resetPartition)
+		assert.NoError(t, err)
+
+		var wg sync.WaitGroup
+		numConcurrentWorkers := 10
+		successfulUpdates := int32(0)
+
+		for i := 0; i < numConcurrentWorkers; i++ {
+			wg.Add(1)
+			go func(workerID int) {
+				defer wg.Done()
+
+				maxRetries := 5
+				for retry := 0; retry < maxRetries; retry++ {
+					// 读取当前分区状态
+					currentPartition, err := store.HGetPartition(ctx, key, partitionID)
+					if err != nil {
+						continue
+					}
+
+					// 解析版本
+					var partitionData map[string]interface{}
+					if err := json.Unmarshal([]byte(currentPartition), &partitionData); err != nil {
+						continue
+					}
+
+					version, _ := partitionData["version"].(float64)
+					currentVersion := int64(version)
+
+					// 尝试更新
+					updatedPartition := fmt.Sprintf(`{"id":1,"status":"updated","version":%d,"worker_id":"worker_%d"}`,
+						currentVersion+1, workerID)
+
+					success, err := store.HUpdatePartitionWithVersion(ctx, key, partitionID, updatedPartition, currentVersion)
+					if err == nil && success {
+						atomic.AddInt32(&successfulUpdates, 1)
+						break
+					}
+
+					// 如果失败，短暂等待后重试
+					time.Sleep(time.Millisecond * time.Duration(retry+1))
+				}
+			}(i)
+		}
+
+		wg.Wait()
+
+		// 至少应该有一些成功的更新
+		assert.Greater(t, successfulUpdates, int32(0), "应该至少有一个成功的更新")
+		t.Logf("成功更新次数: %d / %d", successfulUpdates, numConcurrentWorkers)
+	})
+}
+
+// TestHashPartitionOperations_ConcurrentDeleteAndUpdate 测试并发删除和更新操作
+func TestHashPartitionOperations_ConcurrentDeleteAndUpdate(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	key := "test:delete:partitions"
+	numPartitions := 10
+
+	// 初始化分区
+	for i := 1; i <= numPartitions; i++ {
+		partition := fmt.Sprintf(`{"id":%d,"status":"pending","version":1,"worker_id":""}`, i)
+		err := store.HSetPartition(ctx, key, strconv.Itoa(i), partition)
+		assert.NoError(t, err)
+	}
+
+	t.Run("ConcurrentDeleteAndUpdate", func(t *testing.T) {
+		var wg sync.WaitGroup
+		errChan := make(chan error, numPartitions*2)
+
+		// 启动删除操作的协程
+		for i := 1; i <= numPartitions/2; i++ {
+			wg.Add(1)
+			go func(partitionID int) {
+				defer wg.Done()
+
+				// 随机延迟以增加并发冲突概率
+				time.Sleep(time.Millisecond * time.Duration(partitionID))
+
+				err := store.HDeletePartition(ctx, key, strconv.Itoa(partitionID))
+				if err != nil {
+					errChan <- fmt.Errorf("删除分区 %d 失败: %v", partitionID, err)
+				}
+			}(i)
+		}
+
+		// 启动更新操作的协程
+		for i := 1; i <= numPartitions; i++ {
+			wg.Add(1)
+			go func(partitionID int) {
+				defer wg.Done()
+
+				// 随机延迟
+				time.Sleep(time.Millisecond * time.Duration(partitionID))
+
+				updatedPartition := fmt.Sprintf(`{"id":%d,"status":"updated","version":2,"worker_id":"updater"}`, partitionID)
+				success, err := store.HUpdatePartitionWithVersion(ctx, key, strconv.Itoa(partitionID), updatedPartition, 1)
+
+				// 对于已删除的分区，更新应该失败
+				if partitionID <= numPartitions/2 {
+					// 这些分区可能已被删除，更新失败是正常的
+					if err != nil && !errors.Is(err, ErrOptimisticLockFailed) {
+						errChan <- fmt.Errorf("分区 %d 更新遇到意外错误: %v", partitionID, err)
+					}
+				} else {
+					// 这些分区不应该被删除，更新应该成功
+					if err != nil {
+						errChan <- fmt.Errorf("分区 %d 更新失败: %v", partitionID, err)
+					} else if !success {
+						errChan <- fmt.Errorf("分区 %d 更新未成功", partitionID)
+					}
+				}
+			}(i)
+		}
+
+		wg.Wait()
+		close(errChan)
+
+		for err := range errChan {
+			t.Error(err)
+		}
+
+		// 验证剩余分区的状态
+		remainingPartitions, err := store.HGetAllPartitions(ctx, key)
+		assert.NoError(t, err)
+
+		// 应该还有一些分区存在
+		assert.Greater(t, len(remainingPartitions), 0, "应该还有一些分区存在")
+		assert.LessOrEqual(t, len(remainingPartitions), numPartitions, "剩余分区数量不应超过总数")
+
+		t.Logf("剩余分区数量: %d / %d", len(remainingPartitions), numPartitions)
+	})
+}
+
+// TestHashPartitionOperations_HighConcurrencyStress 高并发压力测试
+func TestHashPartitionOperations_HighConcurrencyStress(t *testing.T) {
+	if testing.Short() {
+		t.Skip("跳过高并发压力测试（短模式）")
+	}
+
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	key := "test:stress:partitions"
+	numWorkers := 50
+	numOperationsPerWorker := 100
+	numPartitions := 20
+
+	// 初始化分区
+	for i := 1; i <= numPartitions; i++ {
+		partition := fmt.Sprintf(`{"id":%d,"status":"pending","version":1,"worker_id":""}`, i)
+		err := store.HSetPartition(ctx, key, strconv.Itoa(i), partition)
+		assert.NoError(t, err)
+	}
+
+	t.Run("HighConcurrencyMixedOperations", func(t *testing.T) {
+		var wg sync.WaitGroup
+		operationStats := struct {
+			reads   int64
+			writes  int64
+			deletes int64
+			errors  int64
+		}{}
+
+		for i := 0; i < numWorkers; i++ {
+			wg.Add(1)
+			go func(workerID int) {
+				defer wg.Done()
+
+				for j := 0; j < numOperationsPerWorker; j++ {
+					partitionID := rand.Intn(numPartitions) + 1
+					pid := strconv.Itoa(partitionID)
+
+					switch rand.Intn(4) {
+					case 0: // 读操作
+						_, err := store.HGetPartition(ctx, key, pid)
+						if err != nil && !errors.Is(err, ErrNotFound) {
+							atomic.AddInt64(&operationStats.errors, 1)
+						} else {
+							atomic.AddInt64(&operationStats.reads, 1)
+						}
+
+					case 1: // 写操作
+						partition := fmt.Sprintf(`{"id":%d,"status":"stress_test","version":1,"worker_id":"worker_%d"}`, partitionID, workerID)
+						err := store.HSetPartition(ctx, key, pid, partition)
+						if err != nil {
+							atomic.AddInt64(&operationStats.errors, 1)
+						} else {
+							atomic.AddInt64(&operationStats.writes, 1)
+						}
+
+					case 2: // 版本化更新操作
+						currentPartition, err := store.HGetPartition(ctx, key, pid)
+						if err != nil {
+							continue
+						}
+
+						var partitionData map[string]interface{}
+						if err := json.Unmarshal([]byte(currentPartition), &partitionData); err != nil {
+							continue
+						}
+
+						version, _ := partitionData["version"].(float64)
+						currentVersion := int64(version)
+
+						updatedPartition := fmt.Sprintf(`{"id":%d,"status":"updated","version":%d,"worker_id":"worker_%d"}`,
+							partitionID, currentVersion+1, workerID)
+
+						success, err := store.HUpdatePartitionWithVersion(ctx, key, pid, updatedPartition, currentVersion)
+						if err != nil || !success {
+							atomic.AddInt64(&operationStats.errors, 1)
+						} else {
+							atomic.AddInt64(&operationStats.writes, 1)
+						}
+
+					case 3: // 获取所有分区
+						_, err := store.HGetAllPartitions(ctx, key)
+						if err != nil {
+							atomic.AddInt64(&operationStats.errors, 1)
+						} else {
+							atomic.AddInt64(&operationStats.reads, 1)
+						}
+					}
+
+					// 短暂随机延迟
+					if rand.Intn(10) == 0 {
+						time.Sleep(time.Microsecond * time.Duration(rand.Intn(100)))
+					}
+				}
+			}(i)
+		}
+
+		wg.Wait()
+
+		t.Logf("操作统计 - 读取: %d, 写入: %d, 删除: %d, 错误: %d",
+			operationStats.reads, operationStats.writes, operationStats.deletes, operationStats.errors)
+
+		// 验证最终状态
+		finalPartitions, err := store.HGetAllPartitions(ctx, key)
+		assert.NoError(t, err)
+		assert.Greater(t, len(finalPartitions), 0, "应该还有分区存在")
+
+		// 错误率不应该太高
+		totalOperations := operationStats.reads + operationStats.writes + operationStats.deletes + operationStats.errors
+		errorRate := float64(operationStats.errors) / float64(totalOperations)
+		assert.Less(t, errorRate, 0.1, "错误率不应超过10%%")
+	})
 }
