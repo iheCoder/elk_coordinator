@@ -1373,8 +1373,8 @@ func TestRepository_FilterEdgeCases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("极长时长过时过滤器失败: %v", err)
 	}
-	if len(filtered) != 3 { // 所有分区都应该被认为过时
-		t.Errorf("期望3个分区，得到 %d 个", len(filtered))
+	if len(filtered) != 0 { // 没有分区超过1000小时没有更新，所以没有过时分区
+		t.Errorf("期望0个分区，得到 %d 个", len(filtered))
 	}
 
 	// 测试场景6: 空WorkerID排除

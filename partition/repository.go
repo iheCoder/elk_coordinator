@@ -130,6 +130,7 @@ type GetPartitionsFilters struct {
 	TargetStatuses []model.PartitionStatus
 
 	// StaleDuration 指定分区被视为“过时”的最小持续时间（自 UpdatedAt 以来）。
+	// 如果分区的 UpdatedAt 时间戳与当前时间的差值超过此持续时间，则被视为过时，应该被返回。
 	// 如果为 nil 或非正数（例如 time.Duration(0)），则此过时过滤器无效。
 	StaleDuration *time.Duration
 
@@ -160,6 +161,7 @@ func (s *Repository) GetFilteredPartitions(ctx context.Context, filters GetParti
 	}
 
 	staleFilterActive := filters.StaleDuration != nil && *filters.StaleDuration > 0
+	staleFilterSet := filters.StaleDuration != nil
 
 	for _, p := range allPartitions {
 		passStatusFilter := !statusFilterActive // 如果状态过滤器未激活，则默认通过
@@ -173,13 +175,21 @@ func (s *Repository) GetFilteredPartitions(ctx context.Context, filters GetParti
 			continue // 未通过状态过滤
 		}
 
-		passStaleFilter := !staleFilterActive // 如果过时过滤器未激活，则默认通过
-		if staleFilterActive {
-			isPotentiallyStaleByTime := now.Sub(p.UpdatedAt) > *filters.StaleDuration
-			isExcludedWorker := filters.ExcludeWorkerIDOnStale != "" && p.WorkerID == filters.ExcludeWorkerIDOnStale
+		passStaleFilter := !staleFilterSet // 如果过时过滤器未设置，则默认通过
+		if staleFilterSet {
+			if !staleFilterActive {
+				// 设置了过时过滤器但时长无效（<=0），返回空结果
+				passStaleFilter = false
+			} else {
+				// 过时过滤器激活且有效
+				isPotentiallyStaleByTime := now.Sub(p.UpdatedAt) > *filters.StaleDuration
+				isExcludedWorker := filters.ExcludeWorkerIDOnStale != "" && p.WorkerID == filters.ExcludeWorkerIDOnStale
 
-			if isPotentiallyStaleByTime && !isExcludedWorker {
-				passStaleFilter = true
+				if isPotentiallyStaleByTime && !isExcludedWorker {
+					passStaleFilter = true
+				} else {
+					passStaleFilter = false
+				}
 			}
 		}
 
