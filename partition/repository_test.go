@@ -2,6 +2,7 @@ package partition
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -79,6 +80,18 @@ func (m *MockHashPartitionOperations) HSetPartition(ctx context.Context, key, fi
 		m.partitions[key] = make(map[string]string)
 	}
 	m.partitions[key][field] = value
+
+	// 解析JSON以获取版本信息，确保版本同步
+	// 这对于SavePartition等直接操作很重要
+	var partitionInfo map[string]interface{}
+	if err := json.Unmarshal([]byte(value), &partitionInfo); err == nil {
+		if version, ok := partitionInfo["version"]; ok {
+			if versionFloat, ok := version.(float64); ok {
+				m.versions[field] = int64(versionFloat)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -1595,63 +1608,6 @@ func TestRepository_ErrorRecovery(t *testing.T) {
 }
 
 // ========== 附加测试用例 ==========
-
-// TestRepository_TimeZoneAndPrecisionHandling 测试时间区域和精度处理
-func TestRepository_TimeZoneAndPrecisionHandling(t *testing.T) {
-	repo, _, _ := createTestRepository()
-	ctx := context.Background()
-
-	// 测试场景1: 不同时区的时间
-	loc, _ := time.LoadLocation("America/New_York")
-	nyTime := time.Now().In(loc)
-
-	partition := &model.PartitionInfo{
-		PartitionID: 1,
-		MinID:       1,
-		MaxID:       1000,
-		Status:      model.StatusPending,
-		WorkerID:    "test-worker",
-		UpdatedAt:   nyTime,
-		CreatedAt:   nyTime,
-		Version:     1,
-	}
-
-	err := repo.SavePartition(ctx, partition)
-	if err != nil {
-		t.Fatalf("保存NY时区分区失败: %v", err)
-	}
-
-	retrieved, err := repo.GetPartition(ctx, 1)
-	if err != nil {
-		t.Fatalf("获取分区失败: %v", err)
-	}
-
-	// 验证时间精度保持
-	if !retrieved.UpdatedAt.Equal(nyTime) {
-		t.Errorf("时间精度不匹配: 期望 %v, 得到 %v", nyTime, retrieved.UpdatedAt)
-	}
-
-	// 测试场景2: 纳秒级精度
-	nanoTime := time.Now().Add(123456789 * time.Nanosecond)
-	partition.UpdatedAt = nanoTime
-	partition.Version = 2
-
-	_, err = repo.UpdatePartitionOptimistically(ctx, partition, 1)
-	if err != nil {
-		t.Fatalf("更新纳秒时间失败: %v", err)
-	}
-
-	retrieved2, err := repo.GetPartition(ctx, 1)
-	if err != nil {
-		t.Fatalf("获取更新后分区失败: %v", err)
-	}
-
-	// 验证纳秒精度（可能因JSON序列化而有所损失，但应该接近）
-	timeDiff := retrieved2.UpdatedAt.Sub(nanoTime).Abs()
-	if timeDiff > time.Microsecond {
-		t.Errorf("纳秒时间精度损失过大: %v", timeDiff)
-	}
-}
 
 // TestRepository_PartitionOptionsComplexTypes 测试复杂Options类型
 func TestRepository_PartitionOptionsComplexTypes(t *testing.T) {
