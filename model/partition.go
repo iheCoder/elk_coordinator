@@ -27,3 +27,15 @@ type PartitionInfo struct {
 	Error         string                 `json:"error,omitempty"`   // Stores error message if status is failed
 	CreatedAt     time.Time              `json:"created_at"`        // Timestamp of creation
 }
+
+// PartitionStats 分区状态统计信息
+type PartitionStats struct {
+	Total          int     `json:"total"`           // 总分区数
+	Pending        int     `json:"pending"`         // 等待处理的分区数
+	Claimed        int     `json:"claimed"`         // 已声明的分区数
+	Running        int     `json:"running"`         // 正在处理的分区数
+	Completed      int     `json:"completed"`       // 已完成的分区数
+	Failed         int     `json:"failed"`          // 失败的分区数
+	CompletionRate float64 `json:"completion_rate"` // 完成率 (completed / total)
+	FailureRate    float64 `json:"failure_rate"`    // 失败率 (failed / total)
+}

@@ -478,7 +478,7 @@ func (s *SimpleStrategy) ReleasePartition(ctx context.Context, partitionID int, 
 }
 
 // GetPartitionStats 获取分区统计信息
-func (s *SimpleStrategy) GetPartitionStats(ctx context.Context) (*PartitionStats, error) {
+func (s *SimpleStrategy) GetPartitionStats(ctx context.Context) (*model.PartitionStats, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -487,7 +487,7 @@ func (s *SimpleStrategy) GetPartitionStats(ctx context.Context) (*PartitionStats
 		return nil, err
 	}
 
-	stats := &PartitionStats{
+	stats := &model.PartitionStats{
 		Total:     0,
 		Pending:   0,
 		Claimed:   0,

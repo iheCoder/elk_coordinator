@@ -3,7 +3,6 @@ package partition
 import (
 	"context"
 	"elk_coordinator/model"
-	"elk_coordinator/utils"
 	"time"
 )
 
@@ -150,100 +149,5 @@ type PartitionStrategy interface {
 	// ==================== 监控和维护 ====================
 
 	// GetPartitionStats 获取分区状态统计信息
-	GetPartitionStats(ctx context.Context) (*PartitionStats, error)
-}
-
-// PartitionStats 分区状态统计信息
-type PartitionStats struct {
-	Total          int     `json:"total"`           // 总分区数
-	Pending        int     `json:"pending"`         // 等待处理的分区数
-	Claimed        int     `json:"claimed"`         // 已声明的分区数
-	Running        int     `json:"running"`         // 正在处理的分区数
-	Completed      int     `json:"completed"`       // 已完成的分区数
-	Failed         int     `json:"failed"`          // 失败的分区数
-	CompletionRate float64 `json:"completion_rate"` // 完成率 (completed / total)
-	FailureRate    float64 `json:"failure_rate"`    // 失败率 (failed / total)
-}
-
-// PartitionManager 分区管理器
-// 使用策略模式来管理不同的分区存储策略
-type PartitionManager struct {
-	strategy PartitionStrategy
-	logger   utils.Logger
-}
-
-// NewPartitionManager 创建新的分区管理器
-func NewPartitionManager(strategy PartitionStrategy, logger utils.Logger) *PartitionManager {
-	return &PartitionManager{
-		strategy: strategy,
-		logger:   logger,
-	}
-}
-
-// SetStrategy 设置分区管理策略
-func (pm *PartitionManager) SetStrategy(strategy PartitionStrategy) {
-	if pm.strategy != nil {
-		pm.logger.Infof("切换分区管理策略: %s -> %s",
-			pm.strategy.StrategyType(), strategy.StrategyType())
-	} else {
-		pm.logger.Infof("设置分区管理策略: %s", strategy.StrategyType())
-	}
-	pm.strategy = strategy
-}
-
-// GetStrategy 获取当前分区管理策略
-func (pm *PartitionManager) GetStrategy() PartitionStrategy {
-	return pm.strategy
-}
-
-// ==================== 委托方法到当前策略 ====================
-
-// 基础CRUD操作委托
-func (pm *PartitionManager) GetPartition(ctx context.Context, partitionID int) (*model.PartitionInfo, error) {
-	return pm.strategy.GetPartition(ctx, partitionID)
-}
-
-func (pm *PartitionManager) GetAllPartitions(ctx context.Context) ([]*model.PartitionInfo, error) {
-	return pm.strategy.GetAllPartitions(ctx)
-}
-
-func (pm *PartitionManager) DeletePartition(ctx context.Context, partitionID int) error {
-	return pm.strategy.DeletePartition(ctx, partitionID)
-}
-
-func (pm *PartitionManager) GetFilteredPartitions(ctx context.Context, filters GetPartitionsFilters) ([]*model.PartitionInfo, error) {
-	return pm.strategy.GetFilteredPartitions(ctx, filters)
-}
-
-// 批量操作委托
-
-func (pm *PartitionManager) CreatePartitionsIfNotExist(ctx context.Context, request CreatePartitionsRequest) ([]*model.PartitionInfo, error) {
-	return pm.strategy.CreatePartitionsIfNotExist(ctx, request)
-}
-
-func (pm *PartitionManager) DeletePartitions(ctx context.Context, partitionIDs []int) error {
-	return pm.strategy.DeletePartitions(ctx, partitionIDs)
-}
-
-// 并发安全操作委托
-func (pm *PartitionManager) UpdatePartition(ctx context.Context, partitionInfo *model.PartitionInfo, options *UpdateOptions) (*model.PartitionInfo, error) {
-	return pm.strategy.UpdatePartition(ctx, partitionInfo, options)
-}
-
-// 高级协调方法委托
-func (pm *PartitionManager) AcquirePartition(ctx context.Context, partitionID int, workerID string) (*model.PartitionInfo, error) {
-	return pm.strategy.AcquirePartition(ctx, partitionID, workerID)
-}
-
-func (pm *PartitionManager) UpdatePartitionStatus(ctx context.Context, partitionID int, workerID string, status model.PartitionStatus, metadata map[string]interface{}) error {
-	return pm.strategy.UpdatePartitionStatus(ctx, partitionID, workerID, status, metadata)
-}
-
-func (pm *PartitionManager) ReleasePartition(ctx context.Context, partitionID int, workerID string) error {
-	return pm.strategy.ReleasePartition(ctx, partitionID, workerID)
-}
-
-// 监控和维护委托
-func (pm *PartitionManager) GetPartitionStats(ctx context.Context) (*PartitionStats, error) {
-	return pm.strategy.GetPartitionStats(ctx)
+	GetPartitionStats(ctx context.Context) (*model.PartitionStats, error)
 }

@@ -150,7 +150,14 @@ func (d *RedisDataStore) SetPartitions(ctx context.Context, key string, value st
 
 // GetPartitions gets partition information
 func (d *RedisDataStore) GetPartitions(ctx context.Context, key string) (string, error) {
-	return d.rds.Get(ctx, d.prefixKey(key)).Result()
+	val, err := d.rds.Get(ctx, d.prefixKey(key)).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return "", ErrNotFound // 将 redis.Nil 映射到 data.ErrNotFound
+		}
+		return "", err
+	}
+	return val, nil
 }
 
 // SetSyncStatus sets the synchronization status
