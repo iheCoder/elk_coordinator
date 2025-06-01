@@ -12,9 +12,9 @@ import (
 // LeaderManager 管理选举过程和领导者行为
 type LeaderManager struct {
 	// 核心依赖
-	election     *Election         // 选举管理组件
-	workManager  *WorkManager      // 工作管理组件
-	partitionMgr *PartitionManager // 分区管理组件
+	election     *Election          // 选举管理组件
+	workManager  *WorkManager       // 工作管理组件
+	partitionMgr *PartitionAssigner // 分区管理组件
 	isLeader     bool
 	leaderCtx    context.Context
 	cancelLeader context.CancelFunc
@@ -44,7 +44,7 @@ func NewLeaderManager(config LeaderConfig) *LeaderManager {
 	})
 
 	// 创建并配置分区管理器
-	partitionMgr := NewPartitionManager(PartitionManagerConfig{
+	partitionMgr := NewPartitionManager(PartitionAssignerConfig{
 		Namespace: config.Namespace,
 		Strategy:  config.Strategy,
 		Logger:    config.Logger,

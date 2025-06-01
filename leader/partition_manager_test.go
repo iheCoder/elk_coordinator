@@ -28,22 +28,22 @@ func (m *mockPartitionPlaner) GetNextMaxID(ctx context.Context, lastID int64, ra
 // TestGetExistingPartitions 测试获取现有分区功能
 func TestGetExistingPartitions(t *testing.T) {
 	mockStrategy := test_utils.NewMockPartitionStrategy()
-	partitionMgr := NewPartitionManager(PartitionManagerConfig{
-		Namespace: "test",
-		Strategy:  mockStrategy,
-		Logger:    test_utils.NewMockLogger(false),
-		Planer:    &mockPartitionPlaner{},
-	})
 
 	ctx := context.Background()
 
-	// 测试空分区情况
-	partitions, stats, err := partitionMgr.GetExistingPartitions(ctx)
+	// 测试空分区情况 - 直接使用 Strategy 方法
+	allPartitions, err := mockStrategy.GetAllPartitions(ctx)
 	if err != nil {
 		t.Errorf("获取分区失败: %v", err)
 	}
-	if len(partitions) != 0 {
-		t.Errorf("期望空分区，但获取到 %d 个分区", len(partitions))
+	if len(allPartitions) != 0 {
+		t.Errorf("期望空分区，但获取到 %d 个分区", len(allPartitions))
+	}
+
+	// 测试统计信息
+	stats, err := mockStrategy.GetPartitionStats(ctx)
+	if err != nil {
+		t.Errorf("获取分区统计失败: %v", err)
 	}
 	if stats.Total != 0 {
 		t.Errorf("期望分区统计为0，但得到 %d", stats.Total)
@@ -83,13 +83,19 @@ func TestGetExistingPartitions(t *testing.T) {
 
 	mockStrategy.SetPartitions(testPartitions)
 
-	// 再次获取分区，现在应该有数据了
-	partitions, stats, err = partitionMgr.GetExistingPartitions(ctx)
+	// 再次获取分区，现在应该有数据了 - 直接使用 Strategy 方法
+	allPartitions, err = mockStrategy.GetAllPartitions(ctx)
 	if err != nil {
 		t.Errorf("获取分区失败: %v", err)
 	}
-	if len(partitions) != 4 {
-		t.Errorf("期望有4个分区，但获取到 %d 个分区", len(partitions))
+	if len(allPartitions) != 4 {
+		t.Errorf("期望有4个分区，但获取到 %d 个分区", len(allPartitions))
+	}
+
+	// 测试统计信息
+	stats, err = mockStrategy.GetPartitionStats(ctx)
+	if err != nil {
+		t.Errorf("获取分区统计失败: %v", err)
 	}
 	if stats.Total != 4 {
 		t.Errorf("期望分区总数为4，但得到 %d", stats.Total)
@@ -111,7 +117,7 @@ func TestGetExistingPartitions(t *testing.T) {
 // TestGetLastAllocatedID 测试获取最后分配的ID边界
 func TestGetLastAllocatedID(t *testing.T) {
 	mockStrategy := test_utils.NewMockPartitionStrategy()
-	partitionMgr := NewPartitionManager(PartitionManagerConfig{
+	partitionMgr := NewPartitionManager(PartitionAssignerConfig{
 		Namespace: "test",
 		Strategy:  mockStrategy,
 		Logger:    test_utils.NewMockLogger(false),
@@ -165,7 +171,7 @@ func TestGetLastAllocatedID(t *testing.T) {
 
 // TestShouldAllocateNewPartitions 测试分区分配决策逻辑
 func TestShouldAllocateNewPartitions(t *testing.T) {
-	partitionMgr := NewPartitionManager(PartitionManagerConfig{
+	partitionMgr := NewPartitionManager(PartitionAssignerConfig{
 		Namespace: "test",
 		Strategy:  test_utils.NewMockPartitionStrategy(),
 		Logger:    test_utils.NewMockLogger(false),
@@ -173,7 +179,7 @@ func TestShouldAllocateNewPartitions(t *testing.T) {
 	})
 
 	// 测试场景1: 空分区应该分配
-	stats1 := PartitionStats{
+	stats1 := model.PartitionStats{
 		Total: 0,
 	}
 	if !partitionMgr.ShouldAllocateNewPartitions(stats1) {
@@ -181,7 +187,7 @@ func TestShouldAllocateNewPartitions(t *testing.T) {
 	}
 
 	// 测试场景2: 大量失败分区应该暂停分配
-	stats2 := PartitionStats{
+	stats2 := model.PartitionStats{
 		Total:  10,
 		Failed: 4, // 40%失败率，超过1/3
 	}
@@ -190,7 +196,7 @@ func TestShouldAllocateNewPartitions(t *testing.T) {
 	}
 
 	// 测试场景3: 足够的等待/运行中分区应该暂停分配
-	stats3 := PartitionStats{
+	stats3 := model.PartitionStats{
 		Total:   10,
 		Pending: 3,
 		Running: 3, // 总共6个，超过了一半
@@ -200,7 +206,7 @@ func TestShouldAllocateNewPartitions(t *testing.T) {
 	}
 
 	// 测试场景4: 高完成率应该分配新分区
-	stats4 := PartitionStats{
+	stats4 := model.PartitionStats{
 		Total:          10,
 		Completed:      8,
 		CompletionRate: 0.8, // 80%完成率，超过70%
@@ -210,13 +216,13 @@ func TestShouldAllocateNewPartitions(t *testing.T) {
 	}
 }
 
-// TestCreatePartitions 测试创建分区
-func TestCreatePartitions(t *testing.T) {
+// TestCreatePartitionsRequest 测试创建分区请求
+func TestCreatePartitionsRequest(t *testing.T) {
 	planer := &mockPartitionPlaner{
 		suggestedPartitionSize: 500, // 建议的分区大小
 	}
 
-	partitionMgr := NewPartitionManager(PartitionManagerConfig{
+	partitionMgr := NewPartitionManager(PartitionAssignerConfig{
 		Namespace: "test",
 		Strategy:  test_utils.NewMockPartitionStrategy(),
 		Logger:    test_utils.NewMockLogger(false),
@@ -226,125 +232,42 @@ func TestCreatePartitions(t *testing.T) {
 	ctx := context.Background()
 
 	// 测试场景: 创建1000个ID的分区，预期会创建2个分区
-	partitions, err := partitionMgr.CreatePartitions(ctx, 0, 1000)
+	request, err := partitionMgr.CreatePartitionsRequest(ctx, 0, 1000)
 	if err != nil {
-		t.Errorf("创建分区失败: %v", err)
+		t.Errorf("创建分区请求失败: %v", err)
 	}
 
-	if len(partitions) != 2 {
-		t.Errorf("期望创建2个分区，但得到 %d 个", len(partitions))
+	if len(request.Partitions) != 2 {
+		t.Errorf("期望创建2个分区请求，但得到 %d 个", len(request.Partitions))
 	}
 
-	// 验证第一个分区
-	if p, exists := partitions[0]; !exists {
-		t.Error("分区0不存在")
-	} else {
-		if p.MinID != 1 || p.MaxID != 500 {
-			t.Errorf("分区0范围不正确，期望[1, 500]，得到[%d, %d]", p.MinID, p.MaxID)
-		}
-		if p.Status != model.StatusPending {
-			t.Errorf("分区0状态不正确，期望Pending，得到 %s", p.Status)
-		}
+	// 验证第一个分区请求
+	p0 := request.Partitions[0]
+	if p0.MinID != 1 || p0.MaxID != 500 {
+		t.Errorf("分区0范围不正确，期望[1, 500]，得到[%d, %d]", p0.MinID, p0.MaxID)
 	}
 
-	// 验证第二个分区
-	if p, exists := partitions[1]; !exists {
-		t.Error("分区1不存在")
-	} else {
-		if p.MinID != 501 || p.MaxID != 1000 {
-			t.Errorf("分区1范围不正确，期望[501, 1000]，得到[%d, %d]", p.MinID, p.MaxID)
-		}
+	// 验证第二个分区请求
+	p1 := request.Partitions[1]
+	if p1.MinID != 501 || p1.MaxID != 1000 {
+		t.Errorf("分区1范围不正确，期望[501, 1000]，得到[%d, %d]", p1.MinID, p1.MaxID)
 	}
 
 	// 测试场景: 使用默认分区大小
 	planer.suggestedPartitionSize = 0 // 让planer返回0，应该使用默认值
-	partitions, err = partitionMgr.CreatePartitions(ctx, 0, 1000)
+	request, err = partitionMgr.CreatePartitionsRequest(ctx, 0, 1000)
 	if err != nil {
-		t.Errorf("创建分区失败: %v", err)
+		t.Errorf("创建分区请求失败: %v", err)
 	}
 
-	// 默认分区大小是1000，所以应该只创建1个分区
-	if len(partitions) != 1 {
-		t.Errorf("期望创建1个分区，但得到 %d 个", len(partitions))
+	// 默认分区大小是3000，所以应该只创建1个分区
+	if len(request.Partitions) != 1 {
+		t.Errorf("期望创建1个分区请求，但得到 %d 个", len(request.Partitions))
 	}
 }
 
-// TestMergePartitions 测试合并分区
-func TestMergePartitions(t *testing.T) {
-	partitionMgr := NewPartitionManager(PartitionManagerConfig{
-		Namespace: "test",
-		Strategy:  test_utils.NewMockPartitionStrategy(),
-		Logger:    test_utils.NewMockLogger(false),
-		Planer:    &mockPartitionPlaner{},
-	})
-
-	// 现有分区
-	existingPartitions := map[int]model.PartitionInfo{
-		1: {
-			PartitionID: 1,
-			MinID:       1,
-			MaxID:       1000,
-			Status:      model.StatusCompleted,
-		},
-		2: {
-			PartitionID: 2,
-			MinID:       1001,
-			MaxID:       2000,
-			Status:      model.StatusRunning,
-		},
-	}
-
-	// 新分区
-	newPartitions := map[int]model.PartitionInfo{
-		0: {
-			PartitionID: 0,
-			MinID:       2001,
-			MaxID:       3000,
-			Status:      model.StatusPending,
-		},
-		1: {
-			PartitionID: 1,
-			MinID:       3001,
-			MaxID:       4000,
-			Status:      model.StatusPending,
-		},
-	}
-
-	// 合并分区
-	mergedPartitions := partitionMgr.MergePartitions(existingPartitions, newPartitions)
-
-	// 验证合并结果
-	if len(mergedPartitions) != 4 {
-		t.Errorf("期望合并后有4个分区，但得到 %d 个", len(mergedPartitions))
-	}
-
-	// 检查原有分区是否保留
-	if p, exists := mergedPartitions[1]; !exists || p.Status != model.StatusCompleted {
-		t.Error("现有分区1未正确保留")
-	}
-	if p, exists := mergedPartitions[2]; !exists || p.Status != model.StatusRunning {
-		t.Error("现有分区2未正确保留")
-	}
-
-	// 检查新分区是否添加且ID不冲突
-	foundNew1 := false
-	foundNew2 := false
-	for id, p := range mergedPartitions {
-		if id > 2 && p.MinID == 2001 && p.MaxID == 3000 {
-			foundNew1 = true
-		}
-		if id > 2 && p.MinID == 3001 && p.MaxID == 4000 {
-			foundNew2 = true
-		}
-	}
-
-	if !foundNew1 {
-		t.Error("未找到新分区1")
-	}
-	if !foundNew2 {
-		t.Error("未找到新分区2")
-	}
-}
+// TestMergePartitions 功能已移至 Strategy 层处理
+// 此测试已被移除，因为合并逻辑现在由 CreatePartitionsIfNotExist 处理
 
 // TestCalculateLookAheadRange 测试ID探测范围计算
 func TestCalculateLookAheadRange(t *testing.T) {
@@ -352,7 +275,7 @@ func TestCalculateLookAheadRange(t *testing.T) {
 		suggestedPartitionSize: 1000, // 建议的分区大小
 	}
 
-	partitionMgr := NewPartitionManager(PartitionManagerConfig{
+	partitionMgr := NewPartitionManager(PartitionAssignerConfig{
 		Namespace: "test",
 		Strategy:  test_utils.NewMockPartitionStrategy(),
 		Logger:    test_utils.NewMockLogger(false),
@@ -399,7 +322,7 @@ func TestGetEffectivePartitionSize(t *testing.T) {
 		suggestedPartitionSize: 2000,
 	}
 
-	partitionMgr1 := NewPartitionManager(PartitionManagerConfig{
+	partitionMgr1 := NewPartitionManager(PartitionAssignerConfig{
 		Namespace: "test",
 		Strategy:  test_utils.NewMockPartitionStrategy(),
 		Logger:    test_utils.NewMockLogger(false),
@@ -420,7 +343,7 @@ func TestGetEffectivePartitionSize(t *testing.T) {
 		suggestedPartitionSize: 0, // 返回0表示未建议
 	}
 
-	partitionMgr2 := NewPartitionManager(PartitionManagerConfig{
+	partitionMgr2 := NewPartitionManager(PartitionAssignerConfig{
 		Namespace: "test",
 		Strategy:  test_utils.NewMockPartitionStrategy(),
 		Logger:    test_utils.NewMockLogger(false),

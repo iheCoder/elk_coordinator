@@ -36,7 +36,7 @@ func NewWorkManager(config WorkManagerConfig) *WorkManager {
 }
 
 // RunPartitionAllocationLoop 运行分区分配循环
-func (wm *WorkManager) RunPartitionAllocationLoop(ctx context.Context, leaderCtx context.Context, pm *PartitionManager) error {
+func (wm *WorkManager) RunPartitionAllocationLoop(ctx context.Context, leaderCtx context.Context, pm *PartitionAssigner) error {
 	// 初始运行一次分区分配，确保刚启动时有任务可执行
 	go wm.tryAllocatePartitions(ctx, pm)
 
@@ -62,7 +62,7 @@ func (wm *WorkManager) RunPartitionAllocationLoop(ctx context.Context, leaderCtx
 }
 
 // tryAllocatePartitions 尝试分配分区并处理错误
-func (wm *WorkManager) tryAllocatePartitions(ctx context.Context, pm *PartitionManager) {
+func (wm *WorkManager) tryAllocatePartitions(ctx context.Context, pm *PartitionAssigner) {
 	// 检查是否有活跃节点，如果没有，则不分配分区
 	activeWorkers, err := wm.getActiveWorkers(ctx)
 	if err != nil {

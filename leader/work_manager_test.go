@@ -90,7 +90,7 @@ func TestTryAllocatePartitions(t *testing.T) {
 	})
 
 	mockStrategy := test_utils.NewMockPartitionStrategy()
-	partitionMgr := NewPartitionManager(PartitionManagerConfig{
+	partitionMgr := NewPartitionManager(PartitionAssignerConfig{
 		Namespace: "test",
 		Strategy:  mockStrategy,
 		Logger:    test_utils.NewMockLogger(false),
@@ -152,7 +152,7 @@ func TestRunPartitionAllocationLoop(t *testing.T) {
 	})
 
 	mockStrategy := test_utils.NewMockPartitionStrategy()
-	partitionMgr := NewPartitionManager(PartitionManagerConfig{
+	partitionMgr := NewPartitionManager(PartitionAssignerConfig{
 		Namespace: "test",
 		Strategy:  mockStrategy,
 		Logger:    test_utils.NewMockLogger(false),
