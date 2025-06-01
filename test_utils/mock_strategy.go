@@ -224,28 +224,36 @@ func (m *MockPartitionStrategy) StrategyType() string {
 }
 
 // AcquirePartition 声明对指定分区的持有权
-func (m *MockPartitionStrategy) AcquirePartition(ctx context.Context, partitionID int, workerID string) (*model.PartitionInfo, error) {
+func (m *MockPartitionStrategy) AcquirePartition(ctx context.Context, partitionID int, workerID string, options *partition.AcquirePartitionOptions) (*model.PartitionInfo, bool, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	partition, exists := m.Partitions[partitionID]
+	p, exists := m.Partitions[partitionID]
 	if !exists {
-		return nil, fmt.Errorf("partition %d not found", partitionID)
+		return nil, false, fmt.Errorf("partition %d not found", partitionID)
+	}
+
+	// 设置默认选项
+	if options == nil {
+		options = &partition.AcquirePartitionOptions{}
 	}
 
 	// 检查分区是否可获取
-	if partition.WorkerID != "" && partition.WorkerID != workerID {
-		return nil, fmt.Errorf("partition %d is already acquired by worker %s", partitionID, partition.WorkerID)
+	if p.WorkerID != "" && p.WorkerID != workerID {
+		if !options.AllowPreemption {
+			// 正常的"无法获取"情况，不返回错误
+			return nil, false, nil
+		}
 	}
 
 	// 获取分区
-	partition.WorkerID = workerID
-	partition.Status = model.StatusRunning
-	partition.UpdatedAt = time.Now()
-	partition.Version++
+	p.WorkerID = workerID
+	p.Status = model.StatusRunning
+	p.UpdatedAt = time.Now()
+	p.Version++
 
-	copy := *partition
-	return &copy, nil
+	partitionInfo := *p
+	return &partitionInfo, true, nil
 }
 
 // UpdatePartitionStatus 更新分区状态

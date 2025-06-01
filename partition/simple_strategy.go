@@ -13,6 +13,13 @@ import (
 	"time"
 )
 
+// 错误常量定义 - 用于区分正常的"无法获取"情况和系统错误
+var (
+	ErrPartitionNotExists   = errors.New("partition not exists")
+	ErrPartitionAlreadyHeld = errors.New("partition already held")
+	ErrPartitionLockFailed  = errors.New("partition lock failed")
+)
+
 // SimpleStrategy 简单分区策略实现
 // 专注于提供分区的基础封装操作，包括分布式锁、并发安全、数据持久化等
 // 不包含具体的分配和获取业务逻辑，这些由leader和runner负责
@@ -334,9 +341,32 @@ func (s *SimpleStrategy) CreatePartitionsIfNotExist(ctx context.Context, request
 // AcquirePartition 声明对指定分区的持有权
 // 尝试获取指定分区的锁并声明持有权
 // 这是一个针对特定分区的声明式操作
-func (s *SimpleStrategy) AcquirePartition(ctx context.Context, partitionID int, workerID string) (*model.PartitionInfo, error) {
+func (s *SimpleStrategy) AcquirePartition(ctx context.Context, partitionID int, workerID string, options *AcquirePartitionOptions) (*model.PartitionInfo, bool, error) {
+	// 调用内部实现
+	partition, err := s.acquirePartitionInternal(ctx, partitionID, workerID, options)
+	if err != nil {
+		// 检查是否是正常的"无法获取"情况
+		if errors.Is(err, ErrPartitionNotExists) ||
+			errors.Is(err, ErrPartitionAlreadyHeld) ||
+			errors.Is(err, ErrPartitionLockFailed) {
+			// 这些是正常的"无法获取"情况，不返回错误
+			return nil, false, nil
+		}
+		// 系统错误
+		return nil, false, err
+	}
+	return partition, true, nil
+}
+
+// acquirePartitionInternal 内部分区获取方法，支持抢占功能
+func (s *SimpleStrategy) acquirePartitionInternal(ctx context.Context, partitionID int, workerID string, options *AcquirePartitionOptions) (*model.PartitionInfo, error) {
 	if workerID == "" {
 		return nil, fmt.Errorf("工作节点ID不能为空")
+	}
+
+	// 设置默认选项
+	if options == nil {
+		options = &AcquirePartitionOptions{}
 	}
 
 	s.mu.Lock()
@@ -350,12 +380,15 @@ func (s *SimpleStrategy) AcquirePartition(ctx context.Context, partitionID int, 
 
 	partition, exists := partitions[partitionID]
 	if !exists {
-		return nil, fmt.Errorf("分区 %d 不存在", partitionID)
+		return nil, ErrPartitionNotExists
 	}
 
-	// 检查分区是否可以被声明
+	// 检查分区是否可以被声明或抢占
 	if partition.WorkerID != "" && partition.WorkerID != workerID {
-		return nil, fmt.Errorf("分区 %d 已被工作节点 %s 持有", partitionID, partition.WorkerID)
+		if !options.AllowPreemption {
+			return nil, ErrPartitionAlreadyHeld
+		}
+		// 如果允许抢占，继续处理
 	}
 
 	// 如果是同一个工作节点，检查是否已经持有锁
@@ -381,11 +414,16 @@ func (s *SimpleStrategy) AcquirePartition(ctx context.Context, partitionID int, 
 	}
 
 	if !acquired {
-		return nil, fmt.Errorf("分区 %d 锁获取失败，可能被其他工作节点占用", partitionID)
+		return nil, ErrPartitionLockFailed
 	}
 
 	// 声明对分区的持有权
-	s.logger.Infof("工作节点 %s 声明对分区 %d 的持有权", workerID, partitionID)
+	if options.AllowPreemption && partition.WorkerID != "" && partition.WorkerID != workerID {
+		s.logger.Infof("工作节点 %s 抢占分区 %d（原持有者: %s）", workerID, partitionID, partition.WorkerID)
+	} else {
+		s.logger.Infof("工作节点 %s 声明对分区 %d 的持有权", workerID, partitionID)
+	}
+
 	partition.WorkerID = workerID
 	partition.Status = model.StatusClaimed
 	partition.UpdatedAt = time.Now()

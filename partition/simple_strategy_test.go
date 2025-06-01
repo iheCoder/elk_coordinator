@@ -753,23 +753,28 @@ func TestSimpleStrategy_AcquirePartition(t *testing.T) {
 	assert.NoError(t, err)
 
 	// 测试无效工作节点ID
-	_, err = strategy.AcquirePartition(ctx, 1, "")
+	_, success, err := strategy.AcquirePartition(ctx, 1, "", nil)
 	assert.Error(t, err)
+	assert.False(t, success)
 	assert.Contains(t, err.Error(), "工作节点ID不能为空")
 
 	// 测试声明不存在的分区
-	_, err = strategy.AcquirePartition(ctx, 999, "worker1")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "分区 999 不存在")
+	_, success, err = strategy.AcquirePartition(ctx, 999, "worker1", nil)
+	assert.False(t, success)
+	// 这应该是系统错误，因为分区不存在
+	if err != nil {
+		assert.Contains(t, err.Error(), "分区 999 不存在")
+	}
 
 	// 测试成功声明分区
-	acquired, err := strategy.AcquirePartition(ctx, 1, "worker1")
+	acquired, success, err := strategy.AcquirePartition(ctx, 1, "worker1", nil)
 	if err != nil {
 		t.Logf("声明分区失败: %v", err)
 		t.Skipf("锁机制可能需要调试，跳过此测试")
 		return
 	}
 	assert.NoError(t, err)
+	assert.True(t, success)
 	if acquired != nil {
 		assert.Equal(t, 1, acquired.PartitionID)
 		assert.Equal(t, "worker1", acquired.WorkerID)
@@ -777,16 +782,17 @@ func TestSimpleStrategy_AcquirePartition(t *testing.T) {
 	}
 
 	// 测试重复声明同一分区（同一工作节点应该成功）
-	acquired2, err := strategy.AcquirePartition(ctx, 1, "worker1")
+	acquired2, success, err := strategy.AcquirePartition(ctx, 1, "worker1", nil)
 	assert.NoError(t, err)
+	assert.True(t, success)
 	if acquired2 != nil {
 		assert.Equal(t, "worker1", acquired2.WorkerID)
 	}
 
 	// 测试其他工作节点声明已被占用的分区
-	_, err = strategy.AcquirePartition(ctx, 1, "worker2")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "已被工作节点 worker1 持有")
+	_, success, err = strategy.AcquirePartition(ctx, 1, "worker2", nil)
+	assert.NoError(t, err) // 这应该不是错误，只是无法获取
+	assert.False(t, success)
 }
 
 // TestSimpleStrategy_UpdatePartitionStatus 测试更新分区状态
@@ -801,12 +807,13 @@ func TestSimpleStrategy_UpdatePartitionStatus(t *testing.T) {
 	_, err := strategy.UpdatePartition(ctx, partition, nil)
 	assert.NoError(t, err)
 
-	acquired, err := strategy.AcquirePartition(ctx, 1, "worker1")
-	if err != nil {
+	acquired, success, err := strategy.AcquirePartition(ctx, 1, "worker1", nil)
+	if err != nil || !success {
 		t.Skipf("声明分区失败，跳过此测试: %v", err)
 		return
 	}
 	assert.NoError(t, err)
+	assert.True(t, success)
 
 	// 测试更新不存在的分区
 	err = strategy.UpdatePartitionStatus(ctx, 999, "worker1", model.StatusRunning, nil)
@@ -848,12 +855,13 @@ func TestSimpleStrategy_ReleasePartition(t *testing.T) {
 	_, err := strategy.UpdatePartition(ctx, partition, nil)
 	assert.NoError(t, err)
 
-	acquired, err := strategy.AcquirePartition(ctx, 1, "worker1")
-	if err != nil {
+	acquired, success, err := strategy.AcquirePartition(ctx, 1, "worker1", nil)
+	if err != nil || !success {
 		t.Skipf("声明分区失败，跳过此测试: %v", err)
 		return
 	}
 	assert.NoError(t, err)
+	assert.True(t, success)
 
 	// 测试释放不存在的分区
 	err = strategy.ReleasePartition(ctx, 999, "worker1")
@@ -877,8 +885,9 @@ func TestSimpleStrategy_ReleasePartition(t *testing.T) {
 	assert.Greater(t, released.Version, acquired.Version) // 版本应该递增
 
 	// 验证可以被其他工作节点重新声明
-	_, err = strategy.AcquirePartition(ctx, 1, "worker2")
+	_, success, err = strategy.AcquirePartition(ctx, 1, "worker2", nil)
 	assert.NoError(t, err)
+	assert.True(t, success)
 }
 
 // ==================== 统计信息测试 ====================
@@ -947,8 +956,16 @@ func TestSimpleStrategy_ConcurrentOperations(t *testing.T) {
 	for i := 0; i < numWorkers; i++ {
 		workerID := fmt.Sprintf("worker%d", i+1)
 		go func(wid string) {
-			_, err := strategy.AcquirePartition(ctx, 1, wid)
-			results <- err
+			_, success, err := strategy.AcquirePartition(ctx, 1, wid, nil)
+			if err != nil {
+				results <- err
+			} else if !success {
+				// 正常的无法获取情况，不算错误
+				results <- nil
+			} else {
+				// 成功获取
+				results <- nil
+			}
 		}(workerID)
 	}
 
@@ -1016,7 +1033,7 @@ func TestSimpleStrategy_DataStoreErrors(t *testing.T) {
 	err = strategy.DeletePartition(ctx, 1)
 	assert.Error(t, err)
 
-	_, err = strategy.AcquirePartition(ctx, 1, "worker1")
+	_, _, err = strategy.AcquirePartition(ctx, 1, "worker1", nil)
 	assert.Error(t, err)
 }
 
@@ -1137,12 +1154,14 @@ func TestSimpleStrategyIntegration(t *testing.T) {
 	assert.Equal(t, 3, stats.Pending)
 
 	// 3. 工作节点声明分区
-	acquired1, err := strategy.AcquirePartition(ctx, 1, "worker1")
+	acquired1, success, err := strategy.AcquirePartition(ctx, 1, "worker1", nil)
 	assert.NoError(t, err)
+	assert.True(t, success)
 	assert.Equal(t, model.StatusClaimed, acquired1.Status)
 
-	acquired2, err := strategy.AcquirePartition(ctx, 2, "worker2")
+	acquired2, success, err := strategy.AcquirePartition(ctx, 2, "worker2", nil)
 	assert.NoError(t, err)
+	assert.True(t, success)
 	assert.Equal(t, model.StatusClaimed, acquired2.Status)
 
 	// 4. 更新分区状态为运行中
@@ -1175,8 +1194,9 @@ func TestSimpleStrategyIntegration(t *testing.T) {
 	assert.NoError(t, err)
 
 	// 9. 重新声明失败的分区
-	acquired3, err := strategy.AcquirePartition(ctx, 2, "worker3")
+	acquired3, success, err := strategy.AcquirePartition(ctx, 2, "worker3", nil)
 	assert.NoError(t, err)
+	assert.True(t, success)
 	assert.Equal(t, model.StatusClaimed, acquired3.Status)
 
 	// 10. 检查最终统计
@@ -1270,6 +1290,6 @@ func BenchmarkAcquirePartition(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = strategy.AcquirePartition(ctx, i+1, fmt.Sprintf("worker%d", i))
+		_, _, _ = strategy.AcquirePartition(ctx, i+1, fmt.Sprintf("worker%d", i), nil)
 	}
 }

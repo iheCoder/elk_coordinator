@@ -53,6 +53,21 @@ func (req CreatePartitionsRequest) ToPartitionInfos() []*model.PartitionInfo {
 	return result
 }
 
+// AcquirePartitionOptions 获取分区的选项
+type AcquirePartitionOptions struct {
+	// AllowPreemption 是否允许抢占其他工作节点持有的分区
+	// 当为true时，可以尝试抢占过时的、非活跃的分区
+	AllowPreemption bool `json:"allow_preemption,omitempty"`
+
+	// ForcePreemption 是否强制抢占（忽略活跃性检查）
+	// 仅在紧急情况下使用，可能导致重复处理
+	ForcePreemption bool `json:"force_preemption,omitempty"`
+
+	// PreemptionTimeout 抢占操作的超时时间
+	// 如果为0，使用策略默认超时时间
+	PreemptionTimeout time.Duration `json:"preemption_timeout,omitempty"`
+}
+
 // GetPartitionsFilters 定义了检索分区时的过滤条件
 type GetPartitionsFilters struct {
 	// TargetStatuses 指定了要匹配的分区状态列表
@@ -128,8 +143,12 @@ type PartitionStrategy interface {
 	// 尝试获取指定分区的锁并声明持有权
 	// partitionID: 要声明持有权的分区ID
 	// workerID: 工作节点标识
-	// 返回声明持有权的分区信息，如果分区不可用或已被占用则返回错误
-	AcquirePartition(ctx context.Context, partitionID int, workerID string) (*model.PartitionInfo, error)
+	// options: 获取选项，包括抢占设置（可选，nil表示使用默认选项）
+	// 返回: (分区信息, 是否获取成功, 错误)
+	// - 如果获取成功，返回 (分区信息, true, nil)
+	// - 如果因为分区被占用等正常原因无法获取，返回 (nil, false, nil)
+	// - 如果因为系统错误（如网络、数据库等）无法处理，返回 (nil, false, error)
+	AcquirePartition(ctx context.Context, partitionID int, workerID string, options *AcquirePartitionOptions) (*model.PartitionInfo, bool, error)
 
 	// UpdatePartitionStatus 更新分区状态
 	// 实现应验证调用者是否有权限更新该分区

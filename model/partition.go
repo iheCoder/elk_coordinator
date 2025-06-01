@@ -28,6 +28,16 @@ type PartitionInfo struct {
 	CreatedAt     time.Time              `json:"created_at"`        // Timestamp of creation
 }
 
+// PartitionHeartbeatStatus 分区心跳状态信息
+type PartitionHeartbeatStatus struct {
+	PartitionID            int           `json:"partition_id"`              // 分区ID
+	WorkerID               string        `json:"worker_id"`                 // 持有者工作节点ID
+	LastHeartbeat          time.Time     `json:"last_heartbeat"`            // 最后心跳时间
+	TimeSinceLastHeartbeat time.Duration `json:"time_since_last_heartbeat"` // 距离最后心跳的时间
+	IsStale                bool          `json:"is_stale"`                  // 是否已过时
+	StaleThreshold         time.Duration `json:"stale_threshold"`           // 过时阈值
+}
+
 // PartitionStats 分区状态统计信息
 type PartitionStats struct {
 	Total          int     `json:"total"`           // 总分区数
