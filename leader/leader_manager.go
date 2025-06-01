@@ -46,10 +46,7 @@ func NewLeaderManager(config LeaderConfig) *LeaderManager {
 	// 创建并配置分区管理器
 	partitionMgr := NewPartitionManager(PartitionAssignerConfig{
 		Namespace: config.Namespace,
-		Strategy:  config.Strategy,
-		Logger:    config.Logger,
-		Planer:    config.Planer,
-	})
+	}, config.Strategy, config.Logger, config.Planer)
 
 	return &LeaderManager{
 		election:     election,

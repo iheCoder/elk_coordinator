@@ -117,12 +117,7 @@ func TestGetExistingPartitions(t *testing.T) {
 // TestGetLastAllocatedID 测试获取最后分配的ID边界
 func TestGetLastAllocatedID(t *testing.T) {
 	mockStrategy := test_utils.NewMockPartitionStrategy()
-	partitionMgr := NewPartitionManager(PartitionAssignerConfig{
-		Namespace: "test",
-		Strategy:  mockStrategy,
-		Logger:    test_utils.NewMockLogger(false),
-		Planer:    &mockPartitionPlaner{},
-	})
+	partitionMgr := NewPartitionManager(PartitionAssignerConfig{Namespace: "test"}, mockStrategy, test_utils.NewMockLogger(false), &mockPartitionPlaner{})
 
 	ctx := context.Background()
 
@@ -171,12 +166,7 @@ func TestGetLastAllocatedID(t *testing.T) {
 
 // TestShouldAllocateNewPartitions 测试分区分配决策逻辑
 func TestShouldAllocateNewPartitions(t *testing.T) {
-	partitionMgr := NewPartitionManager(PartitionAssignerConfig{
-		Namespace: "test",
-		Strategy:  test_utils.NewMockPartitionStrategy(),
-		Logger:    test_utils.NewMockLogger(false),
-		Planer:    &mockPartitionPlaner{},
-	})
+	partitionMgr := NewPartitionManager(PartitionAssignerConfig{Namespace: "test"}, test_utils.NewMockPartitionStrategy(), test_utils.NewMockLogger(false), &mockPartitionPlaner{})
 
 	// 测试场景1: 空分区应该分配
 	stats1 := model.PartitionStats{
@@ -222,12 +212,7 @@ func TestCreatePartitionsRequest(t *testing.T) {
 		suggestedPartitionSize: 500, // 建议的分区大小
 	}
 
-	partitionMgr := NewPartitionManager(PartitionAssignerConfig{
-		Namespace: "test",
-		Strategy:  test_utils.NewMockPartitionStrategy(),
-		Logger:    test_utils.NewMockLogger(false),
-		Planer:    planer,
-	})
+	partitionMgr := NewPartitionManager(PartitionAssignerConfig{Namespace: "test"}, test_utils.NewMockPartitionStrategy(), test_utils.NewMockLogger(false), planer)
 
 	ctx := context.Background()
 
@@ -275,12 +260,7 @@ func TestCalculateLookAheadRange(t *testing.T) {
 		suggestedPartitionSize: 1000, // 建议的分区大小
 	}
 
-	partitionMgr := NewPartitionManager(PartitionAssignerConfig{
-		Namespace: "test",
-		Strategy:  test_utils.NewMockPartitionStrategy(),
-		Logger:    test_utils.NewMockLogger(false),
-		Planer:    planer,
-	})
+	partitionMgr := NewPartitionManager(PartitionAssignerConfig{Namespace: "test"}, test_utils.NewMockPartitionStrategy(), test_utils.NewMockLogger(false), planer)
 
 	ctx := context.Background()
 
@@ -322,12 +302,7 @@ func TestGetEffectivePartitionSize(t *testing.T) {
 		suggestedPartitionSize: 2000,
 	}
 
-	partitionMgr1 := NewPartitionManager(PartitionAssignerConfig{
-		Namespace: "test",
-		Strategy:  test_utils.NewMockPartitionStrategy(),
-		Logger:    test_utils.NewMockLogger(false),
-		Planer:    planer1,
-	})
+	partitionMgr1 := NewPartitionManager(PartitionAssignerConfig{Namespace: "test"}, test_utils.NewMockPartitionStrategy(), test_utils.NewMockLogger(false), planer1)
 
 	size, err := partitionMgr1.GetEffectivePartitionSize(ctx)
 	if err != nil {
@@ -343,12 +318,7 @@ func TestGetEffectivePartitionSize(t *testing.T) {
 		suggestedPartitionSize: 0, // 返回0表示未建议
 	}
 
-	partitionMgr2 := NewPartitionManager(PartitionAssignerConfig{
-		Namespace: "test",
-		Strategy:  test_utils.NewMockPartitionStrategy(),
-		Logger:    test_utils.NewMockLogger(false),
-		Planer:    planer2,
-	})
+	partitionMgr2 := NewPartitionManager(PartitionAssignerConfig{Namespace: "test"}, test_utils.NewMockPartitionStrategy(), test_utils.NewMockLogger(false), planer2)
 
 	size, err = partitionMgr2.GetEffectivePartitionSize(ctx)
 	if err != nil {

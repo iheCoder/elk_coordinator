@@ -8,37 +8,83 @@ import (
 	"github.com/pkg/errors"
 )
 
-// PartitionAssigner 分区分配器。负责分配和管理分区任务的执行
-type PartitionAssigner struct {
-	config PartitionAssignerConfig
-}
-
-// PartitionAssignerConfig 分区管理器配置
+// PartitionAssignerConfig 分区分配器的配置参数（只包含配置，不包含依赖）
 type PartitionAssignerConfig struct {
 	Namespace string
-	Strategy  partition.PartitionStrategy
-	Logger    utils.Logger
-	Planer    PartitionPlaner
+	// 可以添加其他配置参数，如超时时间、重试次数等
+	// RetryCount       int
+	// AllocationTimeout time.Duration
+}
+
+// PartitionAssigner 分区分配器。负责分配和管理分区任务的执行
+type PartitionAssigner struct {
+	config   PartitionAssignerConfig
+	strategy partition.PartitionStrategy
+	logger   utils.Logger
+	planer   PartitionPlaner
 }
 
 // NewPartitionManager 创建新的分区管理器
-func NewPartitionManager(config PartitionAssignerConfig) *PartitionAssigner {
+// 将依赖作为构造函数参数，配置作为单独的结构体
+func NewPartitionManager(
+	config PartitionAssignerConfig,
+	strategy partition.PartitionStrategy,
+	logger utils.Logger,
+	planer PartitionPlaner,
+) *PartitionAssigner {
 	return &PartitionAssigner{
-		config: config,
+		config:   config,
+		strategy: strategy,
+		logger:   logger,
+		planer:   planer,
 	}
+}
+
+// 或者使用选项模式的变体（推荐用于复杂情况）
+type PartitionAssignerOption func(*PartitionAssigner)
+
+func WithLogger(logger utils.Logger) PartitionAssignerOption {
+	return func(pa *PartitionAssigner) {
+		pa.logger = logger
+	}
+}
+
+func WithPlaner(planer PartitionPlaner) PartitionAssignerOption {
+	return func(pa *PartitionAssigner) {
+		pa.planer = planer
+	}
+}
+
+// NewPartitionManagerWithOptions 使用选项模式创建分区管理器
+func NewPartitionManagerWithOptions(
+	config PartitionAssignerConfig,
+	strategy partition.PartitionStrategy, // 必须依赖
+	opts ...PartitionAssignerOption,
+) *PartitionAssigner {
+	pa := &PartitionAssigner{
+		config:   config,
+		strategy: strategy,
+		logger:   utils.NewDefaultLogger(),
+	}
+
+	for _, opt := range opts {
+		opt(pa)
+	}
+
+	return pa
 }
 
 // AllocatePartitions 分配工作分区
 func (pm *PartitionAssigner) AllocatePartitions(ctx context.Context, activeWorkers []string, workerPartitionMultiple int64) error {
 	// 获取分区统计信息，判断是否需要分配新分区
-	stats, err := pm.config.Strategy.GetPartitionStats(ctx)
+	stats, err := pm.strategy.GetPartitionStats(ctx)
 	if err != nil {
 		return errors.Wrap(err, "获取分区统计信息失败")
 	}
 
 	// 检查是否需要分配新的分区
 	if !pm.ShouldAllocateNewPartitions(*stats) {
-		pm.config.Logger.Debugf("现有分区未达到完成率阈值，暂不分配新分区。完成率: %.2f%%", stats.CompletionRate*100)
+		pm.logger.Debugf("现有分区未达到完成率阈值，暂不分配新分区。完成率: %.2f%%", stats.CompletionRate*100)
 		return nil
 	}
 
@@ -50,7 +96,7 @@ func (pm *PartitionAssigner) AllocatePartitions(ctx context.Context, activeWorke
 
 	// 如果没有新的数据要分配，直接返回
 	if nextMaxID <= lastAllocatedID {
-		pm.config.Logger.Debugf("没有新的数据需要分配，当前已分配的最大ID: %d", lastAllocatedID)
+		pm.logger.Debugf("没有新的数据需要分配，当前已分配的最大ID: %d", lastAllocatedID)
 		return nil
 	}
 
@@ -61,12 +107,12 @@ func (pm *PartitionAssigner) AllocatePartitions(ctx context.Context, activeWorke
 	}
 
 	// 直接使用策略的批量创建方法
-	createdPartitions, err := pm.config.Strategy.CreatePartitionsIfNotExist(ctx, createRequest)
+	createdPartitions, err := pm.strategy.CreatePartitionsIfNotExist(ctx, createRequest)
 	if err != nil {
 		return errors.Wrap(err, "创建分区失败")
 	}
 
-	pm.config.Logger.Infof("成功创建 %d 个新分区，ID范围 [%d, %d]", len(createdPartitions), lastAllocatedID+1, nextMaxID)
+	pm.logger.Infof("成功创建 %d 个新分区，ID范围 [%d, %d]", len(createdPartitions), lastAllocatedID+1, nextMaxID)
 
 	return nil
 }
@@ -82,14 +128,14 @@ func (pm *PartitionAssigner) GetProcessingRange(ctx context.Context, activeWorke
 	// 计算合适的ID探测范围大小
 	rangeSize, err := pm.CalculateLookAheadRange(ctx, activeWorkers, workerPartitionMultiple)
 	if err != nil {
-		pm.config.Logger.Warnf("计算ID探测范围失败: %v，使用默认值", err)
+		pm.logger.Warnf("计算ID探测范围失败: %v，使用默认值", err)
 		rangeSize = 10000 // 使用一个默认值作为备选
 	}
 
-	pm.config.Logger.Debugf("使用动态计算的ID探测范围: %d", rangeSize)
+	pm.logger.Debugf("使用动态计算的ID探测范围: %d", rangeSize)
 
 	// 获取下一批次的最大ID
-	nextMaxID, err := pm.config.Planer.GetNextMaxID(ctx, lastAllocatedID, rangeSize)
+	nextMaxID, err := pm.planer.GetNextMaxID(ctx, lastAllocatedID, rangeSize)
 	if err != nil {
 		return 0, 0, errors.Wrap(err, "获取下一个最大ID失败")
 	}
@@ -123,15 +169,15 @@ func (pm *PartitionAssigner) CreatePartitionsRequest(ctx context.Context, lastAl
 	// 获取有效的分区大小（从处理器建议或默认值）
 	partitionSize, err := pm.GetEffectivePartitionSize(ctx)
 	if err != nil {
-		pm.config.Logger.Warnf("获取有效分区大小失败: %v，使用默认值", err)
+		pm.logger.Warnf("获取有效分区大小失败: %v，使用默认值", err)
 		partitionSize = model.DefaultPartitionSize
 	}
 
 	// 记录日志
 	if partitionSize == model.DefaultPartitionSize {
-		pm.config.Logger.Debugf("使用默认分区大小: %d", partitionSize)
+		pm.logger.Debugf("使用默认分区大小: %d", partitionSize)
 	} else {
-		pm.config.Logger.Infof("使用处理器建议的分区大小: %d", partitionSize)
+		pm.logger.Infof("使用处理器建议的分区大小: %d", partitionSize)
 	}
 
 	// 根据分区大小计算分区数量
@@ -141,7 +187,7 @@ func (pm *PartitionAssigner) CreatePartitionsRequest(ctx context.Context, lastAl
 		partitionCount = 1 // 至少创建一个分区
 	}
 
-	pm.config.Logger.Infof("ID范围 [%d, %d]，分区大小 %d，将创建 %d 个分区",
+	pm.logger.Infof("ID范围 [%d, %d]，分区大小 %d，将创建 %d 个分区",
 		lastAllocatedID+1, nextMaxID, partitionSize, partitionCount)
 
 	// 创建分区请求
@@ -170,7 +216,7 @@ func (pm *PartitionAssigner) CreatePartitionsRequest(ctx context.Context, lastAl
 
 // GetLastAllocatedID 获取当前已分配分区的最大ID边界
 func (pm *PartitionAssigner) GetLastAllocatedID(ctx context.Context) (int64, error) {
-	allPartitions, err := pm.config.Strategy.GetAllPartitions(ctx)
+	allPartitions, err := pm.strategy.GetAllPartitions(ctx)
 	if err != nil {
 		return 0, errors.Wrap(err, "获取分区信息失败")
 	}
@@ -216,7 +262,7 @@ func (pm *PartitionAssigner) CalculateLookAheadRange(ctx context.Context, active
 // GetEffectivePartitionSize 获取有效的分区大小（从处理器建议或默认值）
 func (pm *PartitionAssigner) GetEffectivePartitionSize(ctx context.Context) (int64, error) {
 	// 尝试从处理器获取建议的分区大小
-	suggestedSize, err := pm.config.Planer.PartitionSize(ctx)
+	suggestedSize, err := pm.planer.PartitionSize(ctx)
 
 	if err != nil || suggestedSize <= 0 {
 		// 如果处理器没有建议分区大小，使用默认分区大小
