@@ -275,6 +275,336 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 	limitFiltered, err := strategy.GetFilteredPartitions(ctx, filters)
 	assert.NoError(t, err)
 	assert.Len(t, limitFiltered, 2)
+
+	// ========== StaleDuration 测试 ==========
+
+	// 使用带有自定义时间戳的 UpdatePartition 创建过时的分区
+	stalePartitions := []*model.PartitionInfo{
+		{
+			PartitionID: 4,
+			MinID:       3001,
+			MaxID:       4000,
+			Status:      model.StatusRunning,
+			WorkerID:    "worker3",
+			UpdatedAt:   now.Add(-10 * time.Minute), // 10分钟前
+			CreatedAt:   now.Add(-10 * time.Minute),
+			Version:     1,
+		},
+		{
+			PartitionID: 5,
+			MinID:       4001,
+			MaxID:       5000,
+			Status:      model.StatusRunning,
+			WorkerID:    "worker4",
+			UpdatedAt:   now.Add(-1 * time.Hour), // 1小时前
+			CreatedAt:   now.Add(-1 * time.Hour),
+			Version:     1,
+		},
+		{
+			PartitionID: 6,
+			MinID:       5001,
+			MaxID:       6000,
+			Status:      model.StatusRunning,
+			WorkerID:    "excluded_worker",
+			UpdatedAt:   now.Add(-2 * time.Hour), // 2小时前
+			CreatedAt:   now.Add(-2 * time.Hour),
+			Version:     1,
+		},
+	}
+
+	for _, partition := range stalePartitions {
+		_, err := strategy.UpdatePartition(ctx, partition, nil)
+		assert.NoError(t, err)
+	}
+
+	// 1. 测试基本过时时间过滤（5分钟）
+	staleDuration := 5 * time.Minute
+	filters = GetPartitionsFilters{
+		StaleDuration: &staleDuration,
+	}
+	staleFiltered, err := strategy.GetFilteredPartitions(ctx, filters)
+	assert.NoError(t, err)
+	assert.Len(t, staleFiltered, 3) // 分区4、5、6都应该过时
+	partitionIDs := make([]int, len(staleFiltered))
+	for i, p := range staleFiltered {
+		partitionIDs[i] = p.PartitionID
+	}
+	assert.Contains(t, partitionIDs, 4)
+	assert.Contains(t, partitionIDs, 5)
+	assert.Contains(t, partitionIDs, 6)
+
+	// 2. 测试零持续时间过滤器（应该无效）
+	zeroDuration := time.Duration(0)
+	filters = GetPartitionsFilters{
+		StaleDuration: &zeroDuration,
+	}
+	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
+	assert.NoError(t, err)
+	// 零持续时间应该返回所有分区（过滤器无效）
+	assert.GreaterOrEqual(t, len(filtered), 6) // 至少包含我们创建的所有分区
+
+	// 3. 测试负持续时间过滤器（应该无效）
+	negativeDuration := -5 * time.Minute
+	filters = GetPartitionsFilters{
+		StaleDuration: &negativeDuration,
+	}
+	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
+	assert.NoError(t, err)
+	// 负持续时间应该返回所有分区（过滤器无效）
+	assert.GreaterOrEqual(t, len(filtered), 6)
+
+	// 4. 测试 ExcludeWorkerIDOnStale 功能
+	excludeWorkerID2 := "worker2"
+	filters = GetPartitionsFilters{
+		StaleDuration:          &staleDuration,
+		ExcludeWorkerIDOnStale: excludeWorkerID2,
+	}
+	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
+	assert.NoError(t, err)
+	// 应该排除具有 worker2 的过时分区
+	for _, p := range filtered {
+		if p.Status == model.StatusRunning || p.Status == model.StatusPending {
+			assert.NotEqual(t, excludeWorkerID2, p.WorkerID)
+		}
+	}
+
+	// 5. 测试空的 ExcludeWorkerIDOnStale
+	filters = GetPartitionsFilters{
+		StaleDuration:          &staleDuration,
+		ExcludeWorkerIDOnStale: "",
+	}
+	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
+	assert.NoError(t, err)
+	// 空的排除列表应该不影响结果
+	assert.GreaterOrEqual(t, len(filtered), 3)
+
+	// 6. 测试与状态过滤的组合
+	runningStatus := model.StatusRunning
+	filters = GetPartitionsFilters{
+		StaleDuration:  &staleDuration,
+		TargetStatuses: []model.PartitionStatus{runningStatus},
+	}
+	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
+	assert.NoError(t, err)
+	// 只返回过时且状态为 Running 的分区
+	for _, p := range filtered {
+		assert.Equal(t, model.StatusRunning, p.Status)
+		assert.True(t, now.Sub(p.UpdatedAt) >= staleDuration)
+	}
+
+	// 7. 测试复杂组合：状态 + 过时 + 排除 + 限制
+	filters = GetPartitionsFilters{
+		TargetStatuses:         []model.PartitionStatus{runningStatus},
+		StaleDuration:          &staleDuration,
+		ExcludeWorkerIDOnStale: "worker2",
+		Limit:                  1,
+	}
+	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
+	assert.NoError(t, err)
+	assert.LessOrEqual(t, len(filtered), 1)
+	for _, p := range filtered {
+		assert.Equal(t, model.StatusRunning, p.Status)
+		assert.NotEqual(t, "worker2", p.WorkerID)
+		assert.True(t, now.Sub(p.UpdatedAt) >= staleDuration)
+	}
+
+	// 8. 测试极短的持续时间（微秒级）
+	microDuration := 100 * time.Microsecond
+	time.Sleep(200 * time.Microsecond) // 确保有时间差
+	filters = GetPartitionsFilters{
+		StaleDuration: &microDuration,
+	}
+	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
+	assert.NoError(t, err)
+	// 应该包含大部分分区，因为它们都是在微秒前创建的
+	assert.GreaterOrEqual(t, len(filtered), 3)
+
+	// 9. 测试与 MinID/MaxID 范围的组合
+	minIDForStale := 4
+	maxIDForStale := 6
+	filters = GetPartitionsFilters{
+		MinID:         &minIDForStale,
+		MaxID:         &maxIDForStale,
+		StaleDuration: &staleDuration,
+	}
+	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
+	assert.NoError(t, err)
+	// 应该只包含 ID 在范围内且过时的分区
+	for _, p := range filtered {
+		assert.GreaterOrEqual(t, p.PartitionID, minIDForStale)
+		assert.LessOrEqual(t, p.PartitionID, maxIDForStale)
+		assert.True(t, now.Sub(p.UpdatedAt) >= staleDuration)
+	}
+
+	// 10. 测试创建新分区后的过时过滤
+	newPartition := &model.PartitionInfo{
+		PartitionID: 8,
+		MinID:       7001,
+		MaxID:       8000,
+		Status:      model.StatusPending,
+		WorkerID:    "",
+		// 不设置 UpdatedAt，让系统自动设置为当前时间
+	}
+	_, err = strategy.UpdatePartition(ctx, newPartition, nil)
+	assert.NoError(t, err)
+
+	// 立即查询过时分区，新分区不应该被包含
+	filters = GetPartitionsFilters{
+		StaleDuration: &staleDuration,
+	}
+	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
+	assert.NoError(t, err)
+	// 新分区不应该在过时列表中
+	for _, p := range filtered {
+		assert.NotEqual(t, 8, p.PartitionID)
+	}
+
+	// 11. 测试限制数量与过时过滤组合
+	filters = GetPartitionsFilters{
+		StaleDuration: &staleDuration,
+		Limit:         2,
+	}
+	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
+	assert.NoError(t, err)
+	assert.Len(t, filtered, 2) // 限制为2个分区
+
+	// ========== 扩展的 StaleDuration 测试用例 ==========
+
+	// 12. 测试零持续时间（应该无效，返回所有分区）
+	zeroDuration = time.Duration(0)
+	filters = GetPartitionsFilters{
+		StaleDuration: &zeroDuration,
+	}
+	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
+	assert.NoError(t, err)
+	// 零持续时间应该无效，返回所有分区
+	assert.GreaterOrEqual(t, len(filtered), 7) // 至少包含我们创建的所有分区
+
+	// 13. 测试负持续时间（应该无效，返回所有分区）
+	negativeDuration = -5 * time.Minute
+	filters = GetPartitionsFilters{
+		StaleDuration: &negativeDuration,
+	}
+	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
+	assert.NoError(t, err)
+	// 负持续时间应该无效，返回所有分区
+	assert.GreaterOrEqual(t, len(filtered), 7)
+
+	// 14. 测试 ExcludeWorkerIDOnStale 功能
+	excludeWorkerID := "worker2"
+	filters = GetPartitionsFilters{
+		StaleDuration:          &staleDuration,
+		ExcludeWorkerIDOnStale: excludeWorkerID,
+	}
+	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
+	assert.NoError(t, err)
+	// 应该排除具有 worker2 的过时分区
+	for _, p := range filtered {
+		if p.Status == model.StatusRunning || p.Status == model.StatusPending {
+			assert.NotEqual(t, excludeWorkerID, p.WorkerID)
+		}
+	}
+
+	// 15. 测试空的 ExcludeWorkerIDOnStale
+	filters = GetPartitionsFilters{
+		StaleDuration:          &staleDuration,
+		ExcludeWorkerIDOnStale: "",
+	}
+	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
+	assert.NoError(t, err)
+	// 空的排除列表应该不影响结果
+	assert.GreaterOrEqual(t, len(filtered), 3)
+
+	// 16. 测试与状态过滤的组合
+	runningStatus = model.StatusRunning
+	filters = GetPartitionsFilters{
+		StaleDuration:  &staleDuration,
+		TargetStatuses: []model.PartitionStatus{runningStatus},
+	}
+	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
+	assert.NoError(t, err)
+	// 只返回过时且状态为 Running 的分区
+	for _, p := range filtered {
+		assert.Equal(t, model.StatusRunning, p.Status)
+		assert.True(t, now.Sub(p.UpdatedAt) >= staleDuration)
+	}
+
+	// 17. 测试复杂组合：状态 + 过时 + 排除 + 限制
+	filters = GetPartitionsFilters{
+		TargetStatuses:         []model.PartitionStatus{runningStatus},
+		StaleDuration:          &staleDuration,
+		ExcludeWorkerIDOnStale: "worker2",
+		Limit:                  1,
+	}
+	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
+	assert.NoError(t, err)
+	assert.LessOrEqual(t, len(filtered), 1)
+	for _, p := range filtered {
+		assert.Equal(t, model.StatusRunning, p.Status)
+		assert.NotEqual(t, "worker2", p.WorkerID)
+		assert.True(t, now.Sub(p.UpdatedAt) >= staleDuration)
+	}
+
+	// 18. 测试极短的持续时间（微秒级）
+	microDuration = 100 * time.Microsecond
+	time.Sleep(200 * time.Microsecond) // 确保有时间差
+	filters = GetPartitionsFilters{
+		StaleDuration: &microDuration,
+	}
+	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
+	assert.NoError(t, err)
+	// 应该包含大部分分区，因为它们都是在微秒前创建的
+	assert.GreaterOrEqual(t, len(filtered), 3)
+
+	// 19. 测试与 MinID/MaxID 范围的组合
+	minIDForStale = 4
+	maxIDForStale = 6
+	filters = GetPartitionsFilters{
+		MinID:         &minIDForStale,
+		MaxID:         &maxIDForStale,
+		StaleDuration: &staleDuration,
+	}
+	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
+	assert.NoError(t, err)
+	// 应该只包含 ID 在范围内且过时的分区
+	for _, p := range filtered {
+		assert.GreaterOrEqual(t, p.PartitionID, minIDForStale)
+		assert.LessOrEqual(t, p.PartitionID, maxIDForStale)
+		assert.True(t, now.Sub(p.UpdatedAt) >= staleDuration)
+	}
+
+	// 20. 测试创建新分区后的过时过滤
+	newPartition = &model.PartitionInfo{
+		PartitionID: 8,
+		MinID:       7001,
+		MaxID:       8000,
+		Status:      model.StatusPending,
+		WorkerID:    "",
+		// 不设置 UpdatedAt，让系统自动设置为当前时间
+	}
+	_, err = strategy.UpdatePartition(ctx, newPartition, nil)
+	assert.NoError(t, err)
+
+	// 立即查询过时分区，新分区不应该被包含
+	filters = GetPartitionsFilters{
+		StaleDuration: &staleDuration,
+	}
+	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
+	assert.NoError(t, err)
+	// 新分区不应该在过时列表中
+	for _, p := range filtered {
+		assert.NotEqual(t, 8, p.PartitionID)
+	}
+
+	// 21. 测试非常长的持续时间（应该返回空列表）
+	longDuration := 24 * time.Hour
+	filters = GetPartitionsFilters{
+		StaleDuration: &longDuration,
+	}
+	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
+	assert.NoError(t, err)
+	// 没有分区会超过24小时过时
+	assert.Len(t, filtered, 0)
 }
 
 // ==================== 批量操作测试 ====================
@@ -645,8 +975,8 @@ func TestSimpleStrategy_InvalidInputHandling(t *testing.T) {
 
 	ctx := context.Background()
 
-	// 测试传入nil - 由于SavePartitions已移除，我们测试其他nil情况
-	// err := strategy.SavePartitions(ctx, nil)
+	// 测试传入nil - 测试nil情况的错误处理
+	// err := strategy.UpdatePartition(ctx, nil, nil)
 	// assert.NoError(t, err) // 空列表应该不报错
 
 	// 测试传入空分区信息
@@ -858,10 +1188,8 @@ func TestSimpleStrategyIntegration(t *testing.T) {
 	assert.Equal(t, 1, stats.Completed)
 
 	// 11. 验证过滤功能
-	staleTime := 5 * time.Minute
 	filters := GetPartitionsFilters{
 		TargetStatuses: []model.PartitionStatus{model.StatusPending, model.StatusClaimed},
-		StaleDuration:  &staleTime,
 	}
 	available, err := strategy.GetFilteredPartitions(ctx, filters)
 	assert.NoError(t, err)

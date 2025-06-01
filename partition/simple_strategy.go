@@ -251,10 +251,15 @@ func (s *SimpleStrategy) UpdatePartition(ctx context.Context, partitionInfo *mod
 
 	// 更新分区信息
 	updatedPartition := *partitionInfo
-	updatedPartition.UpdatedAt = time.Now()
+	// 只在 UpdatedAt 为零值时才自动更新为当前时间
+	if updatedPartition.UpdatedAt.IsZero() {
+		updatedPartition.UpdatedAt = time.Now()
+	}
 
 	if !exists {
-		updatedPartition.CreatedAt = time.Now()
+		if updatedPartition.CreatedAt.IsZero() {
+			updatedPartition.CreatedAt = time.Now()
+		}
 		updatedPartition.Version = 1
 	} else {
 		if updatedPartition.CreatedAt.IsZero() {
