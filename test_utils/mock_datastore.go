@@ -479,3 +479,123 @@ func (m *MockDataStore) GetQueueLength(ctx context.Context, queueKey string) (in
 
 	return int64(len(queue)), nil
 }
+
+// Hash分区数据存储
+var hashPartitionsData = make(map[string]map[string]string) // key -> field -> value
+var hashPartitionVersions = make(map[string]int64)          // field -> version
+var hashPartitionMutex sync.RWMutex
+
+// 实现HSetPartition方法
+func (m *MockDataStore) HSetPartition(ctx context.Context, key, field, value string) error {
+	hashPartitionMutex.Lock()
+	defer hashPartitionMutex.Unlock()
+
+	if hashPartitionsData[key] == nil {
+		hashPartitionsData[key] = make(map[string]string)
+	}
+	hashPartitionsData[key][field] = value
+	return nil
+}
+
+// 实现HGetPartition方法
+func (m *MockDataStore) HGetPartition(ctx context.Context, key, field string) (string, error) {
+	hashPartitionMutex.RLock()
+	defer hashPartitionMutex.RUnlock()
+
+	if hashPartitionsData[key] == nil {
+		return "", fmt.Errorf("partition not found")
+	}
+
+	value, exists := hashPartitionsData[key][field]
+	if !exists {
+		return "", fmt.Errorf("partition field not found")
+	}
+
+	return value, nil
+}
+
+// 实现HGetAllPartitions方法
+func (m *MockDataStore) HGetAllPartitions(ctx context.Context, key string) (map[string]string, error) {
+	hashPartitionMutex.RLock()
+	defer hashPartitionMutex.RUnlock()
+
+	result := make(map[string]string)
+	if hashPartitionsData[key] != nil {
+		for field, value := range hashPartitionsData[key] {
+			result[field] = value
+		}
+	}
+
+	return result, nil
+}
+
+// 实现HDeletePartition方法
+func (m *MockDataStore) HDeletePartition(ctx context.Context, key, field string) error {
+	hashPartitionMutex.Lock()
+	defer hashPartitionMutex.Unlock()
+
+	if hashPartitionsData[key] != nil {
+		delete(hashPartitionsData[key], field)
+		delete(hashPartitionVersions, field)
+		if len(hashPartitionsData[key]) == 0 {
+			delete(hashPartitionsData, key)
+		}
+	}
+
+	return nil
+}
+
+// 实现HUpdatePartitionWithVersion方法
+func (m *MockDataStore) HUpdatePartitionWithVersion(ctx context.Context, key, field, value string, expectedVersion int64) (bool, error) {
+	hashPartitionMutex.Lock()
+	defer hashPartitionMutex.Unlock()
+
+	currentVersion := hashPartitionVersions[field]
+
+	// 创建新分区（expectedVersion 为 0）
+	if expectedVersion == 0 {
+		if currentVersion != 0 {
+			return false, fmt.Errorf("partition already exists")
+		}
+		// 创建新分区
+		if hashPartitionsData[key] == nil {
+			hashPartitionsData[key] = make(map[string]string)
+		}
+		hashPartitionsData[key][field] = value
+		hashPartitionVersions[field] = 1
+		return true, nil
+	}
+
+	// 更新现有分区
+	if currentVersion != expectedVersion {
+		return false, fmt.Errorf("optimistic lock failed: version mismatch")
+	}
+
+	if hashPartitionsData[key] == nil {
+		hashPartitionsData[key] = make(map[string]string)
+	}
+	hashPartitionsData[key][field] = value
+	hashPartitionVersions[field] = expectedVersion + 1
+	return true, nil
+}
+
+// 实现HSetPartitionsInTx方法
+func (m *MockDataStore) HSetPartitionsInTx(ctx context.Context, key string, partitions map[string]string) error {
+	hashPartitionMutex.Lock()
+	defer hashPartitionMutex.Unlock()
+
+	if hashPartitionsData[key] == nil {
+		hashPartitionsData[key] = make(map[string]string)
+	}
+
+	// 模拟事务批量设置
+	for field, value := range partitions {
+		hashPartitionsData[key][field] = value
+		// 如果没有版本，设置为1，否则保持当前版本
+		if hashPartitionVersions[field] == 0 {
+			hashPartitionVersions[field] = 1
+		}
+	}
+
+	return nil
+}
