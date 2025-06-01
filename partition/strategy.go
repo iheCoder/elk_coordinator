@@ -20,6 +20,40 @@ type UpdateOptions struct {
 	Force bool `json:"force,omitempty"`
 }
 
+// CreatePartitionRequest 创建分区的请求
+type CreatePartitionRequest struct {
+	PartitionID int                    `json:"partition_id"`
+	MinID       int64                  `json:"min_id"`
+	MaxID       int64                  `json:"max_id"`
+	Options     map[string]interface{} `json:"options,omitempty"`
+}
+
+// ToPartitionInfo 将创建请求转换为分区信息（便于测试和调试）
+func (req CreatePartitionRequest) ToPartitionInfo() *model.PartitionInfo {
+	return &model.PartitionInfo{
+		PartitionID: req.PartitionID,
+		MinID:       req.MinID,
+		MaxID:       req.MaxID,
+		Options:     req.Options,
+		Status:      model.StatusPending,
+		// 其他字段由系统自动设置
+	}
+}
+
+// CreatePartitionsRequest 批量创建分区的请求
+type CreatePartitionsRequest struct {
+	Partitions []CreatePartitionRequest `json:"partitions"`
+}
+
+// ToPartitionInfos 将批量创建请求转换为分区信息列表（便于测试和调试）
+func (req CreatePartitionsRequest) ToPartitionInfos() []*model.PartitionInfo {
+	result := make([]*model.PartitionInfo, len(req.Partitions))
+	for i, partition := range req.Partitions {
+		result[i] = partition.ToPartitionInfo()
+	}
+	return result
+}
+
 // GetPartitionsFilters 定义了检索分区时的过滤条件
 type GetPartitionsFilters struct {
 	// TargetStatuses 指定了要匹配的分区状态列表
@@ -60,10 +94,6 @@ type PartitionStrategy interface {
 	// GetAllPartitions 获取所有分区
 	GetAllPartitions(ctx context.Context) ([]*model.PartitionInfo, error)
 
-	// SavePartition 保存分区（创建或更新）
-	// 注意：这是直接保存，建议并发环境下使用 UpdatePartitionOptimistically
-	SavePartition(ctx context.Context, partitionInfo *model.PartitionInfo) error
-
 	// DeletePartition 删除分区
 	DeletePartition(ctx context.Context, partitionID int) error
 
@@ -75,6 +105,10 @@ type PartitionStrategy interface {
 	// SavePartitions 批量保存分区
 	SavePartitions(ctx context.Context, partitions []*model.PartitionInfo) error
 
+	// CreatePartitionsIfNotExist 批量创建分区（如果不存在）
+	// 提供明确的批量创建语义，避免单个分区创建的歧义
+	CreatePartitionsIfNotExist(ctx context.Context, request CreatePartitionsRequest) ([]*model.PartitionInfo, error)
+
 	// DeletePartitions 批量删除分区
 	DeletePartitions(ctx context.Context, partitionIDs []int) error
 
@@ -85,10 +119,6 @@ type PartitionStrategy interface {
 	// options: 更新选项，包含版本控制、upsert等可选参数
 	// 返回更新后的分区信息，如果更新失败则返回错误
 	UpdatePartition(ctx context.Context, partitionInfo *model.PartitionInfo, options *UpdateOptions) (*model.PartitionInfo, error)
-
-	// CreatePartitionIfNotExists 条件创建分区
-	// 只有在分区不存在时才会创建，避免重复创建
-	CreatePartitionIfNotExists(ctx context.Context, partitionID int, minID, maxID int64, options map[string]interface{}) (*model.PartitionInfo, error)
 
 	// ==================== 策略信息 ====================
 
@@ -180,10 +210,6 @@ func (pm *PartitionManager) GetAllPartitions(ctx context.Context) ([]*model.Part
 	return pm.strategy.GetAllPartitions(ctx)
 }
 
-func (pm *PartitionManager) SavePartition(ctx context.Context, partitionInfo *model.PartitionInfo) error {
-	return pm.strategy.SavePartition(ctx, partitionInfo)
-}
-
 func (pm *PartitionManager) DeletePartition(ctx context.Context, partitionID int) error {
 	return pm.strategy.DeletePartition(ctx, partitionID)
 }
@@ -197,6 +223,10 @@ func (pm *PartitionManager) SavePartitions(ctx context.Context, partitions []*mo
 	return pm.strategy.SavePartitions(ctx, partitions)
 }
 
+func (pm *PartitionManager) CreatePartitionsIfNotExist(ctx context.Context, request CreatePartitionsRequest) ([]*model.PartitionInfo, error) {
+	return pm.strategy.CreatePartitionsIfNotExist(ctx, request)
+}
+
 func (pm *PartitionManager) DeletePartitions(ctx context.Context, partitionIDs []int) error {
 	return pm.strategy.DeletePartitions(ctx, partitionIDs)
 }
@@ -204,10 +234,6 @@ func (pm *PartitionManager) DeletePartitions(ctx context.Context, partitionIDs [
 // 并发安全操作委托
 func (pm *PartitionManager) UpdatePartition(ctx context.Context, partitionInfo *model.PartitionInfo, options *UpdateOptions) (*model.PartitionInfo, error) {
 	return pm.strategy.UpdatePartition(ctx, partitionInfo, options)
-}
-
-func (pm *PartitionManager) CreatePartitionIfNotExists(ctx context.Context, partitionID int, minID, maxID int64, options map[string]interface{}) (*model.PartitionInfo, error) {
-	return pm.strategy.CreatePartitionIfNotExists(ctx, partitionID, minID, maxID, options)
 }
 
 // 高级协调方法委托
