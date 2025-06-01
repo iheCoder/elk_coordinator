@@ -230,6 +230,10 @@ func (s *SimpleStrategy) DeletePartitions(ctx context.Context, partitionIDs []in
 
 // UpdatePartition 安全更新分区信息
 func (s *SimpleStrategy) UpdatePartition(ctx context.Context, partitionInfo *model.PartitionInfo, options *UpdateOptions) (*model.PartitionInfo, error) {
+	if partitionInfo == nil {
+		return nil, fmt.Errorf("分区信息不能为空")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
