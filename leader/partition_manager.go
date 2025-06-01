@@ -2,11 +2,9 @@ package leader
 
 import (
 	"context"
-	"elk_coordinator/data"
 	"elk_coordinator/model"
+	"elk_coordinator/partition"
 	"elk_coordinator/utils"
-	"encoding/json"
-	"fmt"
 	"github.com/pkg/errors"
 	"time"
 )
@@ -19,7 +17,7 @@ type PartitionManager struct {
 // PartitionManagerConfig 分区管理器配置
 type PartitionManagerConfig struct {
 	Namespace string
-	DataStore data.SimplePartitionOperations
+	Strategy  partition.PartitionStrategy
 	Logger    utils.Logger
 	Planer    PartitionPlaner
 }
@@ -88,28 +86,20 @@ func (pm *PartitionManager) AllocatePartitions(ctx context.Context, activeWorker
 
 // GetExistingPartitions 检查现有的分区状态
 func (pm *PartitionManager) GetExistingPartitions(ctx context.Context) (map[int]model.PartitionInfo, PartitionStats, error) {
-	partitionInfoKey := fmt.Sprintf(model.PartitionInfoKeyFmt, pm.config.Namespace)
-	partitionsData, err := pm.config.DataStore.GetPartitions(ctx, partitionInfoKey)
+	allPartitions, err := pm.config.Strategy.GetAllPartitions(ctx)
 
 	stats := PartitionStats{}
-	var partitions map[int]model.PartitionInfo
+	partitions := make(map[int]model.PartitionInfo)
 
 	if err != nil {
 		return nil, stats, errors.Wrap(err, "获取分区信息失败")
 	}
 
-	// 如果没有分区信息，返回空映射
-	if partitionsData == "" {
-		return make(map[int]model.PartitionInfo), stats, nil
-	}
+	// 将切片转换为映射，并统计状态
+	stats.Total = len(allPartitions)
+	for _, partition := range allPartitions {
+		partitions[partition.PartitionID] = *partition
 
-	if err := json.Unmarshal([]byte(partitionsData), &partitions); err != nil {
-		return nil, stats, errors.Wrap(err, "解析分区数据失败")
-	}
-
-	// 统计分区状态
-	stats.Total = len(partitions)
-	for _, partition := range partitions {
 		switch partition.Status {
 		case model.StatusPending:
 			stats.Pending++
@@ -260,15 +250,25 @@ func (pm *PartitionManager) MergePartitions(existingPartitions, newPartitions ma
 
 // SavePartitionsToStorage 保存分区信息到存储
 func (pm *PartitionManager) SavePartitionsToStorage(ctx context.Context, partitions map[int]model.PartitionInfo) error {
-	partitionInfoKey := fmt.Sprintf(model.PartitionInfoKeyFmt, pm.config.Namespace)
-	partitionsData, err := json.Marshal(partitions)
-	if err != nil {
-		return errors.Wrap(err, "序列化分区数据失败")
+	// 将分区映射转换为创建请求
+	requests := make([]partition.CreatePartitionRequest, 0, len(partitions))
+	for _, p := range partitions {
+		requests = append(requests, partition.CreatePartitionRequest{
+			PartitionID: p.PartitionID,
+			MinID:       p.MinID,
+			MaxID:       p.MaxID,
+			Options:     p.Options,
+		})
 	}
 
-	err = pm.config.DataStore.SetPartitions(ctx, partitionInfoKey, string(partitionsData))
+	createRequest := partition.CreatePartitionsRequest{
+		Partitions: requests,
+	}
+
+	// 使用策略的批量创建方法
+	_, err := pm.config.Strategy.CreatePartitionsIfNotExist(ctx, createRequest)
 	if err != nil {
-		return errors.Wrap(err, "保存分区数据失败")
+		return errors.Wrap(err, "批量创建分区失败")
 	}
 
 	return nil

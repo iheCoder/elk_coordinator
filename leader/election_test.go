@@ -18,7 +18,7 @@ func TestTryElect(t *testing.T) {
 		NodeID:           "node1",
 		Namespace:        "test",
 		DataStore:        mockStore,
-		Logger:           &test_utils.MockLogger{},
+		Logger:           test_utils.NewMockLogger(false),
 		ElectionInterval: 1 * time.Second,
 		LockExpiry:       5 * time.Second,
 	})
@@ -45,7 +45,7 @@ func TestTryElect(t *testing.T) {
 		NodeID:           "node2",
 		Namespace:        "test",
 		DataStore:        mockStore,
-		Logger:           &test_utils.MockLogger{},
+		Logger:           test_utils.NewMockLogger(false),
 		ElectionInterval: 1 * time.Second,
 		LockExpiry:       5 * time.Second,
 	})
@@ -64,7 +64,7 @@ func TestRenewLeaderLock(t *testing.T) {
 		NodeID:           "node1",
 		Namespace:        "test",
 		DataStore:        mockStore,
-		Logger:           &test_utils.MockLogger{},
+		Logger:           test_utils.NewMockLogger(false),
 		ElectionInterval: 1 * time.Second,
 		LockExpiry:       5 * time.Second,
 	})
@@ -87,7 +87,7 @@ func TestRenewLeaderLock(t *testing.T) {
 		NodeID:           "node2",
 		Namespace:        "test",
 		DataStore:        mockStore,
-		Logger:           &test_utils.MockLogger{},
+		Logger:           test_utils.NewMockLogger(false),
 		ElectionInterval: 1 * time.Second,
 		LockExpiry:       5 * time.Second,
 	})
@@ -105,7 +105,7 @@ func TestGetLeaderInfo(t *testing.T) {
 		NodeID:           "node1",
 		Namespace:        "test",
 		DataStore:        mockStore,
-		Logger:           &test_utils.MockLogger{},
+		Logger:           test_utils.NewMockLogger(false),
 		ElectionInterval: 1 * time.Second,
 		LockExpiry:       5 * time.Second,
 	})
@@ -136,7 +136,7 @@ func TestStartRenewing(t *testing.T) {
 		NodeID:           "node1",
 		Namespace:        "test",
 		DataStore:        mockStore,
-		Logger:           &test_utils.MockLogger{},
+		Logger:           test_utils.NewMockLogger(false),
 		ElectionInterval: 1 * time.Second,
 		LockExpiry:       1 * time.Second, // 使用短的过期时间便于测试
 	})
@@ -194,7 +194,7 @@ func TestConcurrentElection(t *testing.T) {
 			NodeID:           nodeID,
 			Namespace:        "test",
 			DataStore:        mockStore,
-			Logger:           &test_utils.MockLogger{},
+			Logger:           test_utils.NewMockLogger(false),
 			ElectionInterval: 1 * time.Second,
 			LockExpiry:       5 * time.Second,
 		})
@@ -251,7 +251,7 @@ func TestReElectionAfterExpiry(t *testing.T) {
 		NodeID:           "node1",
 		Namespace:        "test",
 		DataStore:        mockStore,
-		Logger:           &test_utils.MockLogger{},
+		Logger:           test_utils.NewMockLogger(false),
 		ElectionInterval: 1 * time.Second,
 		LockExpiry:       2 * time.Second, // 使用短的锁过期时间来测试
 	})
@@ -260,7 +260,7 @@ func TestReElectionAfterExpiry(t *testing.T) {
 		NodeID:           "node2",
 		Namespace:        "test",
 		DataStore:        mockStore,
-		Logger:           &test_utils.MockLogger{},
+		Logger:           test_utils.NewMockLogger(false),
 		ElectionInterval: 1 * time.Second,
 		LockExpiry:       2 * time.Second,
 	})
@@ -310,7 +310,7 @@ func TestLeaderFailureAndRecovery(t *testing.T) {
 		NodeID:           "node1",
 		Namespace:        "test",
 		DataStore:        mockStore,
-		Logger:           &test_utils.MockLogger{},
+		Logger:           test_utils.NewMockLogger(false),
 		ElectionInterval: 100 * time.Millisecond,
 		LockExpiry:       500 * time.Millisecond,
 	})
@@ -319,7 +319,7 @@ func TestLeaderFailureAndRecovery(t *testing.T) {
 		NodeID:           "node2",
 		Namespace:        "test",
 		DataStore:        mockStore,
-		Logger:           &test_utils.MockLogger{},
+		Logger:           test_utils.NewMockLogger(false),
 		ElectionInterval: 100 * time.Millisecond,
 		LockExpiry:       500 * time.Millisecond,
 	})
@@ -390,7 +390,7 @@ func TestLockRenewalPrevention(t *testing.T) {
 		NodeID:           "node1",
 		Namespace:        "test",
 		DataStore:        mockStore,
-		Logger:           &test_utils.MockLogger{},
+		Logger:           test_utils.NewMockLogger(false),
 		ElectionInterval: 100 * time.Millisecond,
 		LockExpiry:       500 * time.Millisecond,
 	})
@@ -428,7 +428,7 @@ func TestMultipleElectionCycles(t *testing.T) {
 			NodeID:           nodeID,
 			Namespace:        "test",
 			DataStore:        mockStore,
-			Logger:           &test_utils.MockLogger{},
+			Logger:           test_utils.NewMockLogger(false),
 			ElectionInterval: 100 * time.Millisecond,
 			LockExpiry:       500 * time.Millisecond,
 		})

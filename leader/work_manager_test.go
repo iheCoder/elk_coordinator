@@ -17,7 +17,7 @@ func TestGetActiveWorkers(t *testing.T) {
 		NodeID:                  "node1",
 		Namespace:               "test",
 		DataStore:               mockStore,
-		Logger:                  &test_utils.MockLogger{},
+		Logger:                  test_utils.NewMockLogger(false),
 		WorkerPartitionMultiple: 2,
 		ValidHeartbeatDuration:  30 * time.Second,
 	})
@@ -84,15 +84,15 @@ func TestTryAllocatePartitions(t *testing.T) {
 		NodeID:                  "node1",
 		Namespace:               "test",
 		DataStore:               mockStore,
-		Logger:                  &test_utils.MockLogger{},
+		Logger:                  test_utils.NewMockLogger(false),
 		WorkerPartitionMultiple: 2,
 		ValidHeartbeatDuration:  30 * time.Second,
 	})
 
 	partitionMgr := NewPartitionManager(PartitionManagerConfig{
 		Namespace: "test",
-		DataStore: mockStore,
-		Logger:    &test_utils.MockLogger{},
+		Strategy:  test_utils.NewMockPartitionStrategy(),
+		Logger:    test_utils.NewMockLogger(false),
 		Planer:    mockPlaner,
 	})
 
@@ -140,15 +140,15 @@ func TestRunPartitionAllocationLoop(t *testing.T) {
 		NodeID:                  "node1",
 		Namespace:               "test",
 		DataStore:               mockStore,
-		Logger:                  &test_utils.MockLogger{},
+		Logger:                  test_utils.NewMockLogger(false),
 		WorkerPartitionMultiple: 2,
 		ValidHeartbeatDuration:  30 * time.Second,
 	})
 
 	partitionMgr := NewPartitionManager(PartitionManagerConfig{
 		Namespace: "test",
-		DataStore: mockStore,
-		Logger:    &test_utils.MockLogger{},
+		Strategy:  test_utils.NewMockPartitionStrategy(),
+		Logger:    test_utils.NewMockLogger(false),
 		Planer:    mockPlaner,
 	})
 

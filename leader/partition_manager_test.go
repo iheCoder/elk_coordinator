@@ -4,8 +4,6 @@ import (
 	"context"
 	"elk_coordinator/model"
 	"elk_coordinator/test_utils"
-	"encoding/json"
-	"fmt"
 	"testing"
 	"time"
 )
@@ -29,11 +27,11 @@ func (m *mockPartitionPlaner) GetNextMaxID(ctx context.Context, lastID int64, ra
 
 // TestGetExistingPartitions 测试获取现有分区功能
 func TestGetExistingPartitions(t *testing.T) {
-	mockStore := test_utils.NewMockDataStore()
+	mockStrategy := test_utils.NewMockPartitionStrategy()
 	partitionMgr := NewPartitionManager(PartitionManagerConfig{
 		Namespace: "test",
-		DataStore: mockStore,
-		Logger:    &test_utils.MockLogger{},
+		Strategy:  mockStrategy,
+		Logger:    test_utils.NewMockLogger(false),
 		Planer:    &mockPartitionPlaner{},
 	})
 
@@ -52,8 +50,7 @@ func TestGetExistingPartitions(t *testing.T) {
 	}
 
 	// 设置分区数据
-	partitionInfoKey := fmt.Sprintf(model.PartitionInfoKeyFmt, "test")
-	testPartitions := map[int]model.PartitionInfo{
+	testPartitions := map[int]*model.PartitionInfo{
 		1: {
 			PartitionID: 1,
 			MinID:       1,
@@ -84,8 +81,7 @@ func TestGetExistingPartitions(t *testing.T) {
 		},
 	}
 
-	partitionData, _ := json.Marshal(testPartitions)
-	mockStore.PartitionData[partitionInfoKey] = string(partitionData)
+	mockStrategy.SetPartitions(testPartitions)
 
 	// 再次获取分区，现在应该有数据了
 	partitions, stats, err = partitionMgr.GetExistingPartitions(ctx)
@@ -114,11 +110,11 @@ func TestGetExistingPartitions(t *testing.T) {
 
 // TestGetLastAllocatedID 测试获取最后分配的ID边界
 func TestGetLastAllocatedID(t *testing.T) {
-	mockStore := test_utils.NewMockDataStore()
+	mockStrategy := test_utils.NewMockPartitionStrategy()
 	partitionMgr := NewPartitionManager(PartitionManagerConfig{
 		Namespace: "test",
-		DataStore: mockStore,
-		Logger:    &test_utils.MockLogger{},
+		Strategy:  mockStrategy,
+		Logger:    test_utils.NewMockLogger(false),
 		Planer:    &mockPartitionPlaner{},
 	})
 
@@ -134,8 +130,7 @@ func TestGetLastAllocatedID(t *testing.T) {
 	}
 
 	// 设置分区数据
-	partitionInfoKey := fmt.Sprintf(model.PartitionInfoKeyFmt, "test")
-	testPartitions := map[int]model.PartitionInfo{
+	testPartitions := map[int]*model.PartitionInfo{
 		1: {
 			PartitionID: 1,
 			MinID:       1,
@@ -156,8 +151,7 @@ func TestGetLastAllocatedID(t *testing.T) {
 		},
 	}
 
-	partitionData, _ := json.Marshal(testPartitions)
-	mockStore.PartitionData[partitionInfoKey] = string(partitionData)
+	mockStrategy.SetPartitions(testPartitions)
 
 	// 再次获取最后分配的ID
 	lastID, err = partitionMgr.GetLastAllocatedID(ctx)
@@ -173,8 +167,8 @@ func TestGetLastAllocatedID(t *testing.T) {
 func TestShouldAllocateNewPartitions(t *testing.T) {
 	partitionMgr := NewPartitionManager(PartitionManagerConfig{
 		Namespace: "test",
-		DataStore: test_utils.NewMockDataStore(),
-		Logger:    &test_utils.MockLogger{},
+		Strategy:  test_utils.NewMockPartitionStrategy(),
+		Logger:    test_utils.NewMockLogger(false),
 		Planer:    &mockPartitionPlaner{},
 	})
 
@@ -224,8 +218,8 @@ func TestCreatePartitions(t *testing.T) {
 
 	partitionMgr := NewPartitionManager(PartitionManagerConfig{
 		Namespace: "test",
-		DataStore: test_utils.NewMockDataStore(),
-		Logger:    &test_utils.MockLogger{},
+		Strategy:  test_utils.NewMockPartitionStrategy(),
+		Logger:    test_utils.NewMockLogger(false),
 		Planer:    planer,
 	})
 
@@ -279,8 +273,8 @@ func TestCreatePartitions(t *testing.T) {
 func TestMergePartitions(t *testing.T) {
 	partitionMgr := NewPartitionManager(PartitionManagerConfig{
 		Namespace: "test",
-		DataStore: test_utils.NewMockDataStore(),
-		Logger:    &test_utils.MockLogger{},
+		Strategy:  test_utils.NewMockPartitionStrategy(),
+		Logger:    test_utils.NewMockLogger(false),
 		Planer:    &mockPartitionPlaner{},
 	})
 
@@ -360,8 +354,8 @@ func TestCalculateLookAheadRange(t *testing.T) {
 
 	partitionMgr := NewPartitionManager(PartitionManagerConfig{
 		Namespace: "test",
-		DataStore: test_utils.NewMockDataStore(),
-		Logger:    &test_utils.MockLogger{},
+		Strategy:  test_utils.NewMockPartitionStrategy(),
+		Logger:    test_utils.NewMockLogger(false),
 		Planer:    planer,
 	})
 
@@ -407,8 +401,8 @@ func TestGetEffectivePartitionSize(t *testing.T) {
 
 	partitionMgr1 := NewPartitionManager(PartitionManagerConfig{
 		Namespace: "test",
-		DataStore: test_utils.NewMockDataStore(),
-		Logger:    &test_utils.MockLogger{},
+		Strategy:  test_utils.NewMockPartitionStrategy(),
+		Logger:    test_utils.NewMockLogger(false),
 		Planer:    planer1,
 	})
 
@@ -428,8 +422,8 @@ func TestGetEffectivePartitionSize(t *testing.T) {
 
 	partitionMgr2 := NewPartitionManager(PartitionManagerConfig{
 		Namespace: "test",
-		DataStore: test_utils.NewMockDataStore(),
-		Logger:    &test_utils.MockLogger{},
+		Strategy:  test_utils.NewMockPartitionStrategy(),
+		Logger:    test_utils.NewMockLogger(false),
 		Planer:    planer2,
 	})
 

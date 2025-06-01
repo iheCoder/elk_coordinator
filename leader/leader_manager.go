@@ -3,6 +3,7 @@ package leader
 import (
 	"context"
 	"elk_coordinator/data"
+	"elk_coordinator/partition"
 	"elk_coordinator/utils"
 	"sync"
 	"time"
@@ -45,7 +46,7 @@ func NewLeaderManager(config LeaderConfig) *LeaderManager {
 	// 创建并配置分区管理器
 	partitionMgr := NewPartitionManager(PartitionManagerConfig{
 		Namespace: config.Namespace,
-		DataStore: config.DataStore,
+		Strategy:  config.Strategy,
 		Logger:    config.Logger,
 		Planer:    config.Planer,
 	})
@@ -73,6 +74,7 @@ type LeaderConfig struct {
 	LockExpiry              time.Duration
 	WorkerPartitionMultiple int64
 	ValidHeartbeatDuration  time.Duration
+	Strategy                partition.PartitionStrategy
 }
 
 // Start 启动领导者管理
