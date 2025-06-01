@@ -89,9 +89,10 @@ func TestTryAllocatePartitions(t *testing.T) {
 		ValidHeartbeatDuration:  30 * time.Second,
 	})
 
+	mockStrategy := test_utils.NewMockPartitionStrategy()
 	partitionMgr := NewPartitionManager(PartitionManagerConfig{
 		Namespace: "test",
-		Strategy:  test_utils.NewMockPartitionStrategy(),
+		Strategy:  mockStrategy,
 		Logger:    test_utils.NewMockLogger(false),
 		Planer:    mockPlaner,
 	})
@@ -106,10 +107,12 @@ func TestTryAllocatePartitions(t *testing.T) {
 	// 测试 tryAllocatePartitions
 	workManager.tryAllocatePartitions(ctx, partitionMgr)
 
-	// 验证分区是否已创建
-	partitionKey := fmt.Sprintf(model.PartitionInfoKeyFmt, "test")
-	partitionsData, _ := mockStore.GetPartitions(ctx, partitionKey)
-	if partitionsData == "" {
+	// 验证分区是否已创建 - 使用strategy检查而不是datastore
+	allPartitions, err := mockStrategy.GetAllPartitions(ctx)
+	if err != nil {
+		t.Errorf("获取分区失败: %v", err)
+	}
+	if len(allPartitions) == 0 {
 		t.Error("分区数据未创建")
 	}
 
@@ -117,14 +120,17 @@ func TestTryAllocatePartitions(t *testing.T) {
 	delete(mockStore.Heartbeats, fmt.Sprintf(model.HeartbeatFmtFmt, "test", "node1"))
 
 	// 先清除已有分区数据
-	delete(mockStore.PartitionData, partitionKey)
+	mockStrategy.Partitions = make(map[int]*model.PartitionInfo)
 
 	// 测试没有活跃节点时的分配
 	workManager.tryAllocatePartitions(ctx, partitionMgr)
 
 	// 验证没有分区被创建
-	partitionsData, _ = mockStore.GetPartitions(ctx, partitionKey)
-	if partitionsData != "" {
+	allPartitions, err = mockStrategy.GetAllPartitions(ctx)
+	if err != nil {
+		t.Errorf("获取分区失败: %v", err)
+	}
+	if len(allPartitions) != 0 {
 		t.Error("没有活跃节点时不应该创建分区，但仍然创建了分区")
 	}
 }
@@ -145,9 +151,10 @@ func TestRunPartitionAllocationLoop(t *testing.T) {
 		ValidHeartbeatDuration:  30 * time.Second,
 	})
 
+	mockStrategy := test_utils.NewMockPartitionStrategy()
 	partitionMgr := NewPartitionManager(PartitionManagerConfig{
 		Namespace: "test",
-		Strategy:  test_utils.NewMockPartitionStrategy(),
+		Strategy:  mockStrategy,
 		Logger:    test_utils.NewMockLogger(false),
 		Planer:    mockPlaner,
 	})
@@ -183,10 +190,12 @@ func TestRunPartitionAllocationLoop(t *testing.T) {
 	// 等待goroutine完成
 	wg.Wait()
 
-	// 验证分区是否已创建
-	partitionKey := fmt.Sprintf(model.PartitionInfoKeyFmt, "test")
-	partitionsData, _ := mockStore.GetPartitions(context.Background(), partitionKey)
-	if partitionsData == "" {
+	// 验证分区是否已创建 - 使用strategy检查而不是datastore
+	allPartitions, err := mockStrategy.GetAllPartitions(context.Background())
+	if err != nil {
+		t.Errorf("获取分区失败: %v", err)
+	}
+	if len(allPartitions) == 0 {
 		t.Error("分区数据未创建")
 	}
 }
