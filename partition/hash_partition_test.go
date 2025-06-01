@@ -495,7 +495,7 @@ func TestGetFilteredPartitions(t *testing.T) {
 	repo.SavePartition(ctx, partition4)
 
 	// 测试场景1: 按状态过滤
-	filters := GetPartitionsFilters{
+	filters := model.GetPartitionsFilters{
 		TargetStatuses: []model.PartitionStatus{model.StatusPending, model.StatusRunning},
 	}
 	filtered, err := repo.GetFilteredPartitions(ctx, filters)
@@ -508,7 +508,7 @@ func TestGetFilteredPartitions(t *testing.T) {
 
 	// 测试场景2: 按过时时间过滤
 	staleDuration := 5 * time.Minute
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration: &staleDuration,
 	}
 	filtered, err = repo.GetFilteredPartitions(ctx, filters)
@@ -520,7 +520,7 @@ func TestGetFilteredPartitions(t *testing.T) {
 	}
 
 	// 测试场景3: 过时时间过滤并排除特定WorkerID
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration:          &staleDuration,
 		ExcludeWorkerIDOnStale: "worker2",
 	}
@@ -536,7 +536,7 @@ func TestGetFilteredPartitions(t *testing.T) {
 	}
 
 	// 测试场景4: 组合过滤
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		TargetStatuses:         []model.PartitionStatus{model.StatusRunning},
 		StaleDuration:          &staleDuration,
 		ExcludeWorkerIDOnStale: "worker2",
@@ -550,7 +550,7 @@ func TestGetFilteredPartitions(t *testing.T) {
 	}
 
 	// 测试场景5: 结果按PartitionID排序
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		TargetStatuses: []model.PartitionStatus{model.StatusPending, model.StatusRunning, model.StatusCompleted},
 	}
 	filtered, err = repo.GetFilteredPartitions(ctx, filters)
@@ -814,7 +814,7 @@ func TestRepository_ConcurrentReadWrites(t *testing.T) {
 							return
 						}
 					case 2:
-						filters := GetPartitionsFilters{
+						filters := model.GetPartitionsFilters{
 							TargetStatuses: []model.PartitionStatus{model.StatusPending, model.StatusRunning},
 						}
 						_, err := repo.GetFilteredPartitions(ctx, filters)
@@ -1120,7 +1120,7 @@ func TestRepository_HighConcurrencyStress(t *testing.T) {
 						atomic.AddInt32(&operationCounts.deletes, 1)
 
 					case 4: // 过滤操作
-						filters := GetPartitionsFilters{
+						filters := model.GetPartitionsFilters{
 							TargetStatuses: []model.PartitionStatus{
 								model.StatusPending, model.StatusRunning, model.StatusCompleted,
 							},
@@ -1328,7 +1328,7 @@ func TestRepository_FilterEdgeCases(t *testing.T) {
 	}
 
 	// 测试场景1: 空状态过滤器
-	filters := GetPartitionsFilters{
+	filters := model.GetPartitionsFilters{
 		TargetStatuses: []model.PartitionStatus{},
 	}
 	filtered, err := repo.GetFilteredPartitions(ctx, filters)
@@ -1340,7 +1340,7 @@ func TestRepository_FilterEdgeCases(t *testing.T) {
 	}
 
 	// 测试场景2: 不存在的状态过滤器
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		TargetStatuses: []model.PartitionStatus{"nonexistent"},
 	}
 	filtered, err = repo.GetFilteredPartitions(ctx, filters)
@@ -1353,7 +1353,7 @@ func TestRepository_FilterEdgeCases(t *testing.T) {
 
 	// 测试场景3: 零时长过时过滤器
 	zeroDuration := time.Duration(0)
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration: &zeroDuration,
 	}
 	filtered, err = repo.GetFilteredPartitions(ctx, filters)
@@ -1366,7 +1366,7 @@ func TestRepository_FilterEdgeCases(t *testing.T) {
 
 	// 测试场景4: 负时长过时过滤器
 	negativeDuration := -1 * time.Hour
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration: &negativeDuration,
 	}
 	filtered, err = repo.GetFilteredPartitions(ctx, filters)
@@ -1379,7 +1379,7 @@ func TestRepository_FilterEdgeCases(t *testing.T) {
 
 	// 测试场景5: 极长时长过时过滤器
 	veryLongDuration := 1000 * time.Hour
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration: &veryLongDuration,
 	}
 	filtered, err = repo.GetFilteredPartitions(ctx, filters)
@@ -1392,7 +1392,7 @@ func TestRepository_FilterEdgeCases(t *testing.T) {
 
 	// 测试场景6: 空WorkerID排除
 	shortDuration := 30 * time.Minute
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration:          &shortDuration,
 		ExcludeWorkerIDOnStale: "", // 空字符串
 	}
@@ -1498,7 +1498,7 @@ func TestRepository_LargeDataSets(t *testing.T) {
 
 	// 过滤分区
 	start = time.Now()
-	filters := GetPartitionsFilters{
+	filters := model.GetPartitionsFilters{
 		TargetStatuses: []model.PartitionStatus{model.StatusPending},
 	}
 	filtered, err := repo.GetFilteredPartitions(ctx, filters)
@@ -1719,31 +1719,31 @@ func TestRepository_ConcurrentFilterOperations(t *testing.T) {
 			defer wg.Done()
 
 			for j := 0; j < operationsPerWorker; j++ {
-				var filters GetPartitionsFilters
+				var filters model.GetPartitionsFilters
 
 				switch j % 4 {
 				case 0:
 					// 按状态过滤
-					filters = GetPartitionsFilters{
+					filters = model.GetPartitionsFilters{
 						TargetStatuses: []model.PartitionStatus{model.StatusPending, model.StatusRunning},
 					}
 				case 1:
 					// 按过时时间过滤
 					staleDuration := time.Duration(30+workerID) * time.Minute
-					filters = GetPartitionsFilters{
+					filters = model.GetPartitionsFilters{
 						StaleDuration: &staleDuration,
 					}
 				case 2:
 					// 组合过滤
 					staleDuration := time.Duration(20) * time.Minute
-					filters = GetPartitionsFilters{
+					filters = model.GetPartitionsFilters{
 						TargetStatuses:         []model.PartitionStatus{model.StatusRunning},
 						StaleDuration:          &staleDuration,
 						ExcludeWorkerIDOnStale: fmt.Sprintf("worker-%d", workerID%5),
 					}
 				case 3:
 					// 无过滤器（获取全部）
-					filters = GetPartitionsFilters{}
+					filters = model.GetPartitionsFilters{}
 				}
 
 				filtered, err := repo.GetFilteredPartitions(ctx, filters)
@@ -1896,7 +1896,7 @@ func TestRepository_StaleFilterEdgeCases(t *testing.T) {
 
 	// 测试场景1: 零持续时间过滤器
 	zeroDuration := time.Duration(0)
-	filters := GetPartitionsFilters{
+	filters := model.GetPartitionsFilters{
 		StaleDuration: &zeroDuration,
 	}
 	filtered, err := repo.GetFilteredPartitions(ctx, filters)
@@ -1909,7 +1909,7 @@ func TestRepository_StaleFilterEdgeCases(t *testing.T) {
 
 	// 测试场景2: 负持续时间过滤器
 	negativeDuration := -1 * time.Hour
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration: &negativeDuration,
 	}
 	filtered, err = repo.GetFilteredPartitions(ctx, filters)
@@ -1922,7 +1922,7 @@ func TestRepository_StaleFilterEdgeCases(t *testing.T) {
 
 	// 测试场景3: 纳秒级精度过滤
 	nanoDuration := 500 * time.Millisecond
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration: &nanoDuration,
 	}
 	filtered, err = repo.GetFilteredPartitions(ctx, filters)
@@ -1936,7 +1936,7 @@ func TestRepository_StaleFilterEdgeCases(t *testing.T) {
 
 	// 测试场景4: 空WorkerID与ExcludeWorkerIDOnStale
 	staleDuration := 30 * time.Minute
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration:          &staleDuration,
 		ExcludeWorkerIDOnStale: "", // 空WorkerID不应排除任何分区
 	}
@@ -1957,7 +1957,7 @@ func TestRepository_StaleFilterEdgeCases(t *testing.T) {
 	}
 
 	// 测试场景5: ExcludeWorkerIDOnStale匹配
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration:          &staleDuration,
 		ExcludeWorkerIDOnStale: "excluded_worker",
 	}

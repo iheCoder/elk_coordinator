@@ -241,7 +241,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 	}
 
 	// 测试状态过滤
-	filters := GetPartitionsFilters{
+	filters := model.GetPartitionsFilters{
 		TargetStatuses: []model.PartitionStatus{model.StatusPending, model.StatusRunning},
 	}
 	filtered, err := strategy.GetFilteredPartitions(ctx, filters)
@@ -251,7 +251,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 	// 测试ID范围过滤
 	minID := 2
 	maxID := 3
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		MinID: &minID,
 		MaxID: &maxID,
 	}
@@ -260,7 +260,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 	assert.Len(t, rangeFiltered, 2)
 
 	// 测试排除特定分区ID
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		ExcludePartitionIDs: []int{1, 3},
 	}
 	excludeFiltered, err := strategy.GetFilteredPartitions(ctx, filters)
@@ -269,7 +269,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 	assert.Equal(t, 2, excludeFiltered[0].PartitionID)
 
 	// 测试限制数量
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		Limit: 2,
 	}
 	limitFiltered, err := strategy.GetFilteredPartitions(ctx, filters)
@@ -319,7 +319,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 
 	// 1. 测试基本过时时间过滤（5分钟）
 	staleDuration := 5 * time.Minute
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration: &staleDuration,
 	}
 	staleFiltered, err := strategy.GetFilteredPartitions(ctx, filters)
@@ -335,7 +335,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 
 	// 2. 测试零持续时间过滤器（应该无效）
 	zeroDuration := time.Duration(0)
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration: &zeroDuration,
 	}
 	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
@@ -345,7 +345,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 
 	// 3. 测试负持续时间过滤器（应该无效）
 	negativeDuration := -5 * time.Minute
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration: &negativeDuration,
 	}
 	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
@@ -355,7 +355,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 
 	// 4. 测试 ExcludeWorkerIDOnStale 功能
 	excludeWorkerID2 := "worker2"
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration:          &staleDuration,
 		ExcludeWorkerIDOnStale: excludeWorkerID2,
 	}
@@ -369,7 +369,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 	}
 
 	// 5. 测试空的 ExcludeWorkerIDOnStale
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration:          &staleDuration,
 		ExcludeWorkerIDOnStale: "",
 	}
@@ -380,7 +380,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 
 	// 6. 测试与状态过滤的组合
 	runningStatus := model.StatusRunning
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration:  &staleDuration,
 		TargetStatuses: []model.PartitionStatus{runningStatus},
 	}
@@ -393,7 +393,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 	}
 
 	// 7. 测试复杂组合：状态 + 过时 + 排除 + 限制
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		TargetStatuses:         []model.PartitionStatus{runningStatus},
 		StaleDuration:          &staleDuration,
 		ExcludeWorkerIDOnStale: "worker2",
@@ -411,7 +411,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 	// 8. 测试极短的持续时间（微秒级）
 	microDuration := 100 * time.Microsecond
 	time.Sleep(200 * time.Microsecond) // 确保有时间差
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration: &microDuration,
 	}
 	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
@@ -422,7 +422,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 	// 9. 测试与 MinID/MaxID 范围的组合
 	minIDForStale := 4
 	maxIDForStale := 6
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		MinID:         &minIDForStale,
 		MaxID:         &maxIDForStale,
 		StaleDuration: &staleDuration,
@@ -449,7 +449,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 	assert.NoError(t, err)
 
 	// 立即查询过时分区，新分区不应该被包含
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration: &staleDuration,
 	}
 	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
@@ -460,7 +460,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 	}
 
 	// 11. 测试限制数量与过时过滤组合
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration: &staleDuration,
 		Limit:         2,
 	}
@@ -472,7 +472,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 
 	// 12. 测试零持续时间（应该无效，返回所有分区）
 	zeroDuration = time.Duration(0)
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration: &zeroDuration,
 	}
 	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
@@ -482,7 +482,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 
 	// 13. 测试负持续时间（应该无效，返回所有分区）
 	negativeDuration = -5 * time.Minute
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration: &negativeDuration,
 	}
 	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
@@ -492,7 +492,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 
 	// 14. 测试 ExcludeWorkerIDOnStale 功能
 	excludeWorkerID := "worker2"
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration:          &staleDuration,
 		ExcludeWorkerIDOnStale: excludeWorkerID,
 	}
@@ -506,7 +506,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 	}
 
 	// 15. 测试空的 ExcludeWorkerIDOnStale
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration:          &staleDuration,
 		ExcludeWorkerIDOnStale: "",
 	}
@@ -517,7 +517,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 
 	// 16. 测试与状态过滤的组合
 	runningStatus = model.StatusRunning
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration:  &staleDuration,
 		TargetStatuses: []model.PartitionStatus{runningStatus},
 	}
@@ -530,7 +530,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 	}
 
 	// 17. 测试复杂组合：状态 + 过时 + 排除 + 限制
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		TargetStatuses:         []model.PartitionStatus{runningStatus},
 		StaleDuration:          &staleDuration,
 		ExcludeWorkerIDOnStale: "worker2",
@@ -548,7 +548,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 	// 18. 测试极短的持续时间（微秒级）
 	microDuration = 100 * time.Microsecond
 	time.Sleep(200 * time.Microsecond) // 确保有时间差
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration: &microDuration,
 	}
 	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
@@ -559,7 +559,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 	// 19. 测试与 MinID/MaxID 范围的组合
 	minIDForStale = 4
 	maxIDForStale = 6
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		MinID:         &minIDForStale,
 		MaxID:         &maxIDForStale,
 		StaleDuration: &staleDuration,
@@ -586,7 +586,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 	assert.NoError(t, err)
 
 	// 立即查询过时分区，新分区不应该被包含
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration: &staleDuration,
 	}
 	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
@@ -598,7 +598,7 @@ func TestSimpleStrategy_GetFilteredPartitions(t *testing.T) {
 
 	// 21. 测试非常长的持续时间（应该返回空列表）
 	longDuration := 24 * time.Hour
-	filters = GetPartitionsFilters{
+	filters = model.GetPartitionsFilters{
 		StaleDuration: &longDuration,
 	}
 	filtered, err = strategy.GetFilteredPartitions(ctx, filters)
@@ -655,8 +655,8 @@ func TestSimpleStrategy_CreatePartitionsIfNotExist(t *testing.T) {
 	ctx := context.Background()
 
 	// 创建批量创建请求
-	request := CreatePartitionsRequest{
-		Partitions: []CreatePartitionRequest{
+	request := model.CreatePartitionsRequest{
+		Partitions: []model.CreatePartitionRequest{
 			{
 				PartitionID: 1,
 				MinID:       1,
@@ -1001,7 +1001,7 @@ func TestSimpleStrategy_InvalidInputHandling(t *testing.T) {
 	assert.Error(t, err) // 应该报错
 
 	// 测试无效的过滤器
-	filters := GetPartitionsFilters{
+	filters := model.GetPartitionsFilters{
 		Limit: -1, // 负数限制
 	}
 	_, err = strategy.GetFilteredPartitions(ctx, filters)
@@ -1080,7 +1080,7 @@ func TestSimpleStrategy_LargeScale(t *testing.T) {
 	t.Logf("查询 %d 个分区耗时: %v", numPartitions, queryTime)
 
 	// 测试过滤性能
-	filters := GetPartitionsFilters{
+	filters := model.GetPartitionsFilters{
 		TargetStatuses: []model.PartitionStatus{model.StatusPending},
 		Limit:          100,
 	}
@@ -1135,8 +1135,8 @@ func TestSimpleStrategyIntegration(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. 创建多个分区
-	request := CreatePartitionsRequest{
-		Partitions: []CreatePartitionRequest{
+	request := model.CreatePartitionsRequest{
+		Partitions: []model.CreatePartitionRequest{
 			{PartitionID: 1, MinID: 1, MaxID: 1000},
 			{PartitionID: 2, MinID: 1001, MaxID: 2000},
 			{PartitionID: 3, MinID: 2001, MaxID: 3000},
@@ -1208,7 +1208,7 @@ func TestSimpleStrategyIntegration(t *testing.T) {
 	assert.Equal(t, 1, stats.Completed)
 
 	// 11. 验证过滤功能
-	filters := GetPartitionsFilters{
+	filters := model.GetPartitionsFilters{
 		TargetStatuses: []model.PartitionStatus{model.StatusPending, model.StatusClaimed},
 	}
 	available, err := strategy.GetFilteredPartitions(ctx, filters)
@@ -1261,7 +1261,7 @@ func BenchmarkGetFilteredPartitions(b *testing.B) {
 		_, _ = strategy.UpdatePartition(ctx, partition, nil)
 	}
 
-	filters := GetPartitionsFilters{
+	filters := model.GetPartitionsFilters{
 		TargetStatuses: []model.PartitionStatus{model.StatusPending, model.StatusRunning},
 		Limit:          50,
 	}

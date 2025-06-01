@@ -3,7 +3,6 @@ package test_utils
 import (
 	"context"
 	"elk_coordinator/model"
-	"elk_coordinator/partition"
 	"fmt"
 	"sync"
 	"time"
@@ -62,7 +61,7 @@ func (m *MockPartitionStrategy) DeletePartition(ctx context.Context, partitionID
 }
 
 // GetFilteredPartitions 根据过滤器获取分区
-func (m *MockPartitionStrategy) GetFilteredPartitions(ctx context.Context, filters partition.GetPartitionsFilters) ([]*model.PartitionInfo, error) {
+func (m *MockPartitionStrategy) GetFilteredPartitions(ctx context.Context, filters model.GetPartitionsFilters) ([]*model.PartitionInfo, error) {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 
@@ -130,7 +129,7 @@ func (m *MockPartitionStrategy) GetFilteredPartitions(ctx context.Context, filte
 }
 
 // CreatePartitionsIfNotExist 批量创建分区（如果不存在）
-func (m *MockPartitionStrategy) CreatePartitionsIfNotExist(ctx context.Context, request partition.CreatePartitionsRequest) ([]*model.PartitionInfo, error) {
+func (m *MockPartitionStrategy) CreatePartitionsIfNotExist(ctx context.Context, request model.CreatePartitionsRequest) ([]*model.PartitionInfo, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
@@ -179,7 +178,7 @@ func (m *MockPartitionStrategy) DeletePartitions(ctx context.Context, partitionI
 }
 
 // UpdatePartition 安全更新分区信息
-func (m *MockPartitionStrategy) UpdatePartition(ctx context.Context, partitionInfo *model.PartitionInfo, options *partition.UpdateOptions) (*model.PartitionInfo, error) {
+func (m *MockPartitionStrategy) UpdatePartition(ctx context.Context, partitionInfo *model.PartitionInfo, options *model.UpdateOptions) (*model.PartitionInfo, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
@@ -224,7 +223,7 @@ func (m *MockPartitionStrategy) StrategyType() string {
 }
 
 // AcquirePartition 声明对指定分区的持有权
-func (m *MockPartitionStrategy) AcquirePartition(ctx context.Context, partitionID int, workerID string, options *partition.AcquirePartitionOptions) (*model.PartitionInfo, bool, error) {
+func (m *MockPartitionStrategy) AcquirePartition(ctx context.Context, partitionID int, workerID string, options *model.AcquirePartitionOptions) (*model.PartitionInfo, bool, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
@@ -235,7 +234,7 @@ func (m *MockPartitionStrategy) AcquirePartition(ctx context.Context, partitionI
 
 	// 设置默认选项
 	if options == nil {
-		options = &partition.AcquirePartitionOptions{}
+		options = &model.AcquirePartitionOptions{}
 	}
 
 	// 检查分区是否可获取
@@ -307,6 +306,37 @@ func (m *MockPartitionStrategy) ReleasePartition(ctx context.Context, partitionI
 	partition.WorkerID = ""
 	partition.UpdatedAt = time.Now()
 	partition.Version++
+
+	return nil
+}
+
+// MaintainPartitionHold 维护对分区的持有权
+func (m *MockPartitionStrategy) MaintainPartitionHold(ctx context.Context, partitionID int, workerID string) error {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	if workerID == "" {
+		return fmt.Errorf("工作节点ID不能为空")
+	}
+
+	partition, exists := m.Partitions[partitionID]
+	if !exists {
+		return fmt.Errorf("分区 %d 不存在", partitionID)
+	}
+
+	// 检查分区是否被该工作节点持有
+	if partition.WorkerID != workerID {
+		return fmt.Errorf("工作节点 %s 没有持有分区 %d（当前持有者: %s）", workerID, partitionID, partition.WorkerID)
+	}
+
+	// 模拟维护持有权（更新时间戳）
+	partition.UpdatedAt = time.Now()
+
+	// 对于HashPartitionStrategy，还会更新LastHeartbeat
+	if !partition.LastHeartbeat.IsZero() {
+		now := time.Now()
+		partition.LastHeartbeat = now
+	}
 
 	return nil
 }

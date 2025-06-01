@@ -190,7 +190,7 @@ func (s *HashPartitionStrategy) CreatePartitionAtomically(ctx context.Context, p
 
 // GetFilteredPartitions 根据提供的过滤器从存储中检索分区数据。
 // 返回的分区将按 PartitionID 升序排序。
-func (s *HashPartitionStrategy) GetFilteredPartitions(ctx context.Context, filters GetPartitionsFilters) ([]*model.PartitionInfo, error) {
+func (s *HashPartitionStrategy) GetFilteredPartitions(ctx context.Context, filters model.GetPartitionsFilters) ([]*model.PartitionInfo, error) {
 	allPartitions, err := s.GetAllPartitions(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("GetFilteredPartitions: 获取所有分区失败: %w", err)
@@ -365,7 +365,7 @@ func (s *HashPartitionStrategy) SavePartition(ctx context.Context, partitionInfo
 // ==================== PartitionStrategy 接口实现 ====================
 
 // UpdatePartition 安全更新分区信息，自动处理版本控制
-func (s *HashPartitionStrategy) UpdatePartition(ctx context.Context, partitionInfo *model.PartitionInfo, options *UpdateOptions) (*model.PartitionInfo, error) {
+func (s *HashPartitionStrategy) UpdatePartition(ctx context.Context, partitionInfo *model.PartitionInfo, options *model.UpdateOptions) (*model.PartitionInfo, error) {
 	if partitionInfo == nil {
 		return nil, errors.New("partitionInfo cannot be nil")
 	}
@@ -403,7 +403,7 @@ func (s *HashPartitionStrategy) UpdatePartition(ctx context.Context, partitionIn
 }
 
 // CreatePartitionsIfNotExist 批量创建分区（如果不存在）
-func (s *HashPartitionStrategy) CreatePartitionsIfNotExist(ctx context.Context, request CreatePartitionsRequest) ([]*model.PartitionInfo, error) {
+func (s *HashPartitionStrategy) CreatePartitionsIfNotExist(ctx context.Context, request model.CreatePartitionsRequest) ([]*model.PartitionInfo, error) {
 	var result []*model.PartitionInfo
 	var errs []error
 
@@ -476,14 +476,14 @@ func (s *HashPartitionStrategy) StrategyType() string {
 }
 
 // AcquirePartition 声明对指定分区的持有权
-func (s *HashPartitionStrategy) AcquirePartition(ctx context.Context, partitionID int, workerID string, options *AcquirePartitionOptions) (*model.PartitionInfo, bool, error) {
+func (s *HashPartitionStrategy) AcquirePartition(ctx context.Context, partitionID int, workerID string, options *model.AcquirePartitionOptions) (*model.PartitionInfo, bool, error) {
 	if workerID == "" {
 		return nil, false, fmt.Errorf("工作节点ID不能为空")
 	}
 
 	// 设置默认选项
 	if options == nil {
-		options = &AcquirePartitionOptions{}
+		options = &model.AcquirePartitionOptions{}
 	}
 
 	// 获取当前分区信息
@@ -650,7 +650,7 @@ func (s *HashPartitionStrategy) acquirePartitionDirect(ctx context.Context, part
 }
 
 // preemptPartitionByHeartbeat 基于心跳时间抢占分区
-func (s *HashPartitionStrategy) preemptPartitionByHeartbeat(ctx context.Context, partition *model.PartitionInfo, workerID string, options *AcquirePartitionOptions) (*model.PartitionInfo, error) {
+func (s *HashPartitionStrategy) preemptPartitionByHeartbeat(ctx context.Context, partition *model.PartitionInfo, workerID string, options *model.AcquirePartitionOptions) (*model.PartitionInfo, error) {
 	// 检查是否可以抢占（基于心跳过时）
 	if !options.ForcePreemption {
 		if !s.isPartitionStaleByHeartbeat(partition) {
@@ -680,7 +680,7 @@ func (s *HashPartitionStrategy) preemptPartitionByHeartbeat(ctx context.Context,
 }
 
 // tryPreemptPartitionByHeartbeat 尝试基于心跳时间抢占分区，返回新的接口签名
-func (s *HashPartitionStrategy) tryPreemptPartitionByHeartbeat(ctx context.Context, partition *model.PartitionInfo, workerID string, options *AcquirePartitionOptions) (*model.PartitionInfo, bool, error) {
+func (s *HashPartitionStrategy) tryPreemptPartitionByHeartbeat(ctx context.Context, partition *model.PartitionInfo, workerID string, options *model.AcquirePartitionOptions) (*model.PartitionInfo, bool, error) {
 	// 检查是否可以抢占（基于心跳过时）
 	if !options.ForcePreemption {
 		if !s.isPartitionStaleByHeartbeat(partition) {
@@ -729,4 +729,35 @@ func (s *HashPartitionStrategy) updatePartitionHeartbeat(ctx context.Context, pa
 
 	s.logger.Debugf("工作节点 %s 成功更新分区 %d 心跳", workerID, partition.PartitionID)
 	return updatedPartition, nil
+}
+
+// MaintainPartitionHold 维护对分区的持有权（更新心跳时间）
+func (s *HashPartitionStrategy) MaintainPartitionHold(ctx context.Context, partitionID int, workerID string) error {
+	if workerID == "" {
+		return fmt.Errorf("工作节点ID不能为空")
+	}
+
+	// 获取当前分区信息
+	partition, err := s.GetPartition(ctx, partitionID)
+	if err != nil {
+		if errors.Is(err, ErrPartitionNotFound) {
+			return fmt.Errorf("分区 %d 不存在", partitionID)
+		}
+		return fmt.Errorf("获取分区 %d 失败: %w", partitionID, err)
+	}
+
+	// 检查分区是否被该工作节点持有
+	if partition.WorkerID != workerID {
+		return fmt.Errorf("工作节点 %s 没有持有分区 %d（当前持有者: %s）", workerID, partitionID, partition.WorkerID)
+	}
+
+	// 更新心跳时间
+	_, err = s.updatePartitionHeartbeat(ctx, partition, workerID)
+	if err != nil {
+		s.logger.Errorf("工作节点 %s 维护分区 %d 心跳失败: %v", workerID, partitionID, err)
+		return fmt.Errorf("维护分区 %d 心跳失败: %w", partitionID, err)
+	}
+
+	s.logger.Debugf("工作节点 %s 成功维护分区 %d 的持有权", workerID, partitionID)
+	return nil
 }

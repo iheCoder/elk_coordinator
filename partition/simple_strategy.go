@@ -131,7 +131,7 @@ func (s *SimpleStrategy) DeletePartition(ctx context.Context, partitionID int) e
 }
 
 // GetFilteredPartitions 根据过滤器获取分区
-func (s *SimpleStrategy) GetFilteredPartitions(ctx context.Context, filters GetPartitionsFilters) ([]*model.PartitionInfo, error) {
+func (s *SimpleStrategy) GetFilteredPartitions(ctx context.Context, filters model.GetPartitionsFilters) ([]*model.PartitionInfo, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -229,7 +229,7 @@ func (s *SimpleStrategy) DeletePartitions(ctx context.Context, partitionIDs []in
 // ==================== 并发安全操作 ====================
 
 // UpdatePartition 安全更新分区信息
-func (s *SimpleStrategy) UpdatePartition(ctx context.Context, partitionInfo *model.PartitionInfo, options *UpdateOptions) (*model.PartitionInfo, error) {
+func (s *SimpleStrategy) UpdatePartition(ctx context.Context, partitionInfo *model.PartitionInfo, options *model.UpdateOptions) (*model.PartitionInfo, error) {
 	if partitionInfo == nil {
 		return nil, fmt.Errorf("分区信息不能为空")
 	}
@@ -278,7 +278,7 @@ func (s *SimpleStrategy) UpdatePartition(ctx context.Context, partitionInfo *mod
 }
 
 // CreatePartitionsIfNotExist 批量创建分区（如果不存在）
-func (s *SimpleStrategy) CreatePartitionsIfNotExist(ctx context.Context, request CreatePartitionsRequest) ([]*model.PartitionInfo, error) {
+func (s *SimpleStrategy) CreatePartitionsIfNotExist(ctx context.Context, request model.CreatePartitionsRequest) ([]*model.PartitionInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -334,7 +334,7 @@ func (s *SimpleStrategy) CreatePartitionsIfNotExist(ctx context.Context, request
 // AcquirePartition 声明对指定分区的持有权
 // 尝试获取指定分区的锁并声明持有权
 // 这是一个针对特定分区的声明式操作
-func (s *SimpleStrategy) AcquirePartition(ctx context.Context, partitionID int, workerID string, options *AcquirePartitionOptions) (*model.PartitionInfo, bool, error) {
+func (s *SimpleStrategy) AcquirePartition(ctx context.Context, partitionID int, workerID string, options *model.AcquirePartitionOptions) (*model.PartitionInfo, bool, error) {
 	// 调用内部实现
 	partition, err := s.acquirePartitionInternal(ctx, partitionID, workerID, options)
 	if err != nil {
@@ -352,14 +352,14 @@ func (s *SimpleStrategy) AcquirePartition(ctx context.Context, partitionID int, 
 }
 
 // acquirePartitionInternal 内部分区获取方法，支持抢占功能
-func (s *SimpleStrategy) acquirePartitionInternal(ctx context.Context, partitionID int, workerID string, options *AcquirePartitionOptions) (*model.PartitionInfo, error) {
+func (s *SimpleStrategy) acquirePartitionInternal(ctx context.Context, partitionID int, workerID string, options *model.AcquirePartitionOptions) (*model.PartitionInfo, error) {
 	if workerID == "" {
 		return nil, fmt.Errorf("工作节点ID不能为空")
 	}
 
 	// 设置默认选项
 	if options == nil {
-		options = &AcquirePartitionOptions{}
+		options = &model.AcquirePartitionOptions{}
 	}
 
 	s.mu.Lock()
@@ -508,6 +508,47 @@ func (s *SimpleStrategy) ReleasePartition(ctx context.Context, partitionID int, 
 	return s.savePartitionsInternal(ctx, partitions)
 }
 
+// MaintainPartitionHold 维护对分区的持有权（续期分布式锁）
+func (s *SimpleStrategy) MaintainPartitionHold(ctx context.Context, partitionID int, workerID string) error {
+	if workerID == "" {
+		return fmt.Errorf("工作节点ID不能为空")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// 检查分区是否存在且被该工作节点持有
+	partitions, err := s.getAllPartitionsInternal(ctx)
+	if err != nil {
+		return fmt.Errorf("获取分区信息失败: %w", err)
+	}
+
+	partition, exists := partitions[partitionID]
+	if !exists {
+		return fmt.Errorf("分区 %d 不存在", partitionID)
+	}
+
+	if partition.WorkerID != workerID {
+		return fmt.Errorf("工作节点 %s 没有持有分区 %d（当前持有者: %s）", workerID, partitionID, partition.WorkerID)
+	}
+
+	// 续期分布式锁
+	lockKey := s.getPartitionLockKey(partitionID)
+	renewed, err := s.dataStore.RenewLock(ctx, lockKey, workerID, s.partitionLockExpiry)
+	if err != nil {
+		s.logger.Errorf("续期分区 %d 锁失败: %v", partitionID, err)
+		return fmt.Errorf("续期分区锁失败: %w", err)
+	}
+
+	if !renewed {
+		s.logger.Warnf("工作节点 %s 无法续期分区 %d 的锁（锁可能已过期或被其他节点持有）", workerID, partitionID)
+		return fmt.Errorf("无法续期分区 %d 的锁", partitionID)
+	}
+
+	s.logger.Debugf("工作节点 %s 成功续期分区 %d 的锁", workerID, partitionID)
+	return nil
+}
+
 // GetPartitionStats 获取分区统计信息
 func (s *SimpleStrategy) GetPartitionStats(ctx context.Context) (*model.PartitionStats, error) {
 	s.mu.RLock()
@@ -591,7 +632,7 @@ func (s *SimpleStrategy) savePartitionsInternal(ctx context.Context, partitions 
 }
 
 // getFilteredPartitionsInternal 内部方法：获取过滤后的分区列表
-func (s *SimpleStrategy) getFilteredPartitionsInternal(ctx context.Context, filters GetPartitionsFilters) ([]*model.PartitionInfo, error) {
+func (s *SimpleStrategy) getFilteredPartitionsInternal(ctx context.Context, filters model.GetPartitionsFilters) ([]*model.PartitionInfo, error) {
 	partitions, err := s.getAllPartitionsInternal(ctx)
 	if err != nil {
 		return nil, err
