@@ -6,8 +6,9 @@ import (
 	"elk_coordinator/model"
 	"elk_coordinator/utils"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"github.com/pkg/errors"
+	pkgerrors "github.com/pkg/errors"
 	"sync"
 	"time"
 )
@@ -160,13 +161,13 @@ func (s *SimpleStrategy) GetFilteredPartitions(ctx context.Context, filters GetP
 		// 过时过滤
 		if filters.StaleDuration != nil && *filters.StaleDuration > 0 {
 			timeSinceUpdate := now.Sub(partition.UpdatedAt)
-			if timeSinceUpdate > *filters.StaleDuration {
-				// 如果设置了排除工作节点，跳过该节点的分区
-				if filters.ExcludeWorkerIDOnStale != "" && partition.WorkerID == filters.ExcludeWorkerIDOnStale {
-					continue
-				}
-			} else {
+			// 只包含过时的分区
+			if timeSinceUpdate <= *filters.StaleDuration {
 				continue // 不过时，跳过
+			}
+			// 如果设置了排除工作节点，跳过该节点的分区
+			if filters.ExcludeWorkerIDOnStale != "" && partition.WorkerID == filters.ExcludeWorkerIDOnStale {
+				continue
 			}
 		}
 
@@ -203,35 +204,6 @@ func (s *SimpleStrategy) GetFilteredPartitions(ctx context.Context, filters GetP
 }
 
 // ==================== 批量操作 ====================
-
-// SavePartitions 批量保存分区
-func (s *SimpleStrategy) SavePartitions(ctx context.Context, partitions []*model.PartitionInfo) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	existingPartitions, err := s.getAllPartitionsInternal(ctx)
-	if err != nil {
-		return err
-	}
-
-	if existingPartitions == nil {
-		existingPartitions = make(map[int]model.PartitionInfo)
-	}
-
-	now := time.Now()
-	for _, partitionInfo := range partitions {
-		// 更新时间戳和版本
-		partitionInfo.UpdatedAt = now
-		if partitionInfo.CreatedAt.IsZero() {
-			partitionInfo.CreatedAt = now
-		}
-		partitionInfo.Version++
-
-		existingPartitions[partitionInfo.PartitionID] = *partitionInfo
-	}
-
-	return s.savePartitionsInternal(ctx, existingPartitions)
-}
 
 // DeletePartitions 批量删除分区
 func (s *SimpleStrategy) DeletePartitions(ctx context.Context, partitionIDs []int) error {
@@ -381,7 +353,7 @@ func (s *SimpleStrategy) AcquirePartition(ctx context.Context, partitionID int, 
 	lockKey := s.getPartitionLockKey(partitionID)
 	acquired, err := s.dataStore.AcquireLock(ctx, lockKey, workerID, s.partitionLockExpiry)
 	if err != nil {
-		return nil, errors.Wrap(err, "获取分区锁失败")
+		return nil, pkgerrors.Wrap(err, "获取分区锁失败")
 	}
 
 	if !acquired {
@@ -525,14 +497,19 @@ func (s *SimpleStrategy) GetPartitionStats(ctx context.Context) (*PartitionStats
 func (s *SimpleStrategy) getAllPartitionsInternal(ctx context.Context) (map[int]model.PartitionInfo, error) {
 	key := s.getPartitionsKey()
 
-	data, err := s.dataStore.GetPartitions(ctx, key)
+	partitionData, err := s.dataStore.GetPartitions(ctx, key)
 	if err != nil {
-		return nil, errors.Wrap(err, "获取分区数据失败")
+		// 检查是否是键不存在的错误
+		if errors.Is(err, data.ErrNotFound) {
+			// 键不存在，返回空的分区映射
+			return make(map[int]model.PartitionInfo), nil
+		}
+		return nil, pkgerrors.Wrap(err, "获取分区数据失败")
 	}
 
 	var partitions map[int]model.PartitionInfo
-	if err := json.Unmarshal([]byte(data), &partitions); err != nil {
-		return nil, errors.Wrap(err, "解析分区数据失败")
+	if err := json.Unmarshal([]byte(partitionData), &partitions); err != nil {
+		return nil, pkgerrors.Wrap(err, "解析分区数据失败")
 	}
 
 	if partitions == nil {
@@ -546,13 +523,13 @@ func (s *SimpleStrategy) getAllPartitionsInternal(ctx context.Context) (map[int]
 func (s *SimpleStrategy) savePartitionsInternal(ctx context.Context, partitions map[int]model.PartitionInfo) error {
 	key := s.getPartitionsKey()
 
-	data, err := json.Marshal(partitions)
+	partitionData, err := json.Marshal(partitions)
 	if err != nil {
-		return errors.Wrap(err, "序列化分区数据失败")
+		return pkgerrors.Wrap(err, "序列化分区数据失败")
 	}
 
-	if err := s.dataStore.SetPartitions(ctx, key, string(data)); err != nil {
-		return errors.Wrap(err, "保存分区数据失败")
+	if err := s.dataStore.SetPartitions(ctx, key, string(partitionData)); err != nil {
+		return pkgerrors.Wrap(err, "保存分区数据失败")
 	}
 
 	return nil
@@ -586,13 +563,13 @@ func (s *SimpleStrategy) getFilteredPartitionsInternal(ctx context.Context, filt
 		// 过时过滤
 		if filters.StaleDuration != nil && *filters.StaleDuration > 0 {
 			timeSinceUpdate := now.Sub(partition.UpdatedAt)
-			if timeSinceUpdate > *filters.StaleDuration {
-				// 如果设置了排除工作节点，跳过该节点的分区
-				if filters.ExcludeWorkerIDOnStale != "" && partition.WorkerID == filters.ExcludeWorkerIDOnStale {
-					continue
-				}
-			} else {
+			// 只包含过时的分区
+			if timeSinceUpdate <= *filters.StaleDuration {
 				continue // 不过时，跳过
+			}
+			// 如果设置了排除工作节点，跳过该节点的分区
+			if filters.ExcludeWorkerIDOnStale != "" && partition.WorkerID == filters.ExcludeWorkerIDOnStale {
+				continue
 			}
 		}
 

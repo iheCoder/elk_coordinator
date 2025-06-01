@@ -102,9 +102,6 @@ type PartitionStrategy interface {
 
 	// ==================== 批量操作 ====================
 
-	// SavePartitions 批量保存分区
-	SavePartitions(ctx context.Context, partitions []*model.PartitionInfo) error
-
 	// CreatePartitionsIfNotExist 批量创建分区（如果不存在）
 	// 提供明确的批量创建语义，避免单个分区创建的歧义
 	CreatePartitionsIfNotExist(ctx context.Context, request CreatePartitionsRequest) ([]*model.PartitionInfo, error)
@@ -219,9 +216,6 @@ func (pm *PartitionManager) GetFilteredPartitions(ctx context.Context, filters G
 }
 
 // 批量操作委托
-func (pm *PartitionManager) SavePartitions(ctx context.Context, partitions []*model.PartitionInfo) error {
-	return pm.strategy.SavePartitions(ctx, partitions)
-}
 
 func (pm *PartitionManager) CreatePartitionsIfNotExist(ctx context.Context, request CreatePartitionsRequest) ([]*model.PartitionInfo, error) {
 	return pm.strategy.CreatePartitionsIfNotExist(ctx, request)
