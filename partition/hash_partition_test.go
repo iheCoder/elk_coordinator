@@ -209,10 +209,10 @@ func (m *MockHashPartitionOperations) HSetPartitionsInTx(ctx context.Context, ke
 }
 
 // 测试助手函数
-func createTestRepository() (*Repository, *MockHashPartitionOperations, *MockLogger) {
+func createTestRepository() (*HashPartitionStrategy, *MockHashPartitionOperations, *MockLogger) {
 	mockStore := NewMockHashPartitionOperations()
 	mockLogger := &MockLogger{}
-	repo := NewRepository(mockStore, mockLogger)
+	repo := NewHashPartitionStrategy(mockStore, mockLogger)
 	return repo, mockStore, mockLogger
 }
 
@@ -238,7 +238,7 @@ func TestNewRepository(t *testing.T) {
 	mockLogger := &MockLogger{}
 
 	// 正常情况
-	repo := NewRepository(mockStore, mockLogger)
+	repo := NewHashPartitionStrategy(mockStore, mockLogger)
 	if repo == nil {
 		t.Fatal("NewRepository 应该返回非空仓库")
 	}
@@ -255,7 +255,7 @@ func TestNewRepository(t *testing.T) {
 			t.Error("NewRepository 应该在日志为空时 panic")
 		}
 	}()
-	NewRepository(mockStore, nil)
+	NewHashPartitionStrategy(mockStore, nil)
 }
 
 // TestUpdatePartitionOptimistically 测试乐观锁更新

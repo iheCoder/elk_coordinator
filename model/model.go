@@ -44,6 +44,7 @@ var (
 	ErrMaxRetriesExceeded     = errors.New("maximum retry attempts exceeded")
 	ErrOptimisticLockFailed   = errors.New("optimistic lock failed: version mismatch")
 	ErrPartitionAlreadyExists = errors.New("partition already exists")
+	ErrPartitionNotFound      = errors.New("partition not found")
 )
 
 // SyncStatus stores global synchronization status
