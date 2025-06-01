@@ -98,12 +98,12 @@ type PartitionStrategy interface {
 	// ==================== 高级协调方法 ====================
 	// 这些方法用于分布式环境下的分区协调和任务分配
 
-	// AcquirePartition 尝试获取一个分区任务
-	// 具体的锁机制和选择策略由实现决定
+	// AcquirePartition 声明对指定分区的持有权
+	// 尝试获取指定分区的锁并声明持有权
+	// partitionID: 要声明持有权的分区ID
 	// workerID: 工作节点标识
-	// preferences: 获取偏好设置（如超时时间、优先级等）
-	// 返回获取到的分区信息，如果没有可用分区则返回 ErrNoAvailablePartition
-	AcquirePartition(ctx context.Context, workerID string, preferences map[string]interface{}) (*model.PartitionInfo, error)
+	// 返回声明持有权的分区信息，如果分区不可用或已被占用则返回错误
+	AcquirePartition(ctx context.Context, partitionID int, workerID string) (*model.PartitionInfo, error)
 
 	// UpdatePartitionStatus 更新分区状态
 	// 实现应验证调用者是否有权限更新该分区
@@ -118,7 +118,7 @@ type PartitionStrategy interface {
 	// partitionID: 分区ID
 	// workerID: 工作节点标识
 	// reason: 释放原因（完成、失败、取消等）
-	ReleasePartition(ctx context.Context, partitionID int, workerID string, reason string) error
+	ReleasePartition(ctx context.Context, partitionID int, workerID string) error
 
 	// ==================== 监控和维护 ====================
 
@@ -211,16 +211,16 @@ func (pm *PartitionManager) CreatePartitionIfNotExists(ctx context.Context, part
 }
 
 // 高级协调方法委托
-func (pm *PartitionManager) AcquirePartition(ctx context.Context, workerID string, preferences map[string]interface{}) (*model.PartitionInfo, error) {
-	return pm.strategy.AcquirePartition(ctx, workerID, preferences)
+func (pm *PartitionManager) AcquirePartition(ctx context.Context, partitionID int, workerID string) (*model.PartitionInfo, error) {
+	return pm.strategy.AcquirePartition(ctx, partitionID, workerID)
 }
 
 func (pm *PartitionManager) UpdatePartitionStatus(ctx context.Context, partitionID int, workerID string, status model.PartitionStatus, metadata map[string]interface{}) error {
 	return pm.strategy.UpdatePartitionStatus(ctx, partitionID, workerID, status, metadata)
 }
 
-func (pm *PartitionManager) ReleasePartition(ctx context.Context, partitionID int, workerID string, reason string) error {
-	return pm.strategy.ReleasePartition(ctx, partitionID, workerID, reason)
+func (pm *PartitionManager) ReleasePartition(ctx context.Context, partitionID int, workerID string) error {
+	return pm.strategy.ReleasePartition(ctx, partitionID, workerID)
 }
 
 // 监控和维护委托
