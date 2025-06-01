@@ -22,8 +22,9 @@ const (
 // HashPartitionStrategy 处理分区数据的访问和生命周期管理。
 // 实现 PartitionStrategy 接口，提供基于 Redis Hash 的分区存储策略
 type HashPartitionStrategy struct {
-	store  data.HashPartitionOperations // 分区存储接口，使用最小接口而不是完整DataStore
-	logger utils.Logger                 // 日志记录器
+	store          data.HashPartitionOperations // 分区存储接口，使用最小接口而不是完整DataStore
+	logger         utils.Logger                 // 日志记录器
+	staleThreshold time.Duration                // 分区被认为过时的心跳阈值，用于抢占判断
 }
 
 // NewHashPartitionStrategy 创建一个新的 Hash 分区策略实例。
@@ -32,8 +33,24 @@ func NewHashPartitionStrategy(store data.HashPartitionOperations, logger utils.L
 		panic("logger cannot be nil") // 日志记录器不能为空
 	}
 	return &HashPartitionStrategy{
-		store:  store,
-		logger: logger,
+		store:          store,
+		logger:         logger,
+		staleThreshold: 5 * time.Minute, // 默认5分钟心跳超时阈值
+	}
+}
+
+// NewHashPartitionStrategyWithConfig 创建带配置的 Hash 分区策略实例
+func NewHashPartitionStrategyWithConfig(store data.HashPartitionOperations, logger utils.Logger, staleThreshold time.Duration) *HashPartitionStrategy {
+	if logger == nil {
+		panic("logger cannot be nil") // 日志记录器不能为空
+	}
+	if staleThreshold <= 0 {
+		staleThreshold = 5 * time.Minute // 默认值
+	}
+	return &HashPartitionStrategy{
+		store:          store,
+		logger:         logger,
+		staleThreshold: staleThreshold,
 	}
 }
 
@@ -436,17 +453,17 @@ func (s *HashPartitionStrategy) CreatePartitionsIfNotExist(ctx context.Context, 
 
 // DeletePartitions 批量删除分区
 func (s *HashPartitionStrategy) DeletePartitions(ctx context.Context, partitionIDs []int) error {
-	var errors []error
+	var errs []error
 
 	for _, partitionID := range partitionIDs {
 		err := s.DeletePartition(ctx, partitionID)
 		if err != nil {
-			errors = append(errors, fmt.Errorf("删除分区 %d 失败: %w", partitionID, err))
+			errs = append(errs, fmt.Errorf("删除分区 %d 失败: %w", partitionID, err))
 		}
 	}
 
-	if len(errors) > 0 {
-		return fmt.Errorf("批量删除分区时发生错误: %v", errors)
+	if len(errs) > 0 {
+		return fmt.Errorf("批量删除分区时发生错误: %v", errs)
 	}
 
 	s.logger.Infof("成功批量删除 %d 个分区", len(partitionIDs))
@@ -459,31 +476,52 @@ func (s *HashPartitionStrategy) StrategyType() string {
 }
 
 // AcquirePartition 声明对指定分区的持有权
-func (s *HashPartitionStrategy) AcquirePartition(ctx context.Context, partitionID int, workerID string) (*model.PartitionInfo, error) {
+func (s *HashPartitionStrategy) AcquirePartition(ctx context.Context, partitionID int, workerID string, options *AcquirePartitionOptions) (*model.PartitionInfo, bool, error) {
+	if workerID == "" {
+		return nil, false, fmt.Errorf("工作节点ID不能为空")
+	}
+
+	// 设置默认选项
+	if options == nil {
+		options = &AcquirePartitionOptions{}
+	}
+
 	// 获取当前分区信息
 	partition, err := s.GetPartition(ctx, partitionID)
 	if err != nil {
-		return nil, fmt.Errorf("获取分区 %d 失败: %w", partitionID, err)
+		return nil, false, fmt.Errorf("获取分区 %d 失败: %w", partitionID, err)
 	}
 
-	// 检查分区是否可以被声明
-	if partition.Status != model.StatusPending {
-		return nil, fmt.Errorf("分区 %d 状态为 %s，无法声明", partitionID, partition.Status)
+	// 检查是否是同一个工作节点重复声明
+	if partition.WorkerID == workerID {
+		// 同一工作节点重复声明，更新心跳时间
+		s.logger.Infof("工作节点 %s 重新声明分区 %d，更新心跳", workerID, partitionID)
+		updatedPartition, err := s.updatePartitionHeartbeat(ctx, partition, workerID)
+		if err != nil {
+			return nil, false, err
+		}
+		return updatedPartition, true, nil
 	}
 
-	// 更新分区状态为已声明
-	partition.Status = model.StatusClaimed
-	partition.WorkerID = workerID
-	partition.LastHeartbeat = time.Now()
-
-	// 使用版本控制更新
-	updatedPartition, err := s.updatePartitionWithVersionControl(ctx, partition)
-	if err != nil {
-		return nil, fmt.Errorf("声明分区 %d 失败: %w", partitionID, err)
+	// 检查分区是否可以直接声明（pending状态且无持有者）
+	if partition.Status == model.StatusPending && partition.WorkerID == "" {
+		updatedPartition, err := s.acquirePartitionDirect(ctx, partition, workerID)
+		if err != nil {
+			return nil, false, err
+		}
+		return updatedPartition, true, nil
 	}
 
-	s.logger.Infof("工作节点 %s 成功声明分区 %d", workerID, partitionID)
-	return updatedPartition, nil
+	// 检查是否允许抢占
+	if !options.AllowPreemption {
+		// 分区被占用且不允许抢占，这是正常情况，不返回错误
+		s.logger.Debugf("分区 %d 已被工作节点 %s 持有，且不允许抢占", partitionID, partition.WorkerID)
+		return nil, false, nil
+	}
+
+	// 尝试基于心跳时间抢占分区
+	updatedPartition, success, err := s.tryPreemptPartitionByHeartbeat(ctx, partition, workerID, options)
+	return updatedPartition, success, err
 }
 
 // UpdatePartitionStatus 更新分区状态
@@ -590,4 +628,105 @@ func (s *HashPartitionStrategy) GetPartitionStats(ctx context.Context) (*model.P
 		stats.Total, stats.Pending, stats.Claimed, stats.Running, stats.Completed, stats.Failed)
 
 	return stats, nil
+}
+
+// ==================== 心跳和抢占辅助方法 ====================
+
+// acquirePartitionDirect 直接获取pending状态的分区
+func (s *HashPartitionStrategy) acquirePartitionDirect(ctx context.Context, partition *model.PartitionInfo, workerID string) (*model.PartitionInfo, error) {
+	// 更新分区状态
+	partition.Status = model.StatusClaimed
+	partition.WorkerID = workerID
+	partition.LastHeartbeat = time.Now()
+
+	// 使用版本控制更新
+	updatedPartition, err := s.updatePartitionWithVersionControl(ctx, partition)
+	if err != nil {
+		return nil, fmt.Errorf("声明分区 %d 失败: %w", partition.PartitionID, err)
+	}
+
+	s.logger.Infof("工作节点 %s 成功声明分区 %d", workerID, partition.PartitionID)
+	return updatedPartition, nil
+}
+
+// preemptPartitionByHeartbeat 基于心跳时间抢占分区
+func (s *HashPartitionStrategy) preemptPartitionByHeartbeat(ctx context.Context, partition *model.PartitionInfo, workerID string, options *AcquirePartitionOptions) (*model.PartitionInfo, error) {
+	// 检查是否可以抢占（基于心跳过时）
+	if !options.ForcePreemption {
+		if !s.isPartitionStaleByHeartbeat(partition) {
+			return nil, fmt.Errorf("分区 %d 持有者 %s 心跳仍然活跃（最后心跳: %s），无法抢占",
+				partition.PartitionID, partition.WorkerID, partition.LastHeartbeat.Format(time.RFC3339))
+		}
+	}
+
+	// 记录抢占操作
+	originalWorker := partition.WorkerID
+	s.logger.Infof("工作节点 %s 基于心跳超时抢占分区 %d（原持有者: %s, 最后心跳: %s）",
+		workerID, partition.PartitionID, originalWorker, partition.LastHeartbeat.Format(time.RFC3339))
+
+	// 更新分区状态
+	partition.Status = model.StatusClaimed
+	partition.WorkerID = workerID
+	partition.LastHeartbeat = time.Now()
+
+	// 使用版本控制更新
+	updatedPartition, err := s.updatePartitionWithVersionControl(ctx, partition)
+	if err != nil {
+		return nil, fmt.Errorf("抢占分区 %d 失败: %w", partition.PartitionID, err)
+	}
+
+	s.logger.Infof("工作节点 %s 成功抢占分区 %d（原持有者: %s）", workerID, partition.PartitionID, originalWorker)
+	return updatedPartition, nil
+}
+
+// tryPreemptPartitionByHeartbeat 尝试基于心跳时间抢占分区，返回新的接口签名
+func (s *HashPartitionStrategy) tryPreemptPartitionByHeartbeat(ctx context.Context, partition *model.PartitionInfo, workerID string, options *AcquirePartitionOptions) (*model.PartitionInfo, bool, error) {
+	// 检查是否可以抢占（基于心跳过时）
+	if !options.ForcePreemption {
+		if !s.isPartitionStaleByHeartbeat(partition) {
+			// 分区心跳仍然活跃，无法抢占，这是正常情况，不返回错误
+			s.logger.Debugf("分区 %d 持有者 %s 心跳仍然活跃（最后心跳: %s），无法抢占",
+				partition.PartitionID, partition.WorkerID, partition.LastHeartbeat.Format(time.RFC3339))
+			return nil, false, nil
+		}
+	}
+
+	// 调用原有的抢占方法
+	updatedPartition, err := s.preemptPartitionByHeartbeat(ctx, partition, workerID, options)
+	if err != nil {
+		// 系统错误（如网络、数据库错误）
+		return nil, false, err
+	}
+
+	// 抢占成功
+	return updatedPartition, true, nil
+}
+
+// isPartitionStaleByHeartbeat 检查分区是否因心跳超时而过时
+func (s *HashPartitionStrategy) isPartitionStaleByHeartbeat(partition *model.PartitionInfo) bool {
+	if partition.LastHeartbeat.IsZero() {
+		// 如果从未有心跳，认为是过时的
+		return true
+	}
+	return time.Since(partition.LastHeartbeat) > s.staleThreshold
+}
+
+// updatePartitionHeartbeat 更新分区心跳时间
+func (s *HashPartitionStrategy) updatePartitionHeartbeat(ctx context.Context, partition *model.PartitionInfo, workerID string) (*model.PartitionInfo, error) {
+	// 验证权限：只有分区的持有者才能更新心跳
+	if partition.WorkerID != "" && partition.WorkerID != workerID {
+		return nil, fmt.Errorf("工作节点 %s 无权更新分区 %d 心跳 (当前持有者: %s)", workerID, partition.PartitionID, partition.WorkerID)
+	}
+
+	// 更新心跳时间
+	partition.LastHeartbeat = time.Now()
+
+	// 使用版本控制更新
+	updatedPartition, err := s.updatePartitionWithVersionControl(ctx, partition)
+	if err != nil {
+		return nil, fmt.Errorf("更新分区 %d 心跳失败: %w", partition.PartitionID, err)
+	}
+
+	s.logger.Debugf("工作节点 %s 成功更新分区 %d 心跳", workerID, partition.PartitionID)
+	return updatedPartition, nil
 }

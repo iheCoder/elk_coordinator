@@ -13,13 +13,6 @@ import (
 	"time"
 )
 
-// 错误常量定义 - 用于区分正常的"无法获取"情况和系统错误
-var (
-	ErrPartitionNotExists   = errors.New("partition not exists")
-	ErrPartitionAlreadyHeld = errors.New("partition already held")
-	ErrPartitionLockFailed  = errors.New("partition lock failed")
-)
-
 // SimpleStrategy 简单分区策略实现
 // 专注于提供分区的基础封装操作，包括分布式锁、并发安全、数据持久化等
 // 不包含具体的分配和获取业务逻辑，这些由leader和runner负责
