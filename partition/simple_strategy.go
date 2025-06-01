@@ -353,8 +353,23 @@ func (s *SimpleStrategy) AcquirePartition(ctx context.Context, partitionID int, 
 		return nil, fmt.Errorf("分区 %d 已被工作节点 %s 持有", partitionID, partition.WorkerID)
 	}
 
-	// 尝试获取分布式锁
+	// 如果是同一个工作节点，检查是否已经持有锁
 	lockKey := s.getPartitionLockKey(partitionID)
+	if partition.WorkerID == workerID {
+		// 同一个工作节点重复声明，检查锁是否仍然有效
+		owned, err := s.dataStore.CheckLock(ctx, lockKey, workerID)
+		if err != nil {
+			return nil, pkgerrors.Wrap(err, "检查分区锁失败")
+		}
+		if owned {
+			// 锁仍然有效，直接返回当前分区信息
+			s.logger.Infof("工作节点 %s 重复声明对分区 %d 的持有权（锁仍然有效）", workerID, partitionID)
+			return &partition, nil
+		}
+		// 锁已失效，需要重新获取
+	}
+
+	// 尝试获取分布式锁
 	acquired, err := s.dataStore.AcquireLock(ctx, lockKey, workerID, s.partitionLockExpiry)
 	if err != nil {
 		return nil, pkgerrors.Wrap(err, "获取分区锁失败")

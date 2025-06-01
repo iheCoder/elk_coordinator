@@ -55,6 +55,8 @@ func setupSimpleStrategyTest(t *testing.T) (*SimpleStrategy, *miniredis.Miniredi
 
 	// 返回清理函数
 	cleanup := func() {
+		// 清理所有测试数据
+		client.FlushAll(context.Background())
 		client.Close()
 		mr.Close()
 	}
