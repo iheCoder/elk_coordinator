@@ -303,13 +303,13 @@ func (s *HashPartitionStrategy) GetPartition(ctx context.Context, partitionID in
 	if err != nil {
 		if errors.Is(err, data.ErrNotFound) { // 检查 data.ErrNotFound
 			s.logger.Infof("分区 %d 未在存储中找到 (data.ErrNotFound)", partitionID)
-			return nil, model.ErrPartitionNotFound // 使用 model.ErrPartitionNotFound
+			return nil, ErrPartitionNotFound // 使用 partition.ErrPartitionNotFound
 		}
 		// 对于其他类型的错误，例如 redis.Nil 直接从 HGetPartition 泄漏（不应该发生如果 HGetPartition 正确包装）
 		// 或者其他连接/IO错误
 		if errors.Is(err, redis.Nil) { // 以防万一 HGetPartition 没有包装 redis.Nil
 			s.logger.Infof("分区 %d 未在存储中找到 (redis.Nil)", partitionID)
-			return nil, model.ErrPartitionNotFound // 使用 model.ErrPartitionNotFound
+			return nil, ErrPartitionNotFound // 使用 partition.ErrPartitionNotFound
 		}
 		s.logger.Errorf("从存储中获取分区 %d 失败: %v", partitionID, err)
 		return nil, fmt.Errorf("从存储中获取分区 %d 失败: %w", partitionID, err)
@@ -388,7 +388,7 @@ func (s *HashPartitionStrategy) UpdatePartition(ctx context.Context, partitionIn
 	if options != nil && options.Upsert {
 		_, err := s.GetPartition(ctx, partitionInfo.PartitionID)
 		if err != nil {
-			if errors.Is(err, model.ErrPartitionNotFound) {
+			if errors.Is(err, ErrPartitionNotFound) {
 				// 分区不存在，创建新分区
 				return s.CreatePartitionAtomically(ctx, partitionInfo.PartitionID, partitionInfo.MinID, partitionInfo.MaxID, partitionInfo.Options)
 			}
@@ -410,7 +410,7 @@ func (s *HashPartitionStrategy) CreatePartitionsIfNotExist(ctx context.Context, 
 	for _, partition := range request.Partitions {
 		// 检查分区是否已存在
 		existing, err := s.GetPartition(ctx, partition.PartitionID)
-		if err != nil && !errors.Is(err, model.ErrPartitionNotFound) {
+		if err != nil && !errors.Is(err, ErrPartitionNotFound) {
 			errs = append(errs, fmt.Errorf("检查分区 %d 存在性失败: %w", partition.PartitionID, err))
 			continue
 		}

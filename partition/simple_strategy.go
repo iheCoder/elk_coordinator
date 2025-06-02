@@ -584,6 +584,12 @@ func (s *SimpleStrategy) GetPartitionStats(ctx context.Context) (*model.Partitio
 		}
 	}
 
+	// 计算比率
+	if stats.Total > 0 {
+		stats.CompletionRate = float64(stats.Completed) / float64(stats.Total)
+		stats.FailureRate = float64(stats.Failed) / float64(stats.Total)
+	}
+
 	return stats, nil
 }
 
