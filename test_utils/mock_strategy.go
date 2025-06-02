@@ -21,6 +21,23 @@ func NewMockPartitionStrategy() *MockPartitionStrategy {
 	}
 }
 
+// AddPartition 添加分区（测试辅助方法）
+func (m *MockPartitionStrategy) AddPartition(partition *model.PartitionInfo) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	// 创建副本避免外部修改影响内部状态
+	cp := *partition
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = time.Now()
+	}
+	if cp.UpdatedAt.IsZero() {
+		cp.UpdatedAt = time.Now()
+	}
+
+	m.Partitions[partition.PartitionID] = &cp
+}
+
 // GetPartition 获取单个分区
 func (m *MockPartitionStrategy) GetPartition(ctx context.Context, partitionID int) (*model.PartitionInfo, error) {
 	m.mutex.RLock()
@@ -247,7 +264,7 @@ func (m *MockPartitionStrategy) AcquirePartition(ctx context.Context, partitionI
 
 	// 获取分区
 	p.WorkerID = workerID
-	p.Status = model.StatusRunning
+	p.Status = model.StatusClaimed
 	p.UpdatedAt = time.Now()
 	p.Version++
 
