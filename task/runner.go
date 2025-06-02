@@ -2,8 +2,8 @@ package task
 
 import (
 	"context"
-	"elk_coordinator/data"
 	"elk_coordinator/model"
+	"elk_coordinator/partition"
 	"elk_coordinator/utils"
 	"github.com/pkg/errors"
 	"time"
@@ -18,12 +18,9 @@ type Runner struct {
 	partitionLockExpiry time.Duration
 
 	// 依赖组件
-	dataStore interface {
-		data.LockOperations
-		data.SimplePartitionOperations
-	}
-	processor Processor
-	logger    utils.Logger
+	partitionStrategy partition.PartitionStrategy
+	processor         Processor
+	logger            utils.Logger
 
 	// 熔断器
 	circuitBreaker *CircuitBreaker
@@ -37,12 +34,9 @@ type RunnerConfig struct {
 	PartitionLockExpiry time.Duration
 
 	// 依赖组件
-	DataStore interface {
-		data.LockOperations
-		data.SimplePartitionOperations
-	}
-	Processor Processor
-	Logger    utils.Logger
+	PartitionStrategy partition.PartitionStrategy
+	Processor         Processor
+	Logger            utils.Logger
 
 	// 熔断器配置（可选）
 	CircuitBreaker       *CircuitBreaker       // 可以直接提供熔断器实例
@@ -84,9 +78,9 @@ func NewRunner(config RunnerConfig) *Runner {
 		partitionLockExpiry: config.PartitionLockExpiry,
 
 		// 依赖组件
-		dataStore: config.DataStore,
-		processor: config.Processor,
-		logger:    config.Logger,
+		partitionStrategy: config.PartitionStrategy,
+		processor:         config.Processor,
+		logger:            config.Logger,
 
 		// 熔断器
 		circuitBreaker: config.CircuitBreaker,
@@ -249,12 +243,11 @@ func (r *Runner) runPartitionHeartbeat(ctx context.Context, task model.Partition
 			if time.Since(lastUpdate) >= r.partitionLockExpiry/3 {
 				updateCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 
-				// 更新分区时间戳，但保持状态不变
-				task.UpdatedAt = time.Now()
-				if err := r.updatePartitionStatus(updateCtx, task); err != nil {
-					r.logger.Warnf("更新分区 %d 心跳失败: %v", task.PartitionID, err)
+				// 使用策略接口维护分区持有权
+				if err := r.maintainPartitionHold(updateCtx, task.PartitionID); err != nil {
+					r.logger.Warnf("维护分区 %d 持有权失败: %v", task.PartitionID, err)
 				} else {
-					r.logger.Debugf("已更新分区 %d 心跳", task.PartitionID)
+					r.logger.Debugf("已维护分区 %d 持有权", task.PartitionID)
 					lastUpdate = time.Now()
 				}
 

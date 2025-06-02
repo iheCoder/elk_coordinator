@@ -2,8 +2,8 @@ package task
 
 import (
 	"context"
-	"elk_coordinator/data"
 	"elk_coordinator/model"
+	"elk_coordinator/partition"
 	"elk_coordinator/utils"
 	"time"
 )
@@ -17,12 +17,9 @@ type TaskWindowConfig struct {
 	PartitionLockExpiry time.Duration
 
 	// 依赖组件
-	DataStore interface {
-		data.LockOperations
-		data.SimplePartitionOperations
-	}
-	Processor Processor
-	Logger    utils.Logger
+	PartitionStrategy partition.PartitionStrategy
+	Processor         Processor
+	Logger            utils.Logger
 
 	// 熔断器配置（可选）
 	CircuitBreaker *CircuitBreaker // 可以直接提供熔断器实例
@@ -66,7 +63,7 @@ func NewTaskWindow(config TaskWindowConfig) *TaskWindow {
 		Namespace:           config.Namespace,
 		WorkerID:            config.WorkerID,
 		PartitionLockExpiry: config.PartitionLockExpiry,
-		DataStore:           config.DataStore,
+		PartitionStrategy:   config.PartitionStrategy,
 		Processor:           config.Processor,
 		Logger:              config.Logger,
 		CircuitBreaker:      config.CircuitBreaker, // 传递熔断器
