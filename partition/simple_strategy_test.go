@@ -890,6 +890,71 @@ func TestSimpleStrategy_ReleasePartition(t *testing.T) {
 	assert.True(t, success)
 }
 
+// TestSimpleStrategy_MaintainPartitionHold 测试维护分区持有权
+func TestSimpleStrategy_MaintainPartitionHold(t *testing.T) {
+	strategy, _, cleanup := setupSimpleStrategyTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// 测试空工作节点ID
+	err := strategy.MaintainPartitionHold(ctx, 1, "")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "工作节点ID不能为空")
+
+	// 测试维护不存在分区的持有权
+	err = strategy.MaintainPartitionHold(ctx, 999, "worker1")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "分区 999 不存在")
+
+	// 创建分区但未声明
+	partition := createTestPartition(1, model.StatusPending, "")
+	_, err = strategy.UpdatePartition(ctx, partition, nil)
+	assert.NoError(t, err)
+
+	// 测试维护未持有分区的持有权
+	err = strategy.MaintainPartitionHold(ctx, 1, "worker1")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "工作节点 worker1 没有持有分区 1")
+
+	// 声明分区
+	acquired, success, err := strategy.AcquirePartition(ctx, 1, "worker1", nil)
+	if err != nil || !success {
+		t.Skipf("声明分区失败，跳过此测试: %v", err)
+		return
+	}
+	assert.NoError(t, err)
+	assert.True(t, success)
+	assert.NotNil(t, acquired)
+
+	// 测试其他工作节点尝试维护持有权
+	err = strategy.MaintainPartitionHold(ctx, 1, "worker2")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "工作节点 worker2 没有持有分区 1（当前持有者: worker1）")
+
+	// 测试正确的工作节点成功维护持有权
+	err = strategy.MaintainPartitionHold(ctx, 1, "worker1")
+	assert.NoError(t, err)
+
+	// 再次测试维护持有权，应该仍然成功
+	err = strategy.MaintainPartitionHold(ctx, 1, "worker1")
+	assert.NoError(t, err)
+
+	// 验证分区状态没有改变（维护持有权不应改变分区状态，只续期锁）
+	current, err := strategy.GetPartition(ctx, 1)
+	assert.NoError(t, err)
+	assert.Equal(t, "worker1", current.WorkerID)
+	assert.Equal(t, model.StatusClaimed, current.Status)
+
+	// 测试在分区被释放后尝试维护持有权
+	err = strategy.ReleasePartition(ctx, 1, "worker1")
+	assert.NoError(t, err)
+
+	err = strategy.MaintainPartitionHold(ctx, 1, "worker1")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "工作节点 worker1 没有持有分区 1")
+}
+
 // ==================== 统计信息测试 ====================
 
 // TestSimpleStrategy_GetPartitionStats 测试获取分区统计信息
