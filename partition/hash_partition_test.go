@@ -216,14 +216,14 @@ func createTestRepository() (*HashPartitionStrategy, *MockHashPartitionOperation
 	return repo, mockStore, mockLogger
 }
 
-func createTestPartitionInfo(partitionID int, status model.PartitionStatus, version int64) *model.PartitionInfo {
+func createTestPartitionInfo(partitionID int, status model.PartitionStatus, version int64, workerID string) *model.PartitionInfo {
 	now := time.Now()
 	return &model.PartitionInfo{
 		PartitionID:   partitionID,
 		MinID:         int64(partitionID*1000 + 1),
 		MaxID:         int64((partitionID + 1) * 1000),
 		Status:        status,
-		WorkerID:      "test-worker",
+		WorkerID:      workerID,
 		LastHeartbeat: now,
 		UpdatedAt:     now,
 		CreatedAt:     now,
@@ -264,7 +264,7 @@ func TestUpdatePartitionOptimistically(t *testing.T) {
 	ctx := context.Background()
 
 	// 测试场景1: 正常更新
-	partition := createTestPartitionInfo(1, model.StatusClaimed, 1)
+	partition := createTestPartitionInfo(1, model.StatusClaimed, 1, "test-worker")
 	mockStore.SetVersion("1", 1) // 设置当前版本为1
 
 	updated, err := repo.UpdatePartitionOptimistically(ctx, partition, 1)
@@ -285,7 +285,7 @@ func TestUpdatePartitionOptimistically(t *testing.T) {
 	}
 
 	// 测试场景3: 版本冲突
-	partition2 := createTestPartitionInfo(2, model.StatusRunning, 1)
+	partition2 := createTestPartitionInfo(2, model.StatusRunning, 1, "test-worker")
 	mockStore.SetVersion("2", 2) // 当前版本为2，但期望版本为1
 
 	_, err = repo.UpdatePartitionOptimistically(ctx, partition2, 1)
@@ -294,7 +294,7 @@ func TestUpdatePartitionOptimistically(t *testing.T) {
 	}
 
 	// 测试场景4: 心跳更新 (StatusClaimed)
-	partition3 := createTestPartitionInfo(3, model.StatusClaimed, 1)
+	partition3 := createTestPartitionInfo(3, model.StatusClaimed, 1, "test-worker")
 	mockStore.SetVersion("3", 1)
 
 	updated3, err := repo.UpdatePartitionOptimistically(ctx, partition3, 1)
@@ -306,7 +306,7 @@ func TestUpdatePartitionOptimistically(t *testing.T) {
 	}
 
 	// 测试场景5: 心跳更新 (StatusRunning)
-	partition4 := createTestPartitionInfo(4, model.StatusRunning, 1)
+	partition4 := createTestPartitionInfo(4, model.StatusRunning, 1, "test-worker")
 	mockStore.SetVersion("4", 1)
 
 	updated4, err := repo.UpdatePartitionOptimistically(ctx, partition4, 1)
@@ -368,7 +368,7 @@ func TestGetPartition(t *testing.T) {
 	}
 
 	// 测试场景2: 正常获取
-	partition := createTestPartitionInfo(1, model.StatusRunning, 2)
+	partition := createTestPartitionInfo(1, model.StatusRunning, 2, "test-worker")
 	// 先创建分区
 	repo.SavePartition(ctx, partition)
 
@@ -406,9 +406,9 @@ func TestGetAllPartitions(t *testing.T) {
 	}
 
 	// 测试场景2: 多个分区
-	partition1 := createTestPartitionInfo(1, model.StatusPending, 1)
-	partition2 := createTestPartitionInfo(2, model.StatusRunning, 1)
-	partition3 := createTestPartitionInfo(3, model.StatusCompleted, 1)
+	partition1 := createTestPartitionInfo(1, model.StatusPending, 1, "test-worker")
+	partition2 := createTestPartitionInfo(2, model.StatusRunning, 1, "test-worker")
+	partition3 := createTestPartitionInfo(3, model.StatusCompleted, 1, "test-worker")
 
 	repo.SavePartition(ctx, partition1)
 	repo.SavePartition(ctx, partition2)
@@ -571,7 +571,7 @@ func TestDeletePartition(t *testing.T) {
 	ctx := context.Background()
 
 	// 测试场景1: 删除存在的分区
-	partition := createTestPartitionInfo(1, model.StatusCompleted, 1)
+	partition := createTestPartitionInfo(1, model.StatusCompleted, 1, "test-worker")
 	repo.SavePartition(ctx, partition)
 
 	err := repo.DeletePartition(ctx, 1)
@@ -604,8 +604,8 @@ func TestSavePartition(t *testing.T) {
 	}
 
 	// 测试场景2: 正常保存新分区
-	partition := createTestPartitionInfo(1, model.StatusPending, 0) // 版本为0
-	partition.CreatedAt = time.Time{}                               // 设置为零值以测试自动设置
+	partition := createTestPartitionInfo(1, model.StatusPending, 0, "test-worker") // 版本为0
+	partition.CreatedAt = time.Time{}                                              // 设置为零值以测试自动设置
 
 	err = repo.SavePartition(ctx, partition)
 	if err != nil {
@@ -653,6 +653,77 @@ func TestSavePartition(t *testing.T) {
 	}
 }
 
+// TestMaintainPartitionHold 测试维护分区持有权（心跳续约）
+func TestMaintainPartitionHold(t *testing.T) {
+	repo, _, _ := createTestRepository()
+	partition := createTestPartitionInfo(1, model.StatusClaimed, 1, "test-worker")
+	partition.WorkerID = "worker-1"
+	_ = repo.SavePartition(context.Background(), partition)
+
+	err := repo.MaintainPartitionHold(context.Background(), 1, "worker-1")
+	if err != nil {
+		t.Fatalf("维护分区持有权失败: %v", err)
+	}
+
+	// 非持有者尝试维护应失败
+	err = repo.MaintainPartitionHold(context.Background(), 1, "worker-2")
+	if err == nil {
+		t.Error("非持有者维护分区应失败")
+	}
+}
+
+// TestAcquirePartition 测试声明分区持有权
+func TestAcquirePartition(t *testing.T) {
+	repo, _, _ := createTestRepository()
+	partition := createTestPartitionInfo(2, model.StatusPending, 1, "")
+	_ = repo.SavePartition(context.Background(), partition)
+
+	// worker-1 首次声明
+	p, ok, err := repo.AcquirePartition(context.Background(), 2, "worker-1", nil)
+	if err != nil || !ok {
+		t.Fatalf("声明分区持有权失败: %v", err)
+	}
+	if p.WorkerID != "worker-1" {
+		t.Errorf("声明后持有者应为 worker-1, got %s", p.WorkerID)
+	}
+
+	// worker-1 再次声明应为幂等
+	p2, ok, err := repo.AcquirePartition(context.Background(), 2, "worker-1", nil)
+	if err != nil || !ok {
+		t.Errorf("重复声明分区应成功: %v", err)
+	}
+	if p2.WorkerID != "worker-1" {
+		t.Errorf("重复声明后持有者应为 worker-1, got %s", p2.WorkerID)
+	}
+}
+
+// TestCreatePartitionsIfNotExist 测试批量创建分区
+func TestCreatePartitionsIfNotExist(t *testing.T) {
+	repo, _, _ := createTestRepository()
+	request := model.CreatePartitionsRequest{
+		Partitions: []model.CreatePartitionRequest{
+			{PartitionID: 10, MinID: 100, MaxID: 200},
+			{PartitionID: 11, MinID: 201, MaxID: 300},
+		},
+	}
+	partitions, err := repo.CreatePartitionsIfNotExist(context.Background(), request)
+	if err != nil {
+		t.Fatalf("批量创建分区失败: %v", err)
+	}
+	if len(partitions) != 2 {
+		t.Errorf("应创建2个分区, 实际: %d", len(partitions))
+	}
+
+	// 再次创建应不会重复
+	partitions2, err := repo.CreatePartitionsIfNotExist(context.Background(), request)
+	if err != nil {
+		t.Fatalf("重复批量创建分区失败: %v", err)
+	}
+	if len(partitions2) != 2 {
+		t.Errorf("重复创建应返回2个分区, 实际: %d", len(partitions2))
+	}
+}
+
 // ========== 并发测试 ==========
 
 // TestRepository_ConcurrentOptimisticUpdates 测试并发乐观锁更新
@@ -661,7 +732,7 @@ func TestRepository_ConcurrentOptimisticUpdates(t *testing.T) {
 	ctx := context.Background()
 
 	// 创建初始分区
-	partition := createTestPartitionInfo(1, model.StatusPending, 1)
+	partition := createTestPartitionInfo(1, model.StatusPending, 1, "test-worker")
 	repo.SavePartition(ctx, partition)
 	mockStore.SetVersion("1", 1)
 
@@ -775,7 +846,7 @@ func TestRepository_ConcurrentReadWrites(t *testing.T) {
 
 	// 创建一些初始分区
 	for i := 1; i <= 5; i++ {
-		partition := createTestPartitionInfo(i, model.StatusPending, 1)
+		partition := createTestPartitionInfo(i, model.StatusPending, 1, "test-worker")
 		repo.SavePartition(ctx, partition)
 	}
 
@@ -889,7 +960,7 @@ func TestRepository_ConcurrentVersionProgressions(t *testing.T) {
 	ctx := context.Background()
 
 	// 创建初始分区
-	partition := createTestPartitionInfo(1, model.StatusPending, 1)
+	partition := createTestPartitionInfo(1, model.StatusPending, 1, "test-worker")
 	repo.SavePartition(ctx, partition)
 	mockStore.SetVersion("1", 1)
 
@@ -969,7 +1040,7 @@ func TestRepository_ConcurrentDeleteAndAccess(t *testing.T) {
 
 	// 创建多个分区
 	for i := 1; i <= numPartitions; i++ {
-		partition := createTestPartitionInfo(i, model.StatusCompleted, 1)
+		partition := createTestPartitionInfo(i, model.StatusCompleted, 1, "test-worker")
 		repo.SavePartition(ctx, partition)
 	}
 
@@ -1184,7 +1255,7 @@ func TestRepository_EdgeCases(t *testing.T) {
 
 	// 测试场景1: 极大的分区ID
 	largePartitionID := 999999999
-	partition := createTestPartitionInfo(largePartitionID, model.StatusPending, 1)
+	partition := createTestPartitionInfo(largePartitionID, model.StatusPending, 1, "test-worker")
 	err := repo.SavePartition(ctx, partition)
 	if err != nil {
 		t.Fatalf("保存大分区ID失败: %v", err)
@@ -1265,7 +1336,7 @@ func TestRepository_EdgeCases(t *testing.T) {
 	}
 
 	// 测试场景8: 空WorkerID
-	partition3 := createTestPartitionInfo(104, model.StatusPending, 1)
+	partition3 := createTestPartitionInfo(104, model.StatusPending, 1, "test-worker")
 	partition3.WorkerID = ""
 	err = repo.SavePartition(ctx, partition3)
 	if err != nil {
@@ -1277,7 +1348,7 @@ func TestRepository_EdgeCases(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		longWorkerID += "a"
 	}
-	partition4 := createTestPartitionInfo(105, model.StatusRunning, 1)
+	partition4 := createTestPartitionInfo(105, model.StatusRunning, 1, "test-worker")
 	partition4.WorkerID = longWorkerID
 	err = repo.SavePartition(ctx, partition4)
 	if err != nil {
@@ -1285,7 +1356,7 @@ func TestRepository_EdgeCases(t *testing.T) {
 	}
 
 	// 测试场景10: 时间边界值
-	partition5 := createTestPartitionInfo(106, model.StatusCompleted, 1)
+	partition5 := createTestPartitionInfo(106, model.StatusCompleted, 1, "test-worker")
 	partition5.CreatedAt = time.Time{} // 零值时间
 	partition5.UpdatedAt = time.Time{}
 	partition5.LastHeartbeat = time.Time{}
@@ -1441,7 +1512,7 @@ func TestRepository_ConcurrentContextCancellation(t *testing.T) {
 				case <-ctx3.Done():
 					return
 				default:
-					partition := createTestPartitionInfo(workerID*10+j, model.StatusPending, 1)
+					partition := createTestPartitionInfo(workerID*10+j, model.StatusPending, 1, "test-worker")
 					repo.SavePartition(ctx3, partition)
 				}
 			}
@@ -1472,7 +1543,7 @@ func TestRepository_LargeDataSets(t *testing.T) {
 	// 创建大量分区
 	start := time.Now()
 	for i := 1; i <= numPartitions; i++ {
-		partition := createTestPartitionInfo(i, model.StatusPending, 1)
+		partition := createTestPartitionInfo(i, model.StatusPending, 1, "test-worker")
 		err := repo.SavePartition(ctx, partition)
 		if err != nil {
 			t.Fatalf("创建分区 %d 失败: %v", i, err)
@@ -1550,7 +1621,7 @@ func TestRepository_ErrorRecovery(t *testing.T) {
 
 	// 测试场景1: 存储错误后的恢复
 	// 先正常创建一个分区
-	partition := createTestPartitionInfo(1, model.StatusPending, 1)
+	partition := createTestPartitionInfo(1, model.StatusPending, 1, "test-worker")
 	err := repo.SavePartition(ctx, partition)
 	if err != nil {
 		t.Fatalf("初始保存分区失败: %v", err)
@@ -1591,7 +1662,7 @@ func TestRepository_ErrorRecovery(t *testing.T) {
 	}
 
 	// 继续正常操作
-	partition2 := createTestPartitionInfo(2, model.StatusRunning, 1)
+	partition2 := createTestPartitionInfo(2, model.StatusRunning, 1, "test-worker")
 	err = repo.SavePartition(ctx, partition2)
 	if err != nil {
 		t.Fatalf("恢复后保存分区失败: %v", err)
