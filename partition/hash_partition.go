@@ -168,7 +168,11 @@ func (s *HashPartitionStrategy) CreatePartitionAtomically(ctx context.Context, p
 	// 数据存储层中的 HUpdatePartitionWithVersion 方法应处理此逻辑。
 	success, err := s.store.HUpdatePartitionWithVersion(ctx, partitionHashKey, strconv.Itoa(partitionID), string(partitionJson), 0)
 	if err != nil {
-		// 像 ErrPartitionAlreadyExists 这样的特定错误应该由存储的 HUpdatePartitionWithVersion 返回。
+		// 将数据层错误转换为分区层错误
+		if errors.Is(err, data.ErrPartitionAlreadyExists) {
+			s.logger.Errorf("通过 HUpdatePartitionWithVersion 原子创建分区 %d 失败: %v", partitionID, err)
+			return nil, ErrPartitionAlreadyExists
+		}
 		s.logger.Errorf("通过 HUpdatePartitionWithVersion 原子创建分区 %d 失败: %v", partitionID, err)
 		return nil, fmt.Errorf("创建分区 %d 失败: %w", partitionID, err)
 	}
