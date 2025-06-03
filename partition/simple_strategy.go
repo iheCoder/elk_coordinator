@@ -234,6 +234,27 @@ func (s *SimpleStrategy) UpdatePartition(ctx context.Context, partitionInfo *mod
 		return nil, fmt.Errorf("分区信息不能为空")
 	}
 
+	// 获取分区ID
+	partitionID := partitionInfo.PartitionID
+
+	// 先获取分布式锁来保护更新操作
+	lockKey := s.getPartitionLockKey(partitionID)
+	// 使用分区ID作为锁的值，因为这里我们只关心互斥性，不关心所有权
+	lockValue := fmt.Sprintf("update-lock-%d", partitionID)
+
+	acquired, err := s.dataStore.AcquireLock(ctx, lockKey, lockValue, s.partitionLockExpiry)
+	if err != nil {
+		return nil, pkgerrors.Wrap(err, "获取分区更新锁失败")
+	}
+
+	if !acquired {
+		return nil, fmt.Errorf("无法获取分区 %d 的更新锁，可能正在被其他进程更新", partitionID)
+	}
+
+	// 确保锁会被释放
+	defer s.dataStore.ReleaseLock(ctx, lockKey, lockValue)
+
+	// 本地锁保护内存状态
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
