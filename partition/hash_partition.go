@@ -55,19 +55,15 @@ func NewHashPartitionStrategyWithConfig(store data.HashPartitionOperations, logg
 }
 
 // updatePartitionWithVersionControl 内部方法，处理带版本控制的分区更新
-// 自动获取当前版本并进行乐观锁更新
+// 使用传入分区信息中的版本进行乐观锁更新，避免竞争条件
 func (s *HashPartitionStrategy) updatePartitionWithVersionControl(ctx context.Context, partitionInfo *model.PartitionInfo) (*model.PartitionInfo, error) {
 	if partitionInfo == nil {
 		return nil, errors.New("partitionInfo cannot be nil")
 	}
 
-	// 首先获取当前分区信息以获得当前版本
-	currentPartition, err := s.GetPartition(ctx, partitionInfo.PartitionID)
-	if err != nil {
-		return nil, fmt.Errorf("获取分区 %d 当前版本失败: %w", partitionInfo.PartitionID, err)
-	}
-
-	expectedVersion := currentPartition.Version
+	// 使用传入分区信息中的版本，避免重新获取造成竞争条件
+	// 调用方已经获取了分区信息，应该使用调用方读取到的版本
+	expectedVersion := partitionInfo.Version
 	newVersion := expectedVersion + 1
 
 	// 创建更新后的分区副本
@@ -89,12 +85,16 @@ func (s *HashPartitionStrategy) updatePartitionWithVersionControl(ctx context.Co
 	// 使用乐观锁进行更新
 	success, err := s.store.HUpdatePartitionWithVersion(ctx, partitionHashKey, strconv.Itoa(updatedPartition.PartitionID), string(partitionJson), expectedVersion)
 	if err != nil {
+		if errors.Is(err, data.ErrOptimisticLockFailed) {
+			s.logger.Warnf("分区 %d 的乐观锁失败：期望版本 %d，但存储中的条件未满足", updatedPartition.PartitionID, expectedVersion)
+			return nil, data.ErrOptimisticLockFailed // 返回特定的错误
+		}
 		s.logger.Errorf("为分区 %d 执行 HUpdatePartitionWithVersion 失败: %v", updatedPartition.PartitionID, err)
 		return nil, fmt.Errorf("乐观更新分区 %d 失败: %w", updatedPartition.PartitionID, err)
 	}
 	if !success {
 		s.logger.Warnf("分区 %d 的乐观锁失败：期望版本 %d，但存储中的条件未满足", updatedPartition.PartitionID, expectedVersion)
-		return nil, model.ErrOptimisticLockFailed
+		return nil, ErrOptimisticLockFailed
 	}
 
 	s.logger.Infof("成功将分区 %d 更新到版本 %d (状态: %s, WorkerID: %s)", updatedPartition.PartitionID, newVersion, updatedPartition.Status, updatedPartition.WorkerID)
@@ -134,7 +134,7 @@ func (s *HashPartitionStrategy) UpdatePartitionOptimistically(ctx context.Contex
 	}
 	if !success {
 		s.logger.Warnf("分区 %d 的乐观锁失败：期望版本 %d，但存储中的条件未满足", updatedPartition.PartitionID, expectedVersion)
-		return nil, model.ErrOptimisticLockFailed // 返回特定的错误
+		return nil, ErrOptimisticLockFailed // 返回特定的错误
 	}
 
 	s.logger.Infof("成功将分区 %d 更新到版本 %d (状态: %s, WorkerID: %s)", updatedPartition.PartitionID, newVersion, updatedPartition.Status, updatedPartition.WorkerID)
@@ -179,9 +179,9 @@ func (s *HashPartitionStrategy) CreatePartitionAtomically(ctx context.Context, p
 		s.logger.Warnf("原子创建分区 %d 失败，HUpdatePartitionWithVersion 返回 false (期望版本 0)。它可能已存在。", partitionID)
 		// 如果底层的存储方法过于通用，可以尝试获取分区以确认其是否存在，从而返回更具体的错误。
 		// 但目前，我们依赖 HUpdatePartitionWithVersion 的错误契约。
-		// 如果 HUpdatePartitionWithVersion 行为良好，它应该在 `err` 中返回 model.ErrPartitionAlreadyExists。
+		// 如果 HUpdatePartitionWithVersion 行为良好，它应该在 `err` 中返回 ErrPartitionAlreadyExists。
 		// 如果 `err` 为 nil 但 `success` 为 false，则表示存在冲突。
-		return nil, model.ErrPartitionAlreadyExists // 或更通用的创建冲突错误
+		return nil, ErrPartitionAlreadyExists // 或更通用的创建冲突错误
 	}
 
 	s.logger.Infof("成功创建分区 %d，版本为 1", partitionID)
@@ -425,7 +425,7 @@ func (s *HashPartitionStrategy) CreatePartitionsIfNotExist(ctx context.Context, 
 		// 分区不存在，创建新分区
 		newPartition, err := s.CreatePartitionAtomically(ctx, partition.PartitionID, partition.MinID, partition.MaxID, partition.Options)
 		if err != nil {
-			if errors.Is(err, model.ErrPartitionAlreadyExists) {
+			if errors.Is(err, ErrPartitionAlreadyExists) {
 				// 并发创建导致的冲突，重新获取分区
 				existing, getErr := s.GetPartition(ctx, partition.PartitionID)
 				if getErr != nil {
@@ -486,42 +486,71 @@ func (s *HashPartitionStrategy) AcquirePartition(ctx context.Context, partitionI
 		options = &model.AcquirePartitionOptions{}
 	}
 
-	// 获取当前分区信息
-	partition, err := s.GetPartition(ctx, partitionID)
-	if err != nil {
-		return nil, false, fmt.Errorf("获取分区 %d 失败: %w", partitionID, err)
-	}
-
-	// 检查是否是同一个工作节点重复声明
-	if partition.WorkerID == workerID {
-		// 同一工作节点重复声明，更新心跳时间
-		s.logger.Infof("工作节点 %s 重新声明分区 %d，更新心跳", workerID, partitionID)
-		updatedPartition, err := s.updatePartitionHeartbeat(ctx, partition, workerID)
+	// 在并发环境下，对于pending分区的获取可能需要重试几次以处理乐观锁冲突
+	const maxRetries = 3
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// 获取当前分区信息
+		partition, err := s.GetPartition(ctx, partitionID)
 		if err != nil {
+			return nil, false, fmt.Errorf("获取分区 %d 失败: %w", partitionID, err)
+		}
+
+		s.logger.Debugf("[%s] 尝试 #%d: 分区 %d 状态=%s, 持有者=%s", workerID, attempt+1, partitionID, partition.Status, partition.WorkerID)
+
+		// 检查是否是同一个工作节点重复声明
+		if partition.WorkerID == workerID {
+			// 同一工作节点重复声明，更新心跳时间
+			s.logger.Infof("工作节点 %s 重新声明分区 %d，更新心跳", workerID, partitionID)
+			updatedPartition, err := s.updatePartitionHeartbeat(ctx, partition, workerID)
+			if err != nil {
+				if errors.Is(err, ErrOptimisticLockFailed) && attempt < maxRetries-1 {
+					s.logger.Debugf("[%s] 心跳更新乐观锁失败，重试 #%d", workerID, attempt+2)
+					continue // 重试
+				}
+				return nil, false, err
+			}
+			return updatedPartition, true, nil
+		}
+
+		// 检查分区是否可以直接声明（pending状态且无持有者）
+		if partition.Status == model.StatusPending && partition.WorkerID == "" {
+			s.logger.Debugf("[%s] 尝试直接获取pending分区 %d", workerID, partitionID)
+			updatedPartition, err := s.acquirePartitionDirect(ctx, partition, workerID)
+			if err != nil {
+				if errors.Is(err, data.ErrOptimisticLockFailed) && attempt < maxRetries-1 {
+					// 乐观锁失败，重试。但只对pending状态的分区重试
+					s.logger.Debugf("[%s] 直接获取乐观锁失败，重试 #%d", workerID, attempt+2)
+					continue
+				}
+				s.logger.Debugf("[%s] 直接获取失败: %v", workerID, err)
+				return nil, false, err
+			}
+			return updatedPartition, true, nil
+		}
+
+		// 分区已被其他worker持有，检查是否允许抢占
+		if !options.AllowPreemption {
+			// 分区被占用且不允许抢占，这是正常情况，不返回错误，也不重试
+			s.logger.Debugf("分区 %d 已被工作节点 %s 持有，且不允许抢占", partitionID, partition.WorkerID)
+			return nil, false, nil
+		}
+
+		// 尝试基于心跳时间抢占分区
+		updatedPartition, success, err := s.tryPreemptPartitionByHeartbeat(ctx, partition, workerID, options)
+		if err != nil {
+			if errors.Is(err, ErrOptimisticLockFailed) && attempt < maxRetries-1 {
+				s.logger.Debugf("[%s] 抢占乐观锁失败，重试 #%d", workerID, attempt+2)
+				continue // 重试
+			}
 			return nil, false, err
 		}
-		return updatedPartition, true, nil
+
+		// 抢占的结果是确定的，不需要重试
+		return updatedPartition, success, nil
 	}
 
-	// 检查分区是否可以直接声明（pending状态且无持有者）
-	if partition.Status == model.StatusPending && partition.WorkerID == "" {
-		updatedPartition, err := s.acquirePartitionDirect(ctx, partition, workerID)
-		if err != nil {
-			return nil, false, err
-		}
-		return updatedPartition, true, nil
-	}
-
-	// 检查是否允许抢占
-	if !options.AllowPreemption {
-		// 分区被占用且不允许抢占，这是正常情况，不返回错误
-		s.logger.Debugf("分区 %d 已被工作节点 %s 持有，且不允许抢占", partitionID, partition.WorkerID)
-		return nil, false, nil
-	}
-
-	// 尝试基于心跳时间抢占分区
-	updatedPartition, success, err := s.tryPreemptPartitionByHeartbeat(ctx, partition, workerID, options)
-	return updatedPartition, success, err
+	// 如果所有重试都失败了，返回最后的错误
+	return nil, false, fmt.Errorf("获取分区 %d 失败：超过最大重试次数", partitionID)
 }
 
 // UpdatePartitionStatus 更新分区状态
@@ -576,8 +605,10 @@ func (s *HashPartitionStrategy) ReleasePartition(ctx context.Context, partitionI
 		return fmt.Errorf("工作节点 %s 无权释放分区 %d (当前持有者: %s)", workerID, partitionID, partition.WorkerID)
 	}
 
-	// 重置分区状态
-	partition.Status = model.StatusPending
+	// 重置分区状态：已完成的分区保持completed状态，其他状态重置为pending
+	if partition.Status != model.StatusCompleted && partition.Status != model.StatusFailed {
+		partition.Status = model.StatusPending
+	}
 	partition.WorkerID = ""
 	partition.LastHeartbeat = time.Time{} // 清空心跳时间
 
@@ -642,7 +673,7 @@ func (s *HashPartitionStrategy) acquirePartitionDirect(ctx context.Context, part
 	// 使用版本控制更新
 	updatedPartition, err := s.updatePartitionWithVersionControl(ctx, partition)
 	if err != nil {
-		return nil, fmt.Errorf("声明分区 %d 失败: %w", partition.PartitionID, err)
+		return nil, err
 	}
 
 	s.logger.Infof("工作节点 %s 成功声明分区 %d", workerID, partition.PartitionID)

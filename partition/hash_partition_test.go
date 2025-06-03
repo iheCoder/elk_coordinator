@@ -149,7 +149,7 @@ func (m *MockHashPartitionOperations) HUpdatePartitionWithVersion(ctx context.Co
 	// 创建新分区（expectedVersion 为 0）
 	if expectedVersion == 0 {
 		if currentVersion != 0 {
-			return false, model.ErrPartitionAlreadyExists
+			return false, ErrPartitionAlreadyExists
 		}
 		// 创建新分区
 		if m.partitions[key] == nil {
@@ -162,7 +162,7 @@ func (m *MockHashPartitionOperations) HUpdatePartitionWithVersion(ctx context.Co
 
 	// 更新现有分区
 	if currentVersion != expectedVersion {
-		return false, model.ErrOptimisticLockFailed
+		return false, ErrOptimisticLockFailed
 	}
 
 	if m.partitions[key] == nil {
@@ -289,7 +289,7 @@ func TestUpdatePartitionOptimistically(t *testing.T) {
 	mockStore.SetVersion("2", 2) // 当前版本为2，但期望版本为1
 
 	_, err = repo.UpdatePartitionOptimistically(ctx, partition2, 1)
-	if !errors.Is(err, model.ErrOptimisticLockFailed) {
+	if !errors.Is(err, ErrOptimisticLockFailed) {
 		t.Errorf("期望乐观锁失败错误，得到: %v", err)
 	}
 
@@ -351,7 +351,7 @@ func TestCreatePartitionAtomically(t *testing.T) {
 	// 测试场景2: 分区已存在
 	mockStore.SetVersion("2", 1) // 模拟分区已存在
 	_, err = repo.CreatePartitionAtomically(ctx, 2, 1001, 2000, nil)
-	if !errors.Is(err, model.ErrPartitionAlreadyExists) {
+	if !errors.Is(err, ErrPartitionAlreadyExists) {
 		t.Errorf("期望分区已存在错误，得到: %v", err)
 	}
 }
@@ -757,7 +757,7 @@ func TestRepository_ConcurrentOptimisticUpdates(t *testing.T) {
 
 			_, err := repo.UpdatePartitionOptimistically(ctx, updatePartition, 1)
 			if err != nil {
-				if errors.Is(err, model.ErrOptimisticLockFailed) {
+				if errors.Is(err, ErrOptimisticLockFailed) {
 					atomic.AddInt32(&failureCount, 1)
 				} else {
 					t.Errorf("Worker %d 遇到意外错误: %v", workerID, err)
@@ -806,7 +806,7 @@ func TestRepository_ConcurrentCreatePartitions(t *testing.T) {
 			})
 
 			if err != nil {
-				if errors.Is(err, model.ErrPartitionAlreadyExists) {
+				if errors.Is(err, ErrPartitionAlreadyExists) {
 					atomic.AddInt32(&failureCount, 1)
 				} else {
 					t.Errorf("Worker %d 创建分区遇到意外错误: %v", workerID, err)
@@ -920,7 +920,7 @@ func TestRepository_ConcurrentReadWrites(t *testing.T) {
 						int64(partitionID*1000+1), int64((partitionID+1)*1000),
 						map[string]interface{}{"writer": writerID})
 
-					if err != nil && !errors.Is(err, model.ErrPartitionAlreadyExists) {
+					if err != nil && !errors.Is(err, ErrPartitionAlreadyExists) {
 						errorChan <- fmt.Errorf("Writer %d CreatePartition 错误: %v", writerID, err)
 						return
 					}
@@ -1150,7 +1150,7 @@ func TestRepository_HighConcurrencyStress(t *testing.T) {
 							_, err := repo.CreatePartitionAtomically(ctx, partitionID,
 								int64(partitionID*1000+1), int64((partitionID+1)*1000),
 								map[string]interface{}{"worker": workerID})
-							if err != nil && !errors.Is(err, model.ErrPartitionAlreadyExists) {
+							if err != nil && !errors.Is(err, ErrPartitionAlreadyExists) {
 								errorChan <- fmt.Errorf("Worker %d 创建分区失败: %v", workerID, err)
 								return
 							}
@@ -1174,7 +1174,7 @@ func TestRepository_HighConcurrencyStress(t *testing.T) {
 							existing.WorkerID = fmt.Sprintf("worker-%d", workerID)
 							existing.Status = model.StatusRunning
 							_, updateErr := repo.UpdatePartitionOptimistically(ctx, existing, existing.Version)
-							if updateErr != nil && !errors.Is(updateErr, model.ErrOptimisticLockFailed) {
+							if updateErr != nil && !errors.Is(updateErr, ErrOptimisticLockFailed) {
 								errorChan <- fmt.Errorf("Worker %d 更新分区失败: %v", workerID, updateErr)
 								return
 							}

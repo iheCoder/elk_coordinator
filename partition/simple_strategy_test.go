@@ -1016,38 +1016,37 @@ func TestSimpleStrategy_ConcurrentOperations(t *testing.T) {
 
 	// 模拟多个工作节点同时尝试声明同一分区
 	const numWorkers = 5
-	results := make(chan error, numWorkers)
+	type result struct {
+		success bool
+		err     error
+	}
+	results := make(chan result, numWorkers)
 
 	for i := 0; i < numWorkers; i++ {
 		workerID := fmt.Sprintf("worker%d", i+1)
 		go func(wid string) {
 			_, success, err := strategy.AcquirePartition(ctx, 1, wid, nil)
-			if err != nil {
-				results <- err
-			} else if !success {
-				// 正常的无法获取情况，不算错误
-				results <- nil
-			} else {
-				// 成功获取
-				results <- nil
-			}
+			results <- result{success: success, err: err}
 		}(workerID)
 	}
 
 	// 收集结果
-	var successCount, errorCount int
+	var successCount, failureCount, errorCount int
 	for i := 0; i < numWorkers; i++ {
-		err := <-results
-		if err == nil {
+		r := <-results
+		if r.err != nil {
+			errorCount++
+		} else if r.success {
 			successCount++
 		} else {
-			errorCount++
+			failureCount++
 		}
 	}
 
-	// 应该只有一个工作节点成功获取分区
+	// 应该只有一个工作节点成功获取分区，其他4个无法获取（不是错误）
 	assert.Equal(t, 1, successCount)
-	assert.Equal(t, numWorkers-1, errorCount)
+	assert.Equal(t, numWorkers-1, failureCount)
+	assert.Equal(t, 0, errorCount)
 }
 
 // TestSimpleStrategy_InvalidInputHandling 测试无效输入处理

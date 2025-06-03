@@ -500,7 +500,10 @@ func (s *SimpleStrategy) ReleasePartition(ctx context.Context, partitionID int, 
 
 	// 重置分区状态
 	partition.WorkerID = ""
-	partition.Status = model.StatusPending
+	// 重置分区状态：已完成的分区保持completed状态，其他状态重置为pending
+	if partition.Status != model.StatusCompleted && partition.Status != model.StatusFailed {
+		partition.Status = model.StatusPending
+	}
 	partition.UpdatedAt = time.Now()
 	partition.Version++
 
