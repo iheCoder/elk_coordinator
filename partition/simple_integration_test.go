@@ -384,7 +384,8 @@ func TestSimpleStrategy_VersionControl(t *testing.T) {
 	assert.Equal(t, int64(3), updatedPartition2.Version)
 
 	// 验证创建时间保持不变，更新时间发生变化
-	assert.Equal(t, originalPartition.CreatedAt, updatedPartition2.CreatedAt)
+	assert.True(t, originalPartition.CreatedAt.Equal(updatedPartition2.CreatedAt),
+		"创建时间应该保持不变")
 	assert.True(t, updatedPartition2.UpdatedAt.After(originalPartition.UpdatedAt) ||
 		updatedPartition2.UpdatedAt.Equal(updatedPartition1.UpdatedAt))
 }

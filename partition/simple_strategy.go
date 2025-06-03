@@ -258,6 +258,7 @@ func (s *SimpleStrategy) UpdatePartition(ctx context.Context, partitionInfo *mod
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// 获取最新的分区信息
 	partitions, err := s.getAllPartitionsInternal(ctx)
 	if err != nil {
 		return nil, err
@@ -267,25 +268,66 @@ func (s *SimpleStrategy) UpdatePartition(ctx context.Context, partitionInfo *mod
 		partitions = make(map[int]model.PartitionInfo)
 	}
 
-	// 检查是否存在
-	existingPartition, exists := partitions[partitionInfo.PartitionID]
+	// 检查分区是否存在
+	existingPartition, exists := partitions[partitionID]
 
-	// 更新分区信息
-	updatedPartition := *partitionInfo
-	// 只在 UpdatedAt 为零值时才自动更新为当前时间
-	if updatedPartition.UpdatedAt.IsZero() {
-		updatedPartition.UpdatedAt = time.Now()
-	}
+	var updatedPartition model.PartitionInfo
 
 	if !exists {
+		// 如果不存在，使用传入的分区信息创建新分区
+		updatedPartition = *partitionInfo
+		// 设置创建时间和更新时间
 		if updatedPartition.CreatedAt.IsZero() {
 			updatedPartition.CreatedAt = time.Now()
 		}
+		if updatedPartition.UpdatedAt.IsZero() {
+			updatedPartition.UpdatedAt = time.Now()
+		}
 		updatedPartition.Version = 1
 	} else {
-		if updatedPartition.CreatedAt.IsZero() {
-			updatedPartition.CreatedAt = existingPartition.CreatedAt
+		// 如果已存在，保留已有分区的基本信息，仅更新需要变化的部分
+		updatedPartition = existingPartition
+
+		// 更新需要变化的字段（保留用户输入）
+		// WorkerID
+		if partitionInfo.WorkerID != existingPartition.WorkerID {
+			updatedPartition.WorkerID = partitionInfo.WorkerID
 		}
+
+		// Status
+		if partitionInfo.Status != existingPartition.Status {
+			updatedPartition.Status = partitionInfo.Status
+		}
+
+		// MinID 和 MaxID
+		if partitionInfo.MinID != existingPartition.MinID {
+			updatedPartition.MinID = partitionInfo.MinID
+		}
+		if partitionInfo.MaxID != existingPartition.MaxID {
+			updatedPartition.MaxID = partitionInfo.MaxID
+		}
+
+		// 如果用户提供了Options，则更新
+		if partitionInfo.Options != nil {
+			if updatedPartition.Options == nil {
+				updatedPartition.Options = make(map[string]interface{})
+			}
+			for key, value := range partitionInfo.Options {
+				updatedPartition.Options[key] = value
+			}
+		}
+
+		// 只在用户明确提供更新时间时使用用户的时间
+		if !partitionInfo.UpdatedAt.IsZero() {
+			updatedPartition.UpdatedAt = partitionInfo.UpdatedAt
+		} else {
+			updatedPartition.UpdatedAt = time.Now()
+		}
+
+		// 保留原始创建时间（确保完全不变）
+		updatedPartition.CreatedAt = existingPartition.CreatedAt
+
+		// 版本号递增
 		updatedPartition.Version = existingPartition.Version + 1
 	}
 
@@ -456,6 +498,35 @@ func (s *SimpleStrategy) acquirePartitionInternal(ctx context.Context, partition
 
 // UpdatePartitionStatus 更新分区状态
 func (s *SimpleStrategy) UpdatePartitionStatus(ctx context.Context, partitionID int, workerID string, status model.PartitionStatus, metadata map[string]interface{}) error {
+	// 检查是否当前worker拥有分区锁
+	lockKey := s.getPartitionLockKey(partitionID)
+
+	// 首先检查worker是否持有锁
+	owned, err := s.dataStore.CheckLock(ctx, lockKey, workerID)
+	if err != nil {
+		return pkgerrors.Wrap(err, "检查分区锁状态失败")
+	}
+
+	// 如果worker不持有锁，尝试获取锁
+	if !owned {
+		// 使用特定的锁值来区分状态更新操作
+		lockValue := fmt.Sprintf("status-update-lock-%d", partitionID)
+
+		acquired, err := s.dataStore.AcquireLock(ctx, lockKey, lockValue, s.partitionLockExpiry)
+		if err != nil {
+			return pkgerrors.Wrap(err, "获取分区状态更新锁失败")
+		}
+
+		if !acquired {
+			return fmt.Errorf("无法获取分区 %d 的状态更新锁，可能正在被其他进程更新", partitionID)
+		}
+
+		// 确保后续获取的锁会被释放
+		defer s.dataStore.ReleaseLock(ctx, lockKey, lockValue)
+	}
+	// 如果worker已经持有锁，则无需额外操作，直接继续处理
+
+	// 本地锁保护内存状态
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -495,6 +566,10 @@ func (s *SimpleStrategy) UpdatePartitionStatus(ctx context.Context, partitionID 
 
 // ReleasePartition 释放分区
 func (s *SimpleStrategy) ReleasePartition(ctx context.Context, partitionID int, workerID string) error {
+	// 我们不需要额外的分布式锁，因为：
+	// 1. 如果worker持有分区锁，我们会验证后释放它
+	// 2. 如果worker不持有分区锁，会在验证阶段失败
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -513,10 +588,10 @@ func (s *SimpleStrategy) ReleasePartition(ctx context.Context, partitionID int, 
 		return fmt.Errorf("工作节点 %s 无权释放分区 %d，当前所有者：%s", workerID, partitionID, partition.WorkerID)
 	}
 
-	// 释放分布式锁
-	lockKey := s.getPartitionLockKey(partitionID)
-	if err := s.dataStore.ReleaseLock(ctx, lockKey, workerID); err != nil {
-		s.logger.Warnf("释放分区锁失败", "partitionID", partitionID, "workerID", workerID, "error", err)
+	// 释放持有锁（这是worker声明分区时获取的锁）
+	holdLockKey := s.getPartitionLockKey(partitionID)
+	if err := s.dataStore.ReleaseLock(ctx, holdLockKey, workerID); err != nil {
+		s.logger.Warnf("释放分区持有锁失败", "partitionID", partitionID, "workerID", workerID, "error", err)
 	}
 
 	// 重置分区状态

@@ -9,6 +9,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
+	"strings"
 	"testing"
 	"time"
 )
@@ -727,8 +728,8 @@ func TestSimpleStrategy_UpdatePartition(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, model.StatusRunning, updated2.Status)
 	assert.Equal(t, "worker1", updated2.WorkerID)
-	assert.Equal(t, int64(2), updated2.Version)            // 版本应该递增
-	assert.Equal(t, updated.CreatedAt, updated2.CreatedAt) // 创建时间不变
+	assert.Equal(t, int64(2), updated2.Version)                           // 版本应该递增
+	assert.True(t, updated.CreatedAt.Equal(updated2.CreatedAt), "创建时间不变") // 创建时间不变
 
 	// 验证分区确实被更新
 	retrieved, err := strategy.GetPartition(ctx, 1)
@@ -823,7 +824,13 @@ func TestSimpleStrategy_UpdatePartitionStatus(t *testing.T) {
 	// 测试无权限更新分区
 	err = strategy.UpdatePartitionStatus(ctx, 1, "worker2", model.StatusRunning, nil)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "无权更新分区 1")
+	// 两种可能的错误消息之一：
+	// 1. 如果已经持有锁：无权更新分区
+	// 2. 如果尝试获取锁：无法获取分区锁
+	assert.True(t,
+		strings.Contains(err.Error(), "无权更新分区 1") ||
+			strings.Contains(err.Error(), "无法获取分区 1 的状态更新锁"),
+		"错误消息应包含权限错误或锁获取失败提示")
 
 	// 测试成功更新分区状态
 	metadata := map[string]interface{}{
