@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -70,7 +69,7 @@ func setupDistributedSimulation(t *testing.T, workerCount int) ([]*SimpleStrateg
 }
 
 // TestSimpleStrategy_DistributedConcurrentUpdates 测试分布式并发更新
-// 这个测试模拟了真实分布式环境中的并发问题
+// 修改后的测试：测试正确的工作流程 - 先 AcquirePartition 然后 UpdatePartition
 func TestSimpleStrategy_DistributedConcurrentUpdates(t *testing.T) {
 	const workerCount = 5
 	strategies, _, cleanup := setupDistributedSimulation(t, workerCount)
@@ -92,41 +91,58 @@ func TestSimpleStrategy_DistributedConcurrentUpdates(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(1), initialPartition.Version)
 
-	// 并发更新：每个worker都尝试更新同一个分区
+	// 并发获取：每个worker都尝试获取同一个分区
 	const numWorkers = workerCount
 	var wg sync.WaitGroup
-	results := make(chan error, numWorkers)
-	successCount := new(int32) // 用于计数成功更新的worker数量
+	results := make(chan struct {
+		workerID string
+		acquired bool
+		err      error
+	}, numWorkers)
 
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go func(workerIndex int) {
 			defer wg.Done()
 
-			// 获取分区信息（每个worker从自己的策略实例获取）
-			partition, err := strategies[workerIndex].GetPartition(ctx, 1)
+			workerID := fmt.Sprintf("worker-%d", workerIndex)
+
+			// 模拟一些随机延迟
+			time.Sleep(time.Duration(workerIndex) * time.Millisecond)
+
+			// 尝试获取分区
+			partition, acquired, err := strategies[workerIndex].AcquirePartition(ctx, 1, workerID, nil)
 			if err != nil {
-				results <- fmt.Errorf("worker %d 获取分区失败: %v", workerIndex, err)
+				results <- struct {
+					workerID string
+					acquired bool
+					err      error
+				}{workerID, false, err}
 				return
 			}
 
-			// 模拟处理时间
-			time.Sleep(10 * time.Millisecond)
-
-			// 更新分区
-			partition.WorkerID = fmt.Sprintf("worker-%d", workerIndex)
-			partition.Status = model.StatusRunning
-
-			_, err = strategies[workerIndex].UpdatePartition(ctx, partition, nil)
-			if err != nil {
-				// 在分布式环境中，并发更新失败是正常的
-				results <- fmt.Errorf("worker %d 更新分区失败: %v", workerIndex, err)
+			if !acquired {
+				results <- struct {
+					workerID string
+					acquired bool
+					err      error
+				}{workerID, false, nil}
 				return
 			}
 
-			// 更新成功计数器
-			atomic.AddInt32(successCount, 1)
-			results <- nil // 成功
+			// 获取成功，更新状态
+			err = strategies[workerIndex].UpdatePartitionStatus(ctx, 1, workerID, model.StatusRunning, nil)
+			if err != nil {
+				t.Logf("Worker %s 更新状态失败: %v", workerID, err)
+			}
+
+			results <- struct {
+				workerID string
+				acquired bool
+				err      error
+			}{workerID, true, nil}
+
+			t.Logf("Worker %s 成功获取并更新分区 %d", workerID, partition.PartitionID)
 		}(i)
 	}
 
@@ -134,19 +150,19 @@ func TestSimpleStrategy_DistributedConcurrentUpdates(t *testing.T) {
 	close(results)
 
 	// 分析结果
-	var updateErrors []error
-	var successfulUpdates int
+	var acquireErrors []error
+	var successfulAcquisitions []string
 	for result := range results {
-		if result != nil {
-			updateErrors = append(updateErrors, result)
-		} else {
-			successfulUpdates++
+		if result.err != nil {
+			acquireErrors = append(acquireErrors, result.err)
+		} else if result.acquired {
+			successfulAcquisitions = append(successfulAcquisitions, result.workerID)
 		}
 	}
 
 	// 打印所有错误（如果有的话）
-	for _, err := range updateErrors {
-		t.Logf("并发更新错误: %v", err)
+	for _, err := range acquireErrors {
+		t.Logf("并发获取错误: %v", err)
 	}
 
 	// 检查最终状态
@@ -156,17 +172,17 @@ func TestSimpleStrategy_DistributedConcurrentUpdates(t *testing.T) {
 	t.Logf("最终分区状态: PartitionID=%d, WorkerID=%s, Status=%s, Version=%d",
 		finalPartition.PartitionID, finalPartition.WorkerID, finalPartition.Status, finalPartition.Version)
 
-	// 记录成功的更新数量
-	t.Logf("成功更新的worker数量: %d", successfulUpdates)
+	t.Logf("成功获取分区的worker: %v", successfulAcquisitions)
 
 	// 在分布式锁的保护下，我们应该期望：
-	// 1. 至少有一个worker成功更新
-	// 2. 最终版本应该等于初始版本 + 成功更新次数
-	assert.Greater(t, successfulUpdates, 0, "应该至少有一个worker成功更新")
+	// 1. 有且仅有一个worker成功获取分区
+	// 2. 不应该有系统错误
+	assert.Len(t, acquireErrors, 0, "不应该有系统错误")
+	assert.Len(t, successfulAcquisitions, 1, "应该有且仅有一个worker成功获取分区")
 
-	expectedVersion := int64(1 + successfulUpdates) // 初始版本 + 成功更新次数
-	assert.Equal(t, expectedVersion, finalPartition.Version,
-		"分区版本应该准确反映成功更新的次数")
+	// 最终分区应该被某个worker持有
+	assert.NotEmpty(t, finalPartition.WorkerID, "分区应该被某个worker持有")
+	assert.Contains(t, successfulAcquisitions, finalPartition.WorkerID, "最终持有者应该在成功获取列表中")
 }
 
 // TestSimpleStrategy_DistributedLockContention 测试分布式锁竞争

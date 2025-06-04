@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	pkgerrors "github.com/pkg/errors"
-	"sync"
 	"time"
 )
 
@@ -29,9 +28,6 @@ type SimpleStrategy struct {
 
 	// 锁和心跳相关配置
 	partitionLockExpiry time.Duration
-
-	// 同步控制
-	mu sync.RWMutex
 }
 
 // SimpleStrategyConfig 简单策略配置
@@ -74,9 +70,6 @@ func (s *SimpleStrategy) StrategyType() string {
 
 // GetPartition 获取单个分区
 func (s *SimpleStrategy) GetPartition(ctx context.Context, partitionID int) (*model.PartitionInfo, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	partitions, err := s.getAllPartitionsInternal(ctx)
 	if err != nil {
 		return nil, err
@@ -91,9 +84,6 @@ func (s *SimpleStrategy) GetPartition(ctx context.Context, partitionID int) (*mo
 
 // GetAllPartitions 获取所有分区
 func (s *SimpleStrategy) GetAllPartitions(ctx context.Context) ([]*model.PartitionInfo, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	partitions, err := s.getAllPartitionsInternal(ctx)
 	if err != nil {
 		return nil, err
@@ -110,9 +100,6 @@ func (s *SimpleStrategy) GetAllPartitions(ctx context.Context) ([]*model.Partiti
 
 // DeletePartition 删除分区
 func (s *SimpleStrategy) DeletePartition(ctx context.Context, partitionID int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	partitions, err := s.getAllPartitionsInternal(ctx)
 	if err != nil {
 		return err
@@ -132,9 +119,6 @@ func (s *SimpleStrategy) DeletePartition(ctx context.Context, partitionID int) e
 
 // GetFilteredPartitions 根据过滤器获取分区
 func (s *SimpleStrategy) GetFilteredPartitions(ctx context.Context, filters model.GetPartitionsFilters) ([]*model.PartitionInfo, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	partitions, err := s.getAllPartitionsInternal(ctx)
 	if err != nil {
 		return nil, err
@@ -207,9 +191,6 @@ func (s *SimpleStrategy) GetFilteredPartitions(ctx context.Context, filters mode
 
 // DeletePartitions 批量删除分区
 func (s *SimpleStrategy) DeletePartitions(ctx context.Context, partitionIDs []int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	partitions, err := s.getAllPartitionsInternal(ctx)
 	if err != nil {
 		return err
@@ -228,7 +209,8 @@ func (s *SimpleStrategy) DeletePartitions(ctx context.Context, partitionIDs []in
 
 // ==================== 并发安全操作 ====================
 
-// UpdatePartition 安全更新分区信息
+// UpdatePartition 更新分区信息
+// 注意：此方法假设调用者已经获得了适当的锁（通常是通过 AcquirePartition）
 func (s *SimpleStrategy) UpdatePartition(ctx context.Context, partitionInfo *model.PartitionInfo, options *model.UpdateOptions) (*model.PartitionInfo, error) {
 	if partitionInfo == nil {
 		return nil, fmt.Errorf("分区信息不能为空")
@@ -236,27 +218,6 @@ func (s *SimpleStrategy) UpdatePartition(ctx context.Context, partitionInfo *mod
 
 	// 获取分区ID
 	partitionID := partitionInfo.PartitionID
-
-	// 先获取分布式锁来保护更新操作
-	lockKey := s.getPartitionLockKey(partitionID)
-	// 使用分区ID作为锁的值，因为这里我们只关心互斥性，不关心所有权
-	lockValue := fmt.Sprintf("update-lock-%d", partitionID)
-
-	acquired, err := s.dataStore.AcquireLock(ctx, lockKey, lockValue, s.partitionLockExpiry)
-	if err != nil {
-		return nil, pkgerrors.Wrap(err, "获取分区更新锁失败")
-	}
-
-	if !acquired {
-		return nil, fmt.Errorf("无法获取分区 %d 的更新锁，可能正在被其他进程更新", partitionID)
-	}
-
-	// 确保锁会被释放
-	defer s.dataStore.ReleaseLock(ctx, lockKey, lockValue)
-
-	// 本地锁保护内存状态
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	// 获取最新的分区信息
 	partitions, err := s.getAllPartitionsInternal(ctx)
@@ -342,9 +303,6 @@ func (s *SimpleStrategy) UpdatePartition(ctx context.Context, partitionInfo *mod
 
 // CreatePartitionsIfNotExist 批量创建分区（如果不存在）
 func (s *SimpleStrategy) CreatePartitionsIfNotExist(ctx context.Context, request model.CreatePartitionsRequest) ([]*model.PartitionInfo, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	existingPartitions, err := s.getAllPartitionsInternal(ctx)
 	if err != nil {
 		return nil, err
@@ -425,9 +383,6 @@ func (s *SimpleStrategy) acquirePartitionInternal(ctx context.Context, partition
 		options = &model.AcquirePartitionOptions{}
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	// 获取指定分区
 	partitions, err := s.getAllPartitionsInternal(ctx)
 	if err != nil {
@@ -497,39 +452,8 @@ func (s *SimpleStrategy) acquirePartitionInternal(ctx context.Context, partition
 }
 
 // UpdatePartitionStatus 更新分区状态
+// 注意：此方法假设调用者已经获得了分区的所有权（通常是通过 AcquirePartition）
 func (s *SimpleStrategy) UpdatePartitionStatus(ctx context.Context, partitionID int, workerID string, status model.PartitionStatus, metadata map[string]interface{}) error {
-	// 检查是否当前worker拥有分区锁
-	lockKey := s.getPartitionLockKey(partitionID)
-
-	// 首先检查worker是否持有锁
-	owned, err := s.dataStore.CheckLock(ctx, lockKey, workerID)
-	if err != nil {
-		return pkgerrors.Wrap(err, "检查分区锁状态失败")
-	}
-
-	// 如果worker不持有锁，尝试获取锁
-	if !owned {
-		// 使用特定的锁值来区分状态更新操作
-		lockValue := fmt.Sprintf("status-update-lock-%d", partitionID)
-
-		acquired, err := s.dataStore.AcquireLock(ctx, lockKey, lockValue, s.partitionLockExpiry)
-		if err != nil {
-			return pkgerrors.Wrap(err, "获取分区状态更新锁失败")
-		}
-
-		if !acquired {
-			return fmt.Errorf("无法获取分区 %d 的状态更新锁，可能正在被其他进程更新", partitionID)
-		}
-
-		// 确保后续获取的锁会被释放
-		defer s.dataStore.ReleaseLock(ctx, lockKey, lockValue)
-	}
-	// 如果worker已经持有锁，则无需额外操作，直接继续处理
-
-	// 本地锁保护内存状态
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	partitions, err := s.getAllPartitionsInternal(ctx)
 	if err != nil {
 		return err
@@ -569,9 +493,6 @@ func (s *SimpleStrategy) ReleasePartition(ctx context.Context, partitionID int, 
 	// 我们不需要额外的分布式锁，因为：
 	// 1. 如果worker持有分区锁，我们会验证后释放它
 	// 2. 如果worker不持有分区锁，会在验证阶段失败
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	partitions, err := s.getAllPartitionsInternal(ctx)
 	if err != nil {
@@ -613,9 +534,6 @@ func (s *SimpleStrategy) MaintainPartitionHold(ctx context.Context, partitionID 
 		return fmt.Errorf("工作节点ID不能为空")
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	// 检查分区是否存在且被该工作节点持有
 	partitions, err := s.getAllPartitionsInternal(ctx)
 	if err != nil {
@@ -650,9 +568,6 @@ func (s *SimpleStrategy) MaintainPartitionHold(ctx context.Context, partitionID 
 
 // GetPartitionStats 获取分区统计信息
 func (s *SimpleStrategy) GetPartitionStats(ctx context.Context) (*model.PartitionStats, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	partitions, err := s.getAllPartitionsInternal(ctx)
 	if err != nil {
 		return nil, err
