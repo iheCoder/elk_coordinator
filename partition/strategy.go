@@ -5,6 +5,29 @@ import (
 	"elk_coordinator/model"
 )
 
+// StrategyType 定义分区策略类型的枚举
+type StrategyType int32
+
+const (
+	// StrategyTypeSimple 简单策略，基于分布式锁实现
+	StrategyTypeSimple StrategyType = iota + 1
+	// StrategyTypeHash 哈希策略，基于Redis Hash实现
+	StrategyTypeHash
+	// 未来可以添加更多的策略类型
+)
+
+// String 返回策略类型的字符串表示
+func (t StrategyType) String() string {
+	switch t {
+	case StrategyTypeSimple:
+		return "Simple"
+	case StrategyTypeHash:
+		return "Hash"
+	default:
+		return "Unknown"
+	}
+}
+
 // PartitionStrategy 定义分区管理策略接口
 // 使用策略模式来支持不同的分区管理方式
 type PartitionStrategy interface {
@@ -42,7 +65,7 @@ type PartitionStrategy interface {
 	// ==================== 策略信息 ====================
 
 	// StrategyType 获取策略类型标识
-	StrategyType() string
+	StrategyType() StrategyType
 
 	// ==================== 高级协调方法 ====================
 	// 这些方法用于分布式环境下的分区协调和任务分配

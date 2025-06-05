@@ -26,6 +26,9 @@ type Mgr struct {
 	PartitionPlaner leader.PartitionPlaner
 	Logger          utils.Logger
 
+	// 分区策略配置
+	PartitionStrategyType partition.StrategyType // 默认为StrategyTypeHash
+
 	// 配置选项
 	HeartbeatInterval       time.Duration // 心跳间隔
 	LeaderElectionInterval  time.Duration // Leader选举间隔
@@ -71,6 +74,9 @@ func NewMgr(namespace string, dataStore data.DataStore, processor task.Processor
 		LeaderLockExpiry:        model.DefaultLeaderLockExpiry,
 		WorkerPartitionMultiple: model.DefaultWorkerPartitionMultiple,
 
+		// 默认使用Hash分区策略
+		PartitionStrategyType: partition.StrategyTypeHash,
+
 		// 任务窗口默认配置
 		UseTaskWindow:  false,
 		TaskWindowSize: model.DefaultTaskWindowSize,
@@ -82,14 +88,6 @@ func NewMgr(namespace string, dataStore data.DataStore, processor task.Processor
 	}
 
 	return mgr
-}
-
-// SetLogger 已被选项模式替代，保留用于向后兼容
-//
-// 推荐使用 WithLogger 选项代替
-func (m *Mgr) SetLogger(logger utils.Logger) {
-	m.Logger.Warnf("SetLogger 方法已过时，请使用 WithLogger 选项")
-	m.Logger = logger
 }
 
 // generateNodeID 生成唯一的节点ID
@@ -122,13 +120,6 @@ func (m *Mgr) Start(ctx context.Context) error {
 	go m.setupSignalHandler(ctx)
 
 	return nil
-}
-
-// IsLeader 返回当前节点是否是Leader
-func (m *Mgr) IsLeader() bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.isLeader
 }
 
 // nodeKeeper 管理节点注册和心跳
@@ -217,7 +208,7 @@ func (m *Mgr) Handle(ctx context.Context) error {
 		WorkerID:            m.ID,
 		WindowSize:          m.TaskWindowSize,
 		PartitionLockExpiry: m.PartitionLockExpiry,
-		PartitionStrategy:   createPartitionStrategy(m.DataStore, m.Logger),
+		PartitionStrategy:   m.createPartitionStrategy(),
 		Processor:           m.TaskProcessor,
 		Logger:              m.Logger,
 		// TaskWindow会内部创建Runner并具备熔断器功能
@@ -236,8 +227,22 @@ func (m *Mgr) Handle(ctx context.Context) error {
 
 // createPartitionStrategy 创建分区策略实例
 // 这是一个辅助函数，用于创建适合TaskWindow使用的PartitionStrategy
-func createPartitionStrategy(dataStore data.DataStore, logger utils.Logger) partition.PartitionStrategy {
-	// 使用HashPartitionStrategy作为默认策略
-	// HashPartitionStrategy适合处理大规模分布式场景的分区管理
-	return partition.NewHashPartitionStrategy(dataStore, logger)
+func (m *Mgr) createPartitionStrategy() partition.PartitionStrategy {
+	// 根据配置的策略类型创建相应的实例
+	switch m.PartitionStrategyType {
+	case partition.StrategyTypeSimple:
+		m.Logger.Infof("使用Simple分区策略")
+		return partition.NewSimpleStrategy(partition.SimpleStrategyConfig{
+			DataStore: m.DataStore,
+			Namespace: m.Namespace,
+			Logger:    m.Logger,
+		})
+	case partition.StrategyTypeHash:
+		m.Logger.Infof("使用Hash分区策略")
+		return partition.NewHashPartitionStrategy(m.DataStore, m.Logger)
+	default:
+		// 如果未设置或无效，默认使用Hash策略
+		m.Logger.Warnf("未知的分区策略类型: %v，使用默认的Hash策略", m.PartitionStrategyType)
+		return partition.NewHashPartitionStrategy(m.DataStore, m.Logger)
+	}
 }

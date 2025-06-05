@@ -74,9 +74,9 @@ func NewHashPartitionStrategyWithConfig(store data.HashPartitionOperations, logg
 // StrategyType 获取策略类型标识
 //
 // 返回:
-//   - string: 策略类型为 "hash"
-func (s *HashPartitionStrategy) StrategyType() string {
-	return "hash"
+//   - StrategyType: 策略类型为 StrategyTypeHash
+func (s *HashPartitionStrategy) StrategyType() StrategyType {
+	return StrategyTypeHash
 }
 
 // ==================== PartitionStrategy 接口实现 ====================

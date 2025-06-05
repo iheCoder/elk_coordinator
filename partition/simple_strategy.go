@@ -87,7 +87,7 @@ func NewSimpleStrategy(config SimpleStrategyConfig) *SimpleStrategy {
 // StrategyType 返回策略类型标识
 //
 // 返回:
-//   - string: 策略类型为 "simple"
-func (s *SimpleStrategy) StrategyType() string {
-	return "simple"
+//   - StrategyType: 策略类型为 StrategyTypeSimple
+func (s *SimpleStrategy) StrategyType() StrategyType {
+	return StrategyTypeSimple
 }
