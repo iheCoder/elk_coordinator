@@ -9,11 +9,12 @@ import (
 	"elk_coordinator/task"
 	"elk_coordinator/utils"
 	"fmt"
-	"github.com/google/uuid"
-	"github.com/pkg/errors"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/pkg/errors"
 )
 
 // Mgr 是一个分布式管理器，管理分区任务的执行
@@ -27,7 +28,8 @@ type Mgr struct {
 	Logger          utils.Logger
 
 	// 分区策略配置
-	PartitionStrategyType model.StrategyType // 默认为StrategyTypeHash
+	PartitionStrategyType model.StrategyType          // 分区策略类型
+	PartitionStrategy     partition.PartitionStrategy // 分区策略实例
 
 	// 配置选项
 	HeartbeatInterval       time.Duration // 心跳间隔
@@ -55,7 +57,7 @@ type Mgr struct {
 }
 
 // NewMgr 创建一个新的管理器实例
-func NewMgr(namespace string, dataStore data.DataStore, processor task.Processor, planer leader.PartitionPlaner, options ...MgrOption) *Mgr {
+func NewMgr(namespace string, dataStore data.DataStore, processor task.Processor, planer leader.PartitionPlaner, strategyType model.StrategyType, options ...MgrOption) *Mgr {
 	nodeID := generateNodeID()
 
 	// 创建带默认值的管理器
@@ -74,8 +76,8 @@ func NewMgr(namespace string, dataStore data.DataStore, processor task.Processor
 		LeaderLockExpiry:        model.DefaultLeaderLockExpiry,
 		WorkerPartitionMultiple: model.DefaultWorkerPartitionMultiple,
 
-		// 默认使用Hash分区策略
-		PartitionStrategyType: model.StrategyTypeHash,
+		// 分区策略配置
+		PartitionStrategyType: strategyType,
 
 		// 任务窗口默认配置
 		UseTaskWindow:  false,
@@ -86,6 +88,9 @@ func NewMgr(namespace string, dataStore data.DataStore, processor task.Processor
 	for _, option := range options {
 		option(mgr)
 	}
+
+	// 初始化分区策略
+	mgr.PartitionStrategy = mgr.createPartitionStrategy()
 
 	return mgr
 }
@@ -191,6 +196,7 @@ func (m *Mgr) Lead(ctx context.Context) error {
 		WorkerPartitionMultiple: m.WorkerPartitionMultiple,
 		ValidHeartbeatDuration:  m.HeartbeatInterval * 3,
 		Planer:                  m.PartitionPlaner, // 直接使用Mgr中的PartitionPlaner
+		Strategy:                m.PartitionStrategy,
 	}
 
 	// 创建并启动LeaderManager
@@ -208,7 +214,7 @@ func (m *Mgr) Handle(ctx context.Context) error {
 		WorkerID:            m.ID,
 		WindowSize:          m.TaskWindowSize,
 		PartitionLockExpiry: m.PartitionLockExpiry,
-		PartitionStrategy:   m.createPartitionStrategy(),
+		PartitionStrategy:   m.PartitionStrategy,
 		Processor:           m.TaskProcessor,
 		Logger:              m.Logger,
 		// TaskWindow会内部创建Runner并具备熔断器功能
@@ -226,7 +232,7 @@ func (m *Mgr) Handle(ctx context.Context) error {
 }
 
 // createPartitionStrategy 创建分区策略实例
-// 这是一个辅助函数，用于创建适合TaskWindow使用的PartitionStrategy
+// 这是一个内部辅助函数，在 NewMgr 中调用一次来初始化策略
 func (m *Mgr) createPartitionStrategy() partition.PartitionStrategy {
 	// 根据配置的策略类型创建相应的实例
 	switch m.PartitionStrategyType {

@@ -77,19 +77,3 @@ func WithTaskWindow(windowSize int) MgrOption {
 		m.TaskWindowSize = windowSize
 	}
 }
-
-// WithPartitionStrategy 设置分区策略类型
-// 可以选择SimpleStrategy或HashStrategy
-func WithPartitionStrategy(strategyType model.StrategyType) MgrOption {
-	return func(m *Mgr) {
-		// 验证策略类型有效性
-		switch strategyType {
-		case model.StrategyTypeSimple, model.StrategyTypeHash:
-			m.PartitionStrategyType = strategyType
-		default:
-			// 若提供了无效的策略类型，使用默认的Hash策略
-			m.Logger.Warnf("无效的分区策略类型: %v, 将使用默认的Hash策略", strategyType)
-			m.PartitionStrategyType = model.StrategyTypeHash
-		}
-	}
-}

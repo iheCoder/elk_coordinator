@@ -86,8 +86,8 @@ func main() {
         dataStore,
         processor,
         planer,
-        elk_coordinator.WithTaskWindow(true),               // 启用任务窗口
-        elk_coordinator.WithTaskWindowSize(5),              // 设置窗口大小（并行处理5个分区）
+        model.StrategyTypeHash,                              // 指定分区策略类型
+        elk_coordinator.WithTaskWindow(5),                   // 启用任务窗口并设置大小（并行处理5个分区）
         elk_coordinator.WithHeartbeatInterval(5*time.Second), // 自定义心跳间隔
     )
     
@@ -151,14 +151,14 @@ mgr := elk_coordinator.NewMgr(
     dataStore,
     processor,
     planer,
+    model.StrategyTypeHash,                                   // 分区策略类型
     elk_coordinator.WithLogger(customLogger),                 // 自定义日志记录器
     elk_coordinator.WithHeartbeatInterval(10*time.Second),    // 心跳间隔
     elk_coordinator.WithLeaderElectionInterval(5*time.Second), // Leader选举间隔
     elk_coordinator.WithPartitionLockExpiry(3*time.Minute),   // 分区锁过期时间
     elk_coordinator.WithLeaderLockExpiry(30*time.Second),     // Leader锁过期时间
     elk_coordinator.WithWorkerPartitionMultiple(3),           // 工作节点分区倍数
-    elk_coordinator.WithTaskWindow(true),                     // 启用任务窗口
-    elk_coordinator.WithTaskWindowSize(5),                    // 任务窗口大小
+    elk_coordinator.WithTaskWindow(5),                        // 启用任务窗口并设置大小
 )
 ```
 
@@ -233,6 +233,7 @@ mgr := elk_coordinator.NewMgr(
     dataStore,
     processor,
     planer,
+    model.StrategyTypeHash,                                      // 分区策略类型
     elk_coordinator.WithCircuitBreakerConfig(circuitBreakerConfig),
 )
 ```
