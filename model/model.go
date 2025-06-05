@@ -62,10 +62,3 @@ type SyncStatus struct {
 const (
 	DefaultTaskWindowSize = 3 // 默认任务窗口大小
 )
-
-// ==================== 辅助函数 ====================
-
-// Now 返回当前时间，用于统一时间获取
-func Now() time.Time {
-	return time.Now()
-}

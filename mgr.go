@@ -5,6 +5,7 @@ import (
 	"elk_coordinator/data"
 	"elk_coordinator/leader"
 	"elk_coordinator/model"
+	"elk_coordinator/partition"
 	"elk_coordinator/task"
 	"elk_coordinator/utils"
 	"fmt"
@@ -184,46 +185,6 @@ func (m *Mgr) registerNode(ctx context.Context) error {
 	return nil
 }
 
-// getActiveWorkers 获取活跃节点列表
-func (m *Mgr) getActiveWorkers(ctx context.Context) ([]string, error) {
-	pattern := fmt.Sprintf(model.HeartbeatFmtFmt, m.Namespace, "*")
-	keys, err := m.DataStore.GetKeys(ctx, pattern)
-	if err != nil {
-		return nil, errors.Wrap(err, "获取心跳失败")
-	}
-
-	var activeWorkers []string
-	now := time.Now()
-	validHeartbeatDuration := m.HeartbeatInterval * 3
-
-	for _, key := range keys {
-		// 从key中提取节点ID
-		prefix := fmt.Sprintf(model.HeartbeatFmtFmt, m.Namespace, "")
-		nodeID := key[len(prefix):]
-
-		// 获取最后心跳时间
-		lastHeartbeatStr, err := m.DataStore.GetHeartbeat(ctx, key)
-		if err != nil {
-			continue // 跳过错误的心跳
-		}
-
-		lastHeartbeat, err := time.Parse(time.RFC3339, lastHeartbeatStr)
-		if err != nil {
-			continue // 跳过无效的时间格式
-		}
-
-		// 检查心跳是否有效
-		if now.Sub(lastHeartbeat) <= validHeartbeatDuration {
-			activeWorkers = append(activeWorkers, nodeID)
-		} else {
-			// 删除过期心跳
-			m.DataStore.DeleteKey(ctx, key)
-		}
-	}
-
-	return activeWorkers, nil
-}
-
 // Lead 处理Leader相关的工作
 func (m *Mgr) Lead(ctx context.Context) error {
 	m.Logger.Infof("启动Leader选举与工作任务")
@@ -256,7 +217,7 @@ func (m *Mgr) Handle(ctx context.Context) error {
 		WorkerID:            m.ID,
 		WindowSize:          m.TaskWindowSize,
 		PartitionLockExpiry: m.PartitionLockExpiry,
-		DataStore:           m.DataStore,
+		PartitionStrategy:   createPartitionStrategy(m.DataStore, m.Logger),
 		Processor:           m.TaskProcessor,
 		Logger:              m.Logger,
 		// TaskWindow会内部创建Runner并具备熔断器功能
@@ -273,15 +234,10 @@ func (m *Mgr) Handle(ctx context.Context) error {
 	return m.workCtx.Err()
 }
 
-// SetWorkerPartitionMultiple 已被选项模式替代，保留用于向后兼容
-//
-// 推荐使用 WithWorkerPartitionMultiple 选项代替
-func (m *Mgr) SetWorkerPartitionMultiple(multiple int64) {
-	m.Logger.Warnf("SetWorkerPartitionMultiple 方法已过时，请使用 WithWorkerPartitionMultiple 选项")
-	if multiple <= 0 {
-		m.Logger.Warnf("无效的工作节点分区倍数: %d，使用默认值 %d", multiple, model.DefaultWorkerPartitionMultiple)
-		m.WorkerPartitionMultiple = model.DefaultWorkerPartitionMultiple
-		return
-	}
-	m.WorkerPartitionMultiple = multiple
+// createPartitionStrategy 创建分区策略实例
+// 这是一个辅助函数，用于创建适合TaskWindow使用的PartitionStrategy
+func createPartitionStrategy(dataStore data.DataStore, logger utils.Logger) partition.PartitionStrategy {
+	// 使用HashPartitionStrategy作为默认策略
+	// HashPartitionStrategy适合处理大规模分布式场景的分区管理
+	return partition.NewHashPartitionStrategy(dataStore, logger)
 }

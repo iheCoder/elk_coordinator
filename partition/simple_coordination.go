@@ -3,6 +3,7 @@ package partition
 import (
 	"context"
 	"elk_coordinator/model"
+	"elk_coordinator/utils"
 	"errors"
 	"fmt"
 
@@ -266,7 +267,7 @@ func (s *SimpleStrategy) releasePartitionLock(ctx context.Context, partitionID i
 // updatePartitionStatusAndMetadata 更新分区状态和元数据
 func (s *SimpleStrategy) updatePartitionStatusAndMetadata(partition model.PartitionInfo, status model.PartitionStatus, metadata map[string]interface{}) model.PartitionInfo {
 	partition.Status = status
-	partition.UpdatedAt = model.Now()
+	partition.UpdatedAt = utils.Now()
 	partition.Version++
 
 	// 更新元数据
@@ -289,7 +290,7 @@ func (s *SimpleStrategy) resetPartitionAfterRelease(partition model.PartitionInf
 	if partition.Status != model.StatusCompleted && partition.Status != model.StatusFailed {
 		partition.Status = model.StatusPending
 	}
-	partition.UpdatedAt = model.Now()
+	partition.UpdatedAt = utils.Now()
 	partition.Version++
 
 	return partition
@@ -299,7 +300,7 @@ func (s *SimpleStrategy) resetPartitionAfterRelease(partition model.PartitionInf
 func (s *SimpleStrategy) updatePartitionAfterAcquisition(partition model.PartitionInfo, workerID string) model.PartitionInfo {
 	partition.WorkerID = workerID
 	partition.Status = model.StatusClaimed
-	partition.UpdatedAt = model.Now()
+	partition.UpdatedAt = utils.Now()
 	partition.Version++
 
 	return partition

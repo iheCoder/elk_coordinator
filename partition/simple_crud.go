@@ -3,6 +3,7 @@ package partition
 import (
 	"context"
 	"elk_coordinator/model"
+	"elk_coordinator/utils"
 )
 
 // ==================== 基础CRUD操作 ====================
@@ -109,7 +110,7 @@ func (s *SimpleStrategy) preparePartitionUpdate(partitions map[int]model.Partiti
 
 // createNewPartition 创建新分区
 func (s *SimpleStrategy) createNewPartition(partitionInfo *model.PartitionInfo) model.PartitionInfo {
-	now := model.Now()
+	now := utils.Now()
 
 	newPartition := *partitionInfo
 	if newPartition.CreatedAt.IsZero() {
@@ -134,7 +135,7 @@ func (s *SimpleStrategy) updateExistingPartition(existing model.PartitionInfo, n
 	if !newInfo.UpdatedAt.IsZero() {
 		updated.UpdatedAt = newInfo.UpdatedAt
 	} else {
-		updated.UpdatedAt = model.Now()
+		updated.UpdatedAt = utils.Now()
 	}
 
 	// 保留原始创建时间
