@@ -125,6 +125,12 @@ func (r *Runner) updateTaskStatus(ctx context.Context, task model.PartitionInfo,
 	return r.partitionStrategy.UpdatePartitionStatus(ctx, task.PartitionID, r.workerID, status, nil)
 }
 
+// updateTaskStatusWithMetadata 更新任务状态并传递元数据
+// 使用策略接口的 UpdatePartitionStatus 方法
+func (r *Runner) updateTaskStatusWithMetadata(ctx context.Context, task model.PartitionInfo, status model.PartitionStatus, metadata map[string]interface{}) error {
+	return r.partitionStrategy.UpdatePartitionStatus(ctx, task.PartitionID, r.workerID, status, metadata)
+}
+
 // releasePartitionLock 释放分区锁
 // 使用策略接口的 ReleasePartition 方法
 func (r *Runner) releasePartitionLock(ctx context.Context, partitionID int) {

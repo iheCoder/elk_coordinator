@@ -117,12 +117,17 @@ func (r *Runner) processPartitionTask(ctx context.Context, task model.PartitionI
 
 	// 根据处理结果更新状态
 	newStatus := model.StatusCompleted
+	var metadata map[string]interface{}
 	if err != nil {
 		newStatus = model.StatusFailed
+		// 将错误信息传递给分区状态更新
+		metadata = map[string]interface{}{
+			"error": err.Error(),
+		}
 	}
 
 	// 更新任务状态并释放锁
-	if updateErr := r.updateTaskStatus(ctx, task, newStatus); updateErr != nil {
+	if updateErr := r.updateTaskStatusWithMetadata(ctx, task, newStatus, metadata); updateErr != nil {
 		r.logger.Errorf("更新分区 %d 状态为 %s 失败: %v",
 			task.PartitionID, newStatus, updateErr)
 	}

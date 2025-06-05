@@ -50,6 +50,15 @@ func (s *HashPartitionStrategy) UpdatePartitionStatus(ctx context.Context, parti
 		partition.LastHeartbeat = time.Now()
 	}
 
+	// 特殊处理：如果状态为失败，检查metadata中是否有错误信息并设置到Error字段
+	if status == model.StatusFailed && len(metadata) > 0 {
+		if errorMsg, exists := metadata["error"]; exists {
+			if errorStr, ok := errorMsg.(string); ok {
+				partition.Error = errorStr
+			}
+		}
+	}
+
 	// 如果有元数据，合并到分区选项中
 	if len(metadata) > 0 {
 		if partition.Options == nil {
@@ -101,15 +110,15 @@ func (s *HashPartitionStrategy) ReleasePartition(ctx context.Context, partitionI
 		return fmt.Errorf("工作节点 %s 无权释放分区 %d", workerID, partitionID)
 	}
 
-	// 重置分区状态：已完成的分区保持completed状态，其他状态重置为pending
-	if partition.Status != model.StatusCompleted {
+	// 重置分区状态：已完成和失败的分区保持状态和WorkerID，其他状态重置为pending
+	if partition.Status != model.StatusCompleted && partition.Status != model.StatusFailed {
 		partition.Status = model.StatusPending
+		// 对于非终态分区（pending, claimed, running），清空工作节点信息以便重新分配
+		partition.WorkerID = ""
 	}
+	// 注意：对于已完成和失败的分区，保留 WorkerID 以记录哪个工作节点处理了该分区
 
-	// 清空工作节点信息
-	partition.WorkerID = ""
-
-	// 清空心跳时间
+	// 清空心跳时间（无论什么状态都清空，因为分区已不再活跃处理）
 	partition.LastHeartbeat = time.Time{}
 
 	// 使用版本控制更新
