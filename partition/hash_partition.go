@@ -1,6 +1,7 @@
 package partition
 
 import (
+	"elk_coordinator/model"
 	"time"
 
 	"elk_coordinator/data"
@@ -75,8 +76,8 @@ func NewHashPartitionStrategyWithConfig(store data.HashPartitionOperations, logg
 //
 // 返回:
 //   - StrategyType: 策略类型为 StrategyTypeHash
-func (s *HashPartitionStrategy) StrategyType() StrategyType {
-	return StrategyTypeHash
+func (s *HashPartitionStrategy) StrategyType() model.StrategyType {
+	return model.StrategyTypeHash
 }
 
 // ==================== PartitionStrategy 接口实现 ====================

@@ -2,7 +2,6 @@ package elk_coordinator
 
 import (
 	"elk_coordinator/model"
-	"elk_coordinator/partition"
 	"elk_coordinator/utils"
 	"time"
 )
@@ -81,16 +80,16 @@ func WithTaskWindow(windowSize int) MgrOption {
 
 // WithPartitionStrategy 设置分区策略类型
 // 可以选择SimpleStrategy或HashStrategy
-func WithPartitionStrategy(strategyType partition.StrategyType) MgrOption {
+func WithPartitionStrategy(strategyType model.StrategyType) MgrOption {
 	return func(m *Mgr) {
 		// 验证策略类型有效性
 		switch strategyType {
-		case partition.StrategyTypeSimple, partition.StrategyTypeHash:
+		case model.StrategyTypeSimple, model.StrategyTypeHash:
 			m.PartitionStrategyType = strategyType
 		default:
 			// 若提供了无效的策略类型，使用默认的Hash策略
 			m.Logger.Warnf("无效的分区策略类型: %v, 将使用默认的Hash策略", strategyType)
-			m.PartitionStrategyType = partition.StrategyTypeHash
+			m.PartitionStrategyType = model.StrategyTypeHash
 		}
 	}
 }

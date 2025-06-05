@@ -2,6 +2,7 @@ package partition
 
 import (
 	"elk_coordinator/data"
+	"elk_coordinator/model"
 	"elk_coordinator/utils"
 	"time"
 )
@@ -88,6 +89,6 @@ func NewSimpleStrategy(config SimpleStrategyConfig) *SimpleStrategy {
 //
 // 返回:
 //   - StrategyType: 策略类型为 StrategyTypeSimple
-func (s *SimpleStrategy) StrategyType() StrategyType {
-	return StrategyTypeSimple
+func (s *SimpleStrategy) StrategyType() model.StrategyType {
+	return model.StrategyTypeSimple
 }

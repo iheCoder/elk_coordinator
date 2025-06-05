@@ -235,8 +235,8 @@ func (m *MockPartitionStrategy) UpdatePartition(ctx context.Context, partitionIn
 }
 
 // StrategyType 获取策略类型标识
-func (m *MockPartitionStrategy) StrategyType() string {
-	return "mock"
+func (m *MockPartitionStrategy) StrategyType() model.StrategyType {
+	return model.StrategyTypeSimple // 返回简单策略类型作为mock策略
 }
 
 // AcquirePartition 声明对指定分区的持有权

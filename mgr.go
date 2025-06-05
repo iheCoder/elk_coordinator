@@ -27,7 +27,7 @@ type Mgr struct {
 	Logger          utils.Logger
 
 	// 分区策略配置
-	PartitionStrategyType partition.StrategyType // 默认为StrategyTypeHash
+	PartitionStrategyType model.StrategyType // 默认为StrategyTypeHash
 
 	// 配置选项
 	HeartbeatInterval       time.Duration // 心跳间隔
@@ -75,7 +75,7 @@ func NewMgr(namespace string, dataStore data.DataStore, processor task.Processor
 		WorkerPartitionMultiple: model.DefaultWorkerPartitionMultiple,
 
 		// 默认使用Hash分区策略
-		PartitionStrategyType: partition.StrategyTypeHash,
+		PartitionStrategyType: model.StrategyTypeHash,
 
 		// 任务窗口默认配置
 		UseTaskWindow:  false,
@@ -230,14 +230,14 @@ func (m *Mgr) Handle(ctx context.Context) error {
 func (m *Mgr) createPartitionStrategy() partition.PartitionStrategy {
 	// 根据配置的策略类型创建相应的实例
 	switch m.PartitionStrategyType {
-	case partition.StrategyTypeSimple:
+	case model.StrategyTypeSimple:
 		m.Logger.Infof("使用Simple分区策略")
 		return partition.NewSimpleStrategy(partition.SimpleStrategyConfig{
 			DataStore: m.DataStore,
 			Namespace: m.Namespace,
 			Logger:    m.Logger,
 		})
-	case partition.StrategyTypeHash:
+	case model.StrategyTypeHash:
 		m.Logger.Infof("使用Hash分区策略")
 		return partition.NewHashPartitionStrategy(m.DataStore, m.Logger)
 	default:

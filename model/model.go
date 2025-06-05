@@ -62,3 +62,26 @@ type SyncStatus struct {
 const (
 	DefaultTaskWindowSize = 3 // 默认任务窗口大小
 )
+
+// StrategyType 定义分区策略类型的枚举
+type StrategyType int32
+
+const (
+	// StrategyTypeSimple 简单策略，基于分布式锁实现
+	StrategyTypeSimple StrategyType = iota + 1
+	// StrategyTypeHash 哈希策略，基于Redis Hash实现
+	StrategyTypeHash
+	// 未来可以添加更多的策略类型
+)
+
+// String 返回策略类型的字符串表示
+func (t StrategyType) String() string {
+	switch t {
+	case StrategyTypeSimple:
+		return "Simple"
+	case StrategyTypeHash:
+		return "Hash"
+	default:
+		return "Unknown"
+	}
+}

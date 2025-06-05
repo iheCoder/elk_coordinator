@@ -5,6 +5,7 @@ import (
 	"elk_coordinator/model"
 	"elk_coordinator/partition"
 	"elk_coordinator/utils"
+
 	"github.com/pkg/errors"
 )
 
@@ -80,6 +81,11 @@ func (pm *PartitionAssigner) AllocatePartitions(ctx context.Context, activeWorke
 	stats, err := pm.strategy.GetPartitionStats(ctx)
 	if err != nil {
 		return errors.Wrap(err, "获取分区统计信息失败")
+	}
+
+	// 检查 stats 是否为 nil
+	if stats == nil {
+		return errors.New("分区统计信息为空")
 	}
 
 	// 检查是否需要分配新的分区
