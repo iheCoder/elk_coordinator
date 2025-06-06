@@ -84,6 +84,7 @@ func NewPartitionManagerWithOptions(
 // AllocatePartitions 分配工作分区
 func (pm *PartitionAssigner) AllocatePartitions(ctx context.Context, activeWorkers []string) error {
 	// 获取分区统计信息，判断是否需要分配新分区
+	// 统计信息现在包含了 MaxPartitionID 和 LastAllocatedID，避免了额外的查询
 	stats, err := pm.strategy.GetPartitionStats(ctx)
 	if err != nil {
 		return errors.Wrap(err, "获取分区统计信息失败")
@@ -100,8 +101,12 @@ func (pm *PartitionAssigner) AllocatePartitions(ctx context.Context, activeWorke
 		return nil
 	}
 
-	// 获取ID范围
-	lastAllocatedID, nextMaxID, err := pm.GetProcessingRange(ctx, activeWorkers, pm.config.WorkerPartitionMultiple)
+	// 从统计信息中直接获取已计算好的边界值
+	lastAllocatedID := stats.LastAllocatedID
+	maxPartitionID := stats.MaxPartitionID
+
+	// 获取下一批次的处理范围
+	nextMaxID, err := pm.GetNextProcessingRange(ctx, activeWorkers, lastAllocatedID)
 	if err != nil {
 		return err
 	}
@@ -113,7 +118,7 @@ func (pm *PartitionAssigner) AllocatePartitions(ctx context.Context, activeWorke
 	}
 
 	// 创建新的分区请求
-	createRequest, err := pm.CreatePartitionsRequest(ctx, lastAllocatedID, nextMaxID)
+	createRequest, err := pm.CreatePartitionsRequestWithBounds(ctx, lastAllocatedID, nextMaxID, maxPartitionID)
 	if err != nil {
 		return err
 	}
@@ -127,32 +132,6 @@ func (pm *PartitionAssigner) AllocatePartitions(ctx context.Context, activeWorke
 	pm.logger.Infof("成功创建 %d 个新分区，ID范围 [%d, %d]", len(createdPartitions), lastAllocatedID+1, nextMaxID)
 
 	return nil
-}
-
-// GetProcessingRange 获取需要处理的ID范围
-func (pm *PartitionAssigner) GetProcessingRange(ctx context.Context, activeWorkers []string, workerPartitionMultiple int64) (int64, int64, error) {
-	// 获取当前已分配分区的最大ID边界
-	lastAllocatedID, err := pm.GetLastAllocatedID(ctx)
-	if err != nil {
-		return 0, 0, errors.Wrap(err, "获取最后分配的ID边界失败")
-	}
-
-	// 计算合适的ID探测范围大小
-	rangeSize, err := pm.CalculateLookAheadRange(ctx, activeWorkers, workerPartitionMultiple)
-	if err != nil {
-		pm.logger.Warnf("计算ID探测范围失败: %v，使用默认值", err)
-		rangeSize = 10000 // 使用一个默认值作为备选
-	}
-
-	pm.logger.Debugf("使用动态计算的ID探测范围: %d", rangeSize)
-
-	// 获取下一批次的最大ID
-	nextMaxID, err := pm.planer.GetNextMaxID(ctx, lastAllocatedID, rangeSize)
-	if err != nil {
-		return 0, 0, errors.Wrap(err, "获取下一个最大ID失败")
-	}
-
-	return lastAllocatedID, nextMaxID, nil
 }
 
 // ShouldAllocateNewPartitions 判断是否应该分配新的分区
@@ -183,8 +162,28 @@ func (pm *PartitionAssigner) ShouldAllocateNewPartitions(stats model.PartitionSt
 	return true
 }
 
-// CreatePartitionsRequest 创建分区请求
-func (pm *PartitionAssigner) CreatePartitionsRequest(ctx context.Context, lastAllocatedID, nextMaxID int64) (model.CreatePartitionsRequest, error) {
+// GetNextProcessingRange 获取下一批次的处理范围
+func (pm *PartitionAssigner) GetNextProcessingRange(ctx context.Context, activeWorkers []string, lastAllocatedID int64) (int64, error) {
+	// 计算合适的ID探测范围大小
+	rangeSize, err := pm.CalculateLookAheadRange(ctx, activeWorkers, pm.config.WorkerPartitionMultiple)
+	if err != nil {
+		pm.logger.Warnf("计算ID探测范围失败: %v，使用默认值", err)
+		rangeSize = 10000 // 使用一个默认值作为备选
+	}
+
+	pm.logger.Debugf("使用动态计算的ID探测范围: %d", rangeSize)
+
+	// 获取下一批次的最大ID
+	nextMaxID, err := pm.planer.GetNextMaxID(ctx, lastAllocatedID, rangeSize)
+	if err != nil {
+		return 0, errors.Wrap(err, "获取下一个最大ID失败")
+	}
+
+	return nextMaxID, nil
+}
+
+// CreatePartitionsRequestWithBounds 使用预计算的边界值创建分区请求
+func (pm *PartitionAssigner) CreatePartitionsRequestWithBounds(ctx context.Context, lastAllocatedID, nextMaxID int64, maxPartitionID int) (model.CreatePartitionsRequest, error) {
 	// 获取有效的分区大小（从处理器建议或默认值）
 	partitionSize, err := pm.GetEffectivePartitionSize(ctx)
 	if err != nil {
@@ -209,7 +208,7 @@ func (pm *PartitionAssigner) CreatePartitionsRequest(ctx context.Context, lastAl
 	pm.logger.Infof("ID范围 [%d, %d]，分区大小 %d，将创建 %d 个分区",
 		lastAllocatedID+1, nextMaxID, partitionSize, partitionCount)
 
-	// 创建分区请求
+	// 创建分区请求，使用真正不冲突的分区ID
 	partitions := make([]model.CreatePartitionRequest, partitionCount)
 	for i := 0; i < partitionCount; i++ {
 		minID := lastAllocatedID + int64(i)*partitionSize + 1
@@ -221,7 +220,7 @@ func (pm *PartitionAssigner) CreatePartitionsRequest(ctx context.Context, lastAl
 		}
 
 		partitions[i] = model.CreatePartitionRequest{
-			PartitionID: i, // 这个ID会在策略层重新分配，避免冲突
+			PartitionID: maxPartitionID + 1 + i, // 使用真正不冲突的分区ID
 			MinID:       minID,
 			MaxID:       maxID,
 			Options:     make(map[string]interface{}),
@@ -231,29 +230,6 @@ func (pm *PartitionAssigner) CreatePartitionsRequest(ctx context.Context, lastAl
 	return model.CreatePartitionsRequest{
 		Partitions: partitions,
 	}, nil
-}
-
-// GetLastAllocatedID 获取当前已分配分区的最大ID边界
-func (pm *PartitionAssigner) GetLastAllocatedID(ctx context.Context) (int64, error) {
-	allPartitions, err := pm.strategy.GetAllPartitions(ctx)
-	if err != nil {
-		return 0, errors.Wrap(err, "获取分区信息失败")
-	}
-
-	// 如果没有分区，表示还没有开始分配
-	if len(allPartitions) == 0 {
-		return 0, nil
-	}
-
-	// 查找所有分区的最大ID
-	var maxID int64 = 0
-	for _, p := range allPartitions {
-		if p.MaxID > maxID {
-			maxID = p.MaxID
-		}
-	}
-
-	return maxID, nil
 }
 
 // CalculateLookAheadRange 计算合适的ID探测范围大小

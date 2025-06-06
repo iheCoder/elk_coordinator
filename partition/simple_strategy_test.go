@@ -6,12 +6,13 @@ import (
 	"elk_coordinator/model"
 	"elk_coordinator/test_utils"
 	"fmt"
-	"github.com/alicebob/miniredis/v2"
-	"github.com/redis/go-redis/v9"
-	"github.com/stretchr/testify/assert"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/assert"
 )
 
 // setupSimpleStrategyTest 创建一个测试用的 SimpleStrategy 实例
@@ -89,7 +90,7 @@ func TestNewSimpleStrategy(t *testing.T) {
 	defer cleanup()
 
 	// 检查策略类型
-	assert.Equal(t, "simple", strategy.StrategyType())
+	assert.Equal(t, model.StrategyTypeSimple, strategy.StrategyType())
 
 	// 检查配置
 	assert.Equal(t, "test-namespace", strategy.namespace)

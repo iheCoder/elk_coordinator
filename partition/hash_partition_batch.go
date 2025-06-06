@@ -17,6 +17,9 @@ import (
 // 该方法会并发创建多个分区，提高性能。对于已存在的分区会被跳过，
 // 不会返回错误。只有系统错误才会导致整个操作失败。
 //
+// 注意：此方法直接使用请求中的 PartitionID，不会重新分配ID。
+// 如果存在ID冲突，会获取现有分区而不是创建新的。
+//
 // 参数:
 //   - ctx: 上下文
 //   - request: 创建分区请求，包含分区列表
@@ -93,7 +96,7 @@ func (s *HashPartitionStrategy) CreatePartitionsIfNotExist(ctx context.Context, 
 		return createdPartitions[i].PartitionID < createdPartitions[j].PartitionID
 	})
 
-	s.logger.Infof("成功批量创建 %d 个分区", len(createdPartitions))
+	s.logger.Infof("批量创建/获取分区完成，总共处理 %d 个分区请求，其中可能包含已存在的分区", len(createdPartitions))
 	return createdPartitions, nil
 }
 

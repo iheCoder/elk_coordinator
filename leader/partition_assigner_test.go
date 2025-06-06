@@ -117,17 +117,16 @@ func TestGetExistingPartitions(t *testing.T) {
 // TestGetLastAllocatedID 测试获取最后分配的ID边界
 func TestGetLastAllocatedID(t *testing.T) {
 	mockStrategy := test_utils.NewMockPartitionStrategy()
-	partitionMgr := NewPartitionManager(PartitionAssignerConfig{Namespace: "test"}, mockStrategy, test_utils.NewMockLogger(false), &mockPartitionPlaner{})
 
 	ctx := context.Background()
 
 	// 测试空分区情况
-	lastID, err := partitionMgr.GetLastAllocatedID(ctx)
+	stats, err := mockStrategy.GetPartitionStats(ctx)
 	if err != nil {
-		t.Errorf("获取最后分配ID失败: %v", err)
+		t.Errorf("获取分区统计信息失败: %v", err)
 	}
-	if lastID != 0 {
-		t.Errorf("期望最后分配ID为0，但得到 %d", lastID)
+	if stats.LastAllocatedID != 0 {
+		t.Errorf("期望最后分配ID为0，但得到 %d", stats.LastAllocatedID)
 	}
 
 	// 设置分区数据
@@ -154,13 +153,13 @@ func TestGetLastAllocatedID(t *testing.T) {
 
 	mockStrategy.SetPartitions(testPartitions)
 
-	// 再次获取最后分配的ID
-	lastID, err = partitionMgr.GetLastAllocatedID(ctx)
+	// 再次获取分区统计信息
+	stats, err = mockStrategy.GetPartitionStats(ctx)
 	if err != nil {
-		t.Errorf("获取最后分配ID失败: %v", err)
+		t.Errorf("获取分区统计信息失败: %v", err)
 	}
-	if lastID != 5000 {
-		t.Errorf("期望最后分配ID为5000，但得到 %d", lastID)
+	if stats.LastAllocatedID != 5000 {
+		t.Errorf("期望最后分配ID为5000，但得到 %d", stats.LastAllocatedID)
 	}
 }
 
@@ -217,7 +216,8 @@ func TestCreatePartitionsRequest(t *testing.T) {
 	ctx := context.Background()
 
 	// 测试场景: 创建1000个ID的分区，预期会创建2个分区
-	request, err := partitionMgr.CreatePartitionsRequest(ctx, 0, 1000)
+	// 使用新的 CreatePartitionsRequestWithBounds 方法，maxPartitionID 为 0（表示当前没有分区）
+	request, err := partitionMgr.CreatePartitionsRequestWithBounds(ctx, 0, 1000, 0)
 	if err != nil {
 		t.Errorf("创建分区请求失败: %v", err)
 	}
@@ -231,16 +231,22 @@ func TestCreatePartitionsRequest(t *testing.T) {
 	if p0.MinID != 1 || p0.MaxID != 500 {
 		t.Errorf("分区0范围不正确，期望[1, 500]，得到[%d, %d]", p0.MinID, p0.MaxID)
 	}
+	if p0.PartitionID != 1 {
+		t.Errorf("分区0的ID不正确，期望1，得到%d", p0.PartitionID)
+	}
 
 	// 验证第二个分区请求
 	p1 := request.Partitions[1]
 	if p1.MinID != 501 || p1.MaxID != 1000 {
 		t.Errorf("分区1范围不正确，期望[501, 1000]，得到[%d, %d]", p1.MinID, p1.MaxID)
 	}
+	if p1.PartitionID != 2 {
+		t.Errorf("分区1的ID不正确，期望2，得到%d", p1.PartitionID)
+	}
 
 	// 测试场景: 使用默认分区大小
 	planer.suggestedPartitionSize = 0 // 让planer返回0，应该使用默认值
-	request, err = partitionMgr.CreatePartitionsRequest(ctx, 0, 1000)
+	request, err = partitionMgr.CreatePartitionsRequestWithBounds(ctx, 0, 1000, 0)
 	if err != nil {
 		t.Errorf("创建分区请求失败: %v", err)
 	}

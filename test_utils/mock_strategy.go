@@ -364,13 +364,17 @@ func (m *MockPartitionStrategy) GetPartitionStats(ctx context.Context) (*model.P
 	defer m.mutex.RUnlock()
 
 	stats := &model.PartitionStats{
-		Total: len(m.Partitions),
+		Total:           len(m.Partitions),
+		MaxPartitionID:  0,
+		LastAllocatedID: 0,
 	}
 
 	for _, partition := range m.Partitions {
 		switch partition.Status {
 		case model.StatusPending:
 			stats.Pending++
+		case model.StatusClaimed:
+			stats.Claimed++
 		case model.StatusRunning:
 			stats.Running++
 		case model.StatusCompleted:
@@ -378,6 +382,22 @@ func (m *MockPartitionStrategy) GetPartitionStats(ctx context.Context) (*model.P
 		case model.StatusFailed:
 			stats.Failed++
 		}
+
+		// 更新最大分区ID
+		if partition.PartitionID > stats.MaxPartitionID {
+			stats.MaxPartitionID = partition.PartitionID
+		}
+
+		// 更新最大数据ID
+		if partition.MaxID > stats.LastAllocatedID {
+			stats.LastAllocatedID = partition.MaxID
+		}
+	}
+
+	// 计算比率
+	if stats.Total > 0 {
+		stats.CompletionRate = float64(stats.Completed) / float64(stats.Total)
+		stats.FailureRate = float64(stats.Failed) / float64(stats.Total)
 	}
 
 	return stats, nil

@@ -22,18 +22,30 @@ func (s *SimpleStrategy) GetPartitionStats(ctx context.Context) (*model.Partitio
 // calculatePartitionStats 计算分区统计信息
 func (s *SimpleStrategy) calculatePartitionStats(partitions map[int]model.PartitionInfo) *model.PartitionStats {
 	stats := &model.PartitionStats{
-		Total:     0,
-		Pending:   0,
-		Claimed:   0,
-		Running:   0,
-		Failed:    0,
-		Completed: 0,
+		Total:           0,
+		Pending:         0,
+		Claimed:         0,
+		Running:         0,
+		Failed:          0,
+		Completed:       0,
+		MaxPartitionID:  0,
+		LastAllocatedID: 0,
 	}
 
-	// 统计各状态分区数量
+	// 统计各状态分区数量，同时计算最大分区ID和最大数据ID
 	for _, partition := range partitions {
 		stats.Total++
 		s.updateStatsForStatus(stats, partition.Status)
+
+		// 更新最大分区ID
+		if partition.PartitionID > stats.MaxPartitionID {
+			stats.MaxPartitionID = partition.PartitionID
+		}
+
+		// 更新最大数据ID
+		if partition.MaxID > stats.LastAllocatedID {
+			stats.LastAllocatedID = partition.MaxID
+		}
 	}
 
 	// 计算比率

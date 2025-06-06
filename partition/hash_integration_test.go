@@ -6,13 +6,14 @@ import (
 	"elk_coordinator/model"
 	"elk_coordinator/test_utils"
 	"fmt"
+	"sync"
+	"testing"
+	"time"
+
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"sync"
-	"testing"
-	"time"
 )
 
 // setupHashPartitionStrategyIntegrationTest 创建集成测试环境
@@ -735,7 +736,8 @@ func TestHashPartitionStrategy_ComplexWorkflow(t *testing.T) {
 	assert.Equal(t, model.StatusClaimed, statusMap[3])
 
 	// 验证工作节点分配
-	assert.Empty(t, workerMap[1]) // 已释放
+	// 注意：已完成的分区保留 WorkerID 以记录处理历史
+	assert.Equal(t, "worker-1", workerMap[1]) // 已完成，保留 WorkerID
 	assert.Equal(t, "worker-2", workerMap[2])
 	assert.Equal(t, "worker-1", workerMap[3])
 

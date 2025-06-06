@@ -40,14 +40,16 @@ type PartitionHeartbeatStatus struct {
 
 // PartitionStats 分区状态统计信息
 type PartitionStats struct {
-	Total          int     `json:"total"`           // 总分区数
-	Pending        int     `json:"pending"`         // 等待处理的分区数
-	Claimed        int     `json:"claimed"`         // 已声明的分区数
-	Running        int     `json:"running"`         // 正在处理的分区数
-	Completed      int     `json:"completed"`       // 已完成的分区数
-	Failed         int     `json:"failed"`          // 失败的分区数
-	CompletionRate float64 `json:"completion_rate"` // 完成率 (completed / total)
-	FailureRate    float64 `json:"failure_rate"`    // 失败率 (failed / total)
+	Total           int     `json:"total"`             // 总分区数
+	Pending         int     `json:"pending"`           // 等待处理的分区数
+	Claimed         int     `json:"claimed"`           // 已声明的分区数
+	Running         int     `json:"running"`           // 正在处理的分区数
+	Completed       int     `json:"completed"`         // 已完成的分区数
+	Failed          int     `json:"failed"`            // 失败的分区数
+	CompletionRate  float64 `json:"completion_rate"`   // 完成率 (completed / total)
+	FailureRate     float64 `json:"failure_rate"`      // 失败率 (failed / total)
+	MaxPartitionID  int     `json:"max_partition_id"`  // 当前最大分区ID（用于生成新的不冲突分区ID）
+	LastAllocatedID int64   `json:"last_allocated_id"` // 当前已分配的最大数据ID（用于确定新分区的数据范围）
 }
 
 // ==================== 分区策略相关类型 ====================
