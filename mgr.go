@@ -112,8 +112,14 @@ func (m *Mgr) Start(ctx context.Context) error {
 	m.heartbeatCtx, m.cancelHeartbeat = context.WithCancel(context.Background())
 	m.workCtx, m.cancelWork = context.WithCancel(context.Background())
 
-	// 注册本节点，并周期发送心跳
-	go m.nodeKeeper(ctx)
+	// 首先同步注册本节点，确保心跳已设置
+	err := m.registerNode(ctx)
+	if err != nil {
+		return err
+	}
+
+	// 启动心跳维护goroutine
+	go m.heartbeatKeeper(ctx)
 
 	// 做leader相关的工作
 	go m.Lead(ctx)
@@ -127,16 +133,9 @@ func (m *Mgr) Start(ctx context.Context) error {
 	return nil
 }
 
-// nodeKeeper 管理节点注册和心跳
-func (m *Mgr) nodeKeeper(ctx context.Context) {
-	m.Logger.Infof("开始节点维护任务")
-
-	// 注册本节点
-	err := m.registerNode(ctx)
-	if err != nil {
-		m.Logger.Errorf("注册节点失败: %v", err)
-		return
-	}
+// heartbeatKeeper 维护节点心跳
+func (m *Mgr) heartbeatKeeper(ctx context.Context) {
+	m.Logger.Infof("开始心跳维护任务")
 
 	// 周期性发送心跳
 	ticker := time.NewTicker(m.HeartbeatInterval)
@@ -145,10 +144,10 @@ func (m *Mgr) nodeKeeper(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			m.Logger.Infof("节点维护任务停止 (上下文取消)")
+			m.Logger.Infof("心跳维护任务停止 (上下文取消)")
 			return
 		case <-m.heartbeatCtx.Done():
-			m.Logger.Infof("节点维护任务停止 (心跳上下文取消)")
+			m.Logger.Infof("心跳维护任务停止 (心跳上下文取消)")
 			return
 		case <-ticker.C:
 			heartbeatKey := fmt.Sprintf(model.HeartbeatFmtFmt, m.Namespace, m.ID)
