@@ -11,7 +11,8 @@ import (
 
 // PartitionAssignerConfig 分区分配器的配置参数（只包含配置，不包含依赖）
 type PartitionAssignerConfig struct {
-	Namespace string
+	Namespace               string
+	WorkerPartitionMultiple int64
 	// 可以添加其他配置参数，如超时时间、重试次数等
 	// RetryCount       int
 	// AllocationTimeout time.Duration
@@ -33,6 +34,11 @@ func NewPartitionManager(
 	logger utils.Logger,
 	planer PartitionPlaner,
 ) *PartitionAssigner {
+	// 设置默认值
+	if config.WorkerPartitionMultiple <= 0 {
+		config.WorkerPartitionMultiple = model.DefaultWorkerPartitionMultiple
+	}
+
 	return &PartitionAssigner{
 		config:   config,
 		strategy: strategy,
@@ -76,7 +82,7 @@ func NewPartitionManagerWithOptions(
 }
 
 // AllocatePartitions 分配工作分区
-func (pm *PartitionAssigner) AllocatePartitions(ctx context.Context, activeWorkers []string, workerPartitionMultiple int64) error {
+func (pm *PartitionAssigner) AllocatePartitions(ctx context.Context, activeWorkers []string) error {
 	// 获取分区统计信息，判断是否需要分配新分区
 	stats, err := pm.strategy.GetPartitionStats(ctx)
 	if err != nil {
@@ -90,12 +96,12 @@ func (pm *PartitionAssigner) AllocatePartitions(ctx context.Context, activeWorke
 
 	// 检查是否需要分配新的分区
 	if !pm.ShouldAllocateNewPartitions(*stats) {
-		pm.logger.Debugf("现有分区未达到完成率阈值，暂不分配新分区。完成率: %.2f%%", stats.CompletionRate*100)
+		pm.logger.Debugf("现有分区依然存在很多未处理，暂不分配新分区。完成率: %.2f%%", stats.CompletionRate*100)
 		return nil
 	}
 
 	// 获取ID范围
-	lastAllocatedID, nextMaxID, err := pm.GetProcessingRange(ctx, activeWorkers, workerPartitionMultiple)
+	lastAllocatedID, nextMaxID, err := pm.GetProcessingRange(ctx, activeWorkers, pm.config.WorkerPartitionMultiple)
 	if err != nil {
 		return err
 	}
@@ -150,6 +156,7 @@ func (pm *PartitionAssigner) GetProcessingRange(ctx context.Context, activeWorke
 }
 
 // ShouldAllocateNewPartitions 判断是否应该分配新的分区
+// 简化版本：主要确保不会一次性分配过多分区，不过度依赖完成率
 func (pm *PartitionAssigner) ShouldAllocateNewPartitions(stats model.PartitionStats) bool {
 	// 如果没有分区，应该分配
 	if stats.Total == 0 {
@@ -158,16 +165,22 @@ func (pm *PartitionAssigner) ShouldAllocateNewPartitions(stats model.PartitionSt
 
 	// 如果有太多失败的分区，暂停分配新分区
 	if stats.Failed > stats.Total/3 { // 失败率超过1/3
+		pm.logger.Debugf("失败分区过多 (%d/%d)，暂停分配新分区", stats.Failed, stats.Total)
 		return false
 	}
 
-	// 如果有足够的等待处理或正在处理的分区，不需要分配新分区
+	// 如果等待处理或正在运行的分区太多，不需要分配新分区
+	// 简化逻辑：只要等待处理和正在运行的分区不超过总数的一半，就可以分配新分区
 	if (stats.Pending + stats.Running) >= stats.Total/2 {
+		pm.logger.Debugf("等待处理和正在运行的分区太多 (%d+%d=%d/%d)，暂停分配新分区",
+			stats.Pending, stats.Running, stats.Pending+stats.Running, stats.Total)
 		return false
 	}
 
-	// 如果完成率达到70%，可以分配新分区
-	return stats.CompletionRate >= 0.7
+	// 简化判断：只要不是上述两种情况，就可以分配新分区
+	pm.logger.Debugf("分区状态正常，可以分配新分区。总数=%d, 等待=%d, 运行中=%d, 完成=%d, 失败=%d",
+		stats.Total, stats.Pending, stats.Running, stats.Completed, stats.Failed)
+	return true
 }
 
 // CreatePartitionsRequest 创建分区请求
@@ -244,6 +257,7 @@ func (pm *PartitionAssigner) GetLastAllocatedID(ctx context.Context) (int64, err
 }
 
 // CalculateLookAheadRange 计算合适的ID探测范围大小
+// 改进版本：使用活跃worker数量，但确保最小值，避免时序问题
 func (pm *PartitionAssigner) CalculateLookAheadRange(ctx context.Context, activeWorkers []string, workerPartitionMultiple int64) (int64, error) {
 	// 获取当前建议的分区大小
 	partitionSize, err := pm.GetEffectivePartitionSize(ctx)
@@ -252,15 +266,17 @@ func (pm *PartitionAssigner) CalculateLookAheadRange(ctx context.Context, active
 		partitionSize = model.DefaultPartitionSize
 	}
 
-	// 计算活跃节点数量
+	// 计算活跃节点数量，但确保最小值，避免节点注册时序问题
 	workerCount := len(activeWorkers)
-	if workerCount == 0 {
-		workerCount = 1 // 避免除以零
+	if workerCount < model.DefaultMinWorkerCount {
+		workerCount = model.DefaultMinWorkerCount
 	}
 
 	// 基于分区大小、节点数量和配置的分区倍数计算合理的探测范围
-	// 为每个节点准备指定倍数的分区工作量
 	rangeSize := partitionSize * int64(workerCount) * workerPartitionMultiple
+
+	pm.logger.Debugf("ID探测范围计算: partitionSize=%d, activeWorkers=%d, effectiveWorkerCount=%d, workerPartitionMultiple=%d, rangeSize=%d",
+		partitionSize, len(activeWorkers), workerCount, workerPartitionMultiple, rangeSize)
 
 	return rangeSize, nil
 }

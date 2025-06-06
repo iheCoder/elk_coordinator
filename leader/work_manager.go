@@ -6,8 +6,9 @@ import (
 	"elk_coordinator/model"
 	"elk_coordinator/utils"
 	"fmt"
-	"github.com/pkg/errors"
 	"time"
+
+	"github.com/pkg/errors"
 )
 
 // WorkManager 负责管理和协调分区分配相关的工作
@@ -23,9 +24,8 @@ type WorkManagerConfig struct {
 		data.KeyOperations
 		data.HeartbeatOperations
 	}
-	Logger                  utils.Logger
-	WorkerPartitionMultiple int64         // 每个工作节点分配的分区倍数
-	ValidHeartbeatDuration  time.Duration // 有效心跳持续时间
+	Logger                 utils.Logger
+	ValidHeartbeatDuration time.Duration // 有效心跳持续时间
 }
 
 // NewWorkManager 创建新的工作管理器
@@ -70,13 +70,15 @@ func (wm *WorkManager) tryAllocatePartitions(ctx context.Context, pm *PartitionA
 		return
 	}
 
+	wm.config.Logger.Debugf("获取到的活跃工作节点: %v (数量: %d)", activeWorkers, len(activeWorkers))
+
 	if len(activeWorkers) == 0 {
 		wm.config.Logger.Debugf("没有活跃工作节点，跳过分区分配")
 		return
 	}
 
 	// 尝试分配分区
-	if err = pm.AllocatePartitions(ctx, activeWorkers, wm.config.WorkerPartitionMultiple); err != nil {
+	if err = pm.AllocatePartitions(ctx, activeWorkers); err != nil {
 		wm.config.Logger.Warnf("分配分区失败: %v", err)
 	}
 }

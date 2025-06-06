@@ -273,21 +273,37 @@ func TestCalculateLookAheadRange(t *testing.T) {
 		t.Errorf("计算ID探测范围失败: %v", err)
 	}
 
-	// 期望的探测范围 = 分区大小 * 节点数量 * 倍数 = 1000 * 2 * 3 = 6000
-	expectedRangeSize := int64(6000)
+	// 期望的探测范围 = 分区大小 * 最小节点数量 * 倍数 = 1000 * 3 * 3 = 9000
+	// 因为2个节点 < DefaultMinWorkerCount(3)，所以使用最小值3
+	expectedRangeSize := int64(9000)
 	if rangeSize != expectedRangeSize {
 		t.Errorf("ID探测范围计算不正确，期望 %d，得到 %d", expectedRangeSize, rangeSize)
 	}
 
-	// 测试场景: 无活跃节点（避免除零）
+	// 测试场景: 无活跃节点
 	emptyWorkers := []string{}
 	rangeSize, err = partitionMgr.CalculateLookAheadRange(ctx, emptyWorkers, workerPartitionMultiple)
 	if err != nil {
 		t.Errorf("计算ID探测范围失败: %v", err)
 	}
 
-	// 期望的探测范围 = 分区大小 * 1 * 倍数 = 1000 * 1 * 3 = 3000
-	expectedRangeSize = int64(3000)
+	// 期望的探测范围 = 分区大小 * 最小节点数量 * 倍数 = 1000 * 3 * 3 = 9000
+	// 0个节点 < DefaultMinWorkerCount(3)，所以使用最小值3
+	expectedRangeSize = int64(9000)
+	if rangeSize != expectedRangeSize {
+		t.Errorf("ID探测范围计算不正确，期望 %d，得到 %d", expectedRangeSize, rangeSize)
+	}
+
+	// 测试场景: 活跃节点数大于等于最小值时，使用实际节点数
+	manyWorkers := []string{"node1", "node2", "node3", "node4"}
+	rangeSize, err = partitionMgr.CalculateLookAheadRange(ctx, manyWorkers, workerPartitionMultiple)
+	if err != nil {
+		t.Errorf("计算ID探测范围失败: %v", err)
+	}
+
+	// 期望的探测范围 = 分区大小 * 实际节点数量 * 倍数 = 1000 * 4 * 3 = 12000
+	// 4个节点 >= DefaultMinWorkerCount(3)，所以使用实际值4
+	expectedRangeSize = int64(12000)
 	if rangeSize != expectedRangeSize {
 		t.Errorf("ID探测范围计算不正确，期望 %d，得到 %d", expectedRangeSize, rangeSize)
 	}

@@ -23,7 +23,8 @@ const (
 	DefaultMaxRetries              = 3
 	DefaultConsolidationInterval   = 30 * time.Second
 	DefaultPartitionSize           = 3000 // 默认分区大小，每个分区包含的ID数量
-	DefaultWorkerPartitionMultiple = 3    // 默认每个工作节点分配的分区倍数
+	DefaultWorkerPartitionMultiple = 5    // 默认每个工作节点分配的分区倍数
+	DefaultMinWorkerCount          = 3    // 最小工作节点数量，避免早期分配时节点数量不足的问题
 )
 
 // Redis键格式常量

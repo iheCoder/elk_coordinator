@@ -14,12 +14,11 @@ import (
 func TestGetActiveWorkers(t *testing.T) {
 	mockStore := test_utils.NewMockDataStore()
 	workManager := NewWorkManager(WorkManagerConfig{
-		NodeID:                  "node1",
-		Namespace:               "test",
-		DataStore:               mockStore,
-		Logger:                  test_utils.NewMockLogger(false),
-		WorkerPartitionMultiple: 2,
-		ValidHeartbeatDuration:  30 * time.Second,
+		NodeID:                 "node1",
+		Namespace:              "test",
+		DataStore:              mockStore,
+		Logger:                 test_utils.NewMockLogger(false),
+		ValidHeartbeatDuration: 30 * time.Second,
 	})
 
 	ctx := context.Background()
@@ -81,12 +80,11 @@ func TestTryAllocatePartitions(t *testing.T) {
 	}
 
 	workManager := NewWorkManager(WorkManagerConfig{
-		NodeID:                  "node1",
-		Namespace:               "test",
-		DataStore:               mockStore,
-		Logger:                  test_utils.NewMockLogger(false),
-		WorkerPartitionMultiple: 2,
-		ValidHeartbeatDuration:  30 * time.Second,
+		NodeID:                 "node1",
+		Namespace:              "test",
+		DataStore:              mockStore,
+		Logger:                 test_utils.NewMockLogger(false),
+		ValidHeartbeatDuration: 30 * time.Second,
 	})
 
 	mockStrategy := test_utils.NewMockPartitionStrategy()
@@ -138,12 +136,11 @@ func TestRunPartitionAllocationLoop(t *testing.T) {
 	}
 
 	workManager := NewWorkManager(WorkManagerConfig{
-		NodeID:                  "node1",
-		Namespace:               "test",
-		DataStore:               mockStore,
-		Logger:                  test_utils.NewMockLogger(false),
-		WorkerPartitionMultiple: 2,
-		ValidHeartbeatDuration:  30 * time.Second,
+		NodeID:                 "node1",
+		Namespace:              "test",
+		DataStore:              mockStore,
+		Logger:                 test_utils.NewMockLogger(false),
+		ValidHeartbeatDuration: 30 * time.Second,
 	})
 
 	mockStrategy := test_utils.NewMockPartitionStrategy()

@@ -35,17 +35,17 @@ func NewLeaderManager(config LeaderConfig) *LeaderManager {
 
 	// 创建并配置工作管理器
 	workManager := NewWorkManager(WorkManagerConfig{
-		NodeID:                  config.NodeID,
-		Namespace:               config.Namespace,
-		DataStore:               config.DataStore,
-		Logger:                  config.Logger,
-		WorkerPartitionMultiple: config.WorkerPartitionMultiple,
-		ValidHeartbeatDuration:  config.ValidHeartbeatDuration,
+		NodeID:                 config.NodeID,
+		Namespace:              config.Namespace,
+		DataStore:              config.DataStore,
+		Logger:                 config.Logger,
+		ValidHeartbeatDuration: config.ValidHeartbeatDuration,
 	})
 
 	// 创建并配置分区管理器
 	partitionMgr := NewPartitionManager(PartitionAssignerConfig{
-		Namespace: config.Namespace,
+		Namespace:               config.Namespace,
+		WorkerPartitionMultiple: config.WorkerPartitionMultiple,
 	}, config.Strategy, config.Logger, config.Planer)
 
 	return &LeaderManager{
