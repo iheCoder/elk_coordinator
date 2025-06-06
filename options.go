@@ -67,10 +67,9 @@ func WithWorkerPartitionMultiple(multiple int64) MgrOption {
 	}
 }
 
-// WithTaskWindow 启用任务窗口及其配置
+// WithTaskWindow 设置任务窗口大小
 func WithTaskWindow(windowSize int) MgrOption {
 	return func(m *Mgr) {
-		m.UseTaskWindow = true
 		if windowSize <= 0 {
 			windowSize = model.DefaultTaskWindowSize
 		}
