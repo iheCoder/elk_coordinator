@@ -16,6 +16,9 @@ type TaskWindowConfig struct {
 	WindowSize          int
 	PartitionLockExpiry time.Duration
 
+	// 任务获取重试间隔（可选，默认5秒）
+	FetchRetryInterval time.Duration
+
 	// 依赖组件
 	PartitionStrategy partition.PartitionStrategy
 	Processor         Processor
@@ -32,6 +35,7 @@ type TaskWindow struct {
 	workerID            string
 	windowSize          int
 	partitionLockExpiry time.Duration
+	fetchRetryInterval  time.Duration // 可选配置，用于定时重试
 
 	// 依赖组件
 	processor Processor // 保留Processor用于可能的未来扩展或直接操作
@@ -52,6 +56,12 @@ func NewTaskWindow(config TaskWindowConfig) *TaskWindow {
 	windowSize := model.DefaultTaskWindowSize
 	if config.WindowSize > 0 {
 		windowSize = config.WindowSize
+	}
+
+	// 设置重试间隔默认值
+	fetchRetryInterval := 5 * time.Second
+	if config.FetchRetryInterval > 0 {
+		fetchRetryInterval = config.FetchRetryInterval
 	}
 
 	if config.Logger == nil {
@@ -75,6 +85,7 @@ func NewTaskWindow(config TaskWindowConfig) *TaskWindow {
 		workerID:            config.WorkerID,
 		windowSize:          windowSize,
 		partitionLockExpiry: config.PartitionLockExpiry,
+		fetchRetryInterval:  fetchRetryInterval,
 
 		// 依赖组件
 		processor: config.Processor,
@@ -102,8 +113,12 @@ func (tw *TaskWindow) Start(ctx context.Context) {
 	tw.fetchDone <- struct{}{}
 }
 
-// fetchTasks 根据信号获取任务填充队列
+// fetchTasks 根据信号或定时器获取任务填充队列
 func (tw *TaskWindow) fetchTasks(ctx context.Context) {
+	// 使用可配置的重试间隔创建定时器
+	retryTicker := time.NewTicker(tw.fetchRetryInterval)
+	defer retryTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -111,7 +126,10 @@ func (tw *TaskWindow) fetchTasks(ctx context.Context) {
 			close(tw.taskQueue) // 关闭队列，通知处理协程
 			return
 		case <-tw.fetchDone:
-			// 尝试获取任务，直到填满窗口或没有可用任务
+			// 收到信号，尝试填充队列
+			tw.fillTaskQueue(ctx)
+		case <-retryTicker.C:
+			// 定时器到时，尝试填充队列
 			tw.fillTaskQueue(ctx)
 		}
 	}
@@ -144,7 +162,7 @@ func (tw *TaskWindow) fillTaskQueue(ctx context.Context) {
 			if err != model.ErrNoAvailablePartition {
 				tw.logger.Warnf("获取分区任务失败: %v", err)
 			}
-			break // 无法获取更多任务，退出循环
+			return // 无法获取更多任务，退出方法
 		}
 
 		// 将任务加入队列
@@ -155,7 +173,7 @@ func (tw *TaskWindow) fillTaskQueue(ctx context.Context) {
 			// 队列已满（在极少数情况下可能发生），释放任务
 			tw.logger.Warnf("任务队列已满，无法添加分区任务 %d", task.PartitionID)
 			tw.runner.releasePartitionLock(ctx, task.PartitionID)
-			break
+			return // 队列已满，退出方法
 		}
 	}
 }
