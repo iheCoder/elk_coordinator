@@ -309,7 +309,7 @@ func TestMgr_MultiNodeDistributedOperation(t *testing.T) {
 	_, _, dataStore, cleanup := setupMgrIntegrationTest(t)
 	defer cleanup()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	// 创建3个节点的测试组件
@@ -317,24 +317,35 @@ func TestMgr_MultiNodeDistributedOperation(t *testing.T) {
 	processors := make([]*TestProcessor, nodeCount)
 	mgrs := make([]*Mgr, nodeCount)
 
-	planer := NewTestPartitionPlaner(500, 5000) // 分区大小500，最大ID 5000，预期10个分区
+	// 大幅增加分区数量，确保有足够工作供多个节点处理
+	// 分区大小100，最大ID 20000，预期200个分区
+	planer := NewTestPartitionPlaner(100, 20000)
 
-	// 创建所有节点
+	// 创建所有节点，增加处理延迟确保有时间分布
 	for i := 0; i < nodeCount; i++ {
-		processors[i] = NewTestProcessor().WithProcessDelay(100 * time.Millisecond)
-		mgrs[i] = createTestMgr(t, "test-multi", dataStore, processors[i], planer)
+		processors[i] = NewTestProcessor().WithProcessDelay(800 * time.Millisecond) // 增加处理延迟
+		mgrs[i] = createTestMgr(t, "test-multi", dataStore, processors[i], planer,
+			WithTaskWindow(1)) // 进一步减小TaskWindow到1，增加分布机会
 	}
 
-	// 启动所有节点
+	// 分阶段启动节点，但减少启动间隔以便尽快有多个节点
 	for i, mgr := range mgrs {
 		err := mgr.Start(ctx)
 		require.NoError(t, err, "启动MGR %d失败", i)
-		// 错开启动时间，避免同时竞争
-		time.Sleep(200 * time.Millisecond)
+		t.Logf("启动节点%d: %s", i, mgr.ID)
+
+		// 减少启动间隔，让多个节点更快地参与
+		if i == 0 {
+			// 第一个节点启动后等待少量时间，让它成为leader并创建初始分区
+			time.Sleep(500 * time.Millisecond)
+		} else {
+			// 后续节点间隔较短，让它们快速加入
+			time.Sleep(200 * time.Millisecond)
+		}
 	}
 
-	// 等待系统稳定
-	time.Sleep(5 * time.Second)
+	// 等待系统稍微稳定，但不等太久避免所有任务被处理完
+	time.Sleep(1 * time.Second)
 
 	// 验证所有节点都注册了
 	workersKey := fmt.Sprintf(model.WorkersKeyFmt, "test-multi")
@@ -350,8 +361,9 @@ func TestMgr_MultiNodeDistributedOperation(t *testing.T) {
 		assert.NotEmpty(t, heartbeat, "节点%s心跳应该存在", mgr.ID)
 	}
 
-	// 等待任务处理开始
-	time.Sleep(6 * time.Second)
+	// 等待任务处理进行，给足够时间让多个节点都能参与处理
+	// 由于现在有更多分区和更长的处理时间，需要足够的运行时间
+	time.Sleep(15 * time.Second)
 
 	// 收集所有处理统计
 	totalProcessCount := int64(0)
