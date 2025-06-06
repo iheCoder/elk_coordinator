@@ -5,15 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/alicebob/miniredis/v2"
-	"github.com/redis/go-redis/v9"
-	"github.com/stretchr/testify/assert"
 	"math/rand"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // setupRedisTest 创建一个测试用的 RedisDataStore 实例
@@ -402,15 +404,15 @@ func TestRedisDataStore_LockWithHeartbeat(t *testing.T) {
 }
 
 func TestRedisDataStore_TryLockWithTimeout(t *testing.T) {
-	store, _, cleanup := setupRedisTest(t)
+	store, mr, cleanup := setupRedisTest(t)
 	defer cleanup()
 
 	ctx := context.Background()
 	key := "timeout_lock"
 	value1 := "lock_value1"
 	value2 := "lock_value2"
-	lockExpiry := 300 * time.Millisecond
-	waitTimeout := 200 * time.Millisecond
+	lockExpiry := 500 * time.Millisecond
+	waitTimeout := 300 * time.Millisecond
 
 	// 获取锁
 	acquired, err := store.AcquireLock(ctx, key, value1, lockExpiry)
@@ -423,8 +425,15 @@ func TestRedisDataStore_TryLockWithTimeout(t *testing.T) {
 	assert.False(t, acquired)
 	assert.Contains(t, err.Error(), "timeout")
 
-	// 等待锁过期
-	time.Sleep(lockExpiry + 100*time.Millisecond)
+	// 等待锁过期，添加更多缓冲时间
+	time.Sleep(lockExpiry + 200*time.Millisecond)
+
+	// 手动触发miniredis的过期清理
+	mr.FastForward(time.Second)
+
+	// 验证锁确实已经过期
+	exists := mr.Exists(store.prefixKey(key))
+	assert.False(t, exists, "锁应该已经过期并被删除")
 
 	// 现在应该可以获取锁
 	acquired, err = store.TryLockWithTimeout(ctx, key, value2, lockExpiry, waitTimeout)
@@ -667,21 +676,31 @@ func TestHashPartitionOperations(t *testing.T) {
 	assert.Equal(t, `{"id":2,"status":"running"}`, allPartitions["2"])
 
 	// 测试 HUpdatePartitionWithVersion
-	partitionWithVersion := `{"id":1,"status":"running","version":2}`
-	success, err := ds.HUpdatePartitionWithVersion(ctx, key, "1", partitionWithVersion, 2)
+	// 使用一个新的字段来测试版本控制
+	newFieldPartition := `{"id":4,"status":"new","version":1}`
+
+	// 首先创建新字段（期望版本0，表示字段不存在）
+	success, err := ds.HUpdatePartitionWithVersion(ctx, key, "4", newFieldPartition, 0)
+	assert.NoError(t, err)
+	assert.True(t, success)
+
+	// 现在测试版本控制更新
+	updatedPartition := `{"id":4,"status":"updated","version":2}`
+	success, err = ds.HUpdatePartitionWithVersion(ctx, key, "4", updatedPartition, 1)
 	assert.NoError(t, err)
 	assert.True(t, success)
 
 	// 尝试使用旧版本更新（应该失败）
-	partitionWithOldVersion := `{"id":1,"status":"failed","version":1}`
-	success, err = ds.HUpdatePartitionWithVersion(ctx, key, "1", partitionWithOldVersion, 1)
-	assert.NoError(t, err)
+	partitionWithOldVersion := `{"id":4,"status":"failed","version":3}`
+	success, err = ds.HUpdatePartitionWithVersion(ctx, key, "4", partitionWithOldVersion, 1)
+	assert.Error(t, err)
+	assert.Equal(t, ErrOptimisticLockFailed, err)
 	assert.False(t, success)
 
 	// 验证版本控制有效
-	val, err = ds.HGetPartition(ctx, key, "1")
+	val, err = ds.HGetPartition(ctx, key, "4")
 	assert.NoError(t, err)
-	assert.Equal(t, partitionWithVersion, val) // 应该仍然是版本2的数据
+	assert.Equal(t, updatedPartition, val) // 应该仍然是版本2的数据
 }
 
 // TestRedisDataStore_SetKey 测试SetKey方法
@@ -1310,4 +1329,126 @@ func TestHashPartitionOperations_HighConcurrencyStress(t *testing.T) {
 		errorRate := float64(operationStats.errors) / float64(totalOperations)
 		assert.Less(t, errorRate, 0.1, "错误率不应超过10%%")
 	})
+}
+
+// TestHUpdatePartitionWithVersion_ConcurrentRaceCondition tests the race condition in optimistic locking
+func TestHUpdatePartitionWithVersion_ConcurrentRaceCondition(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	key := "test:race_partitions"
+
+	// Create initial partition with version 1
+	initialPartition := `{"id":1,"status":"pending","version":1}`
+	success, err := store.HUpdatePartitionWithVersion(ctx, key, "1", initialPartition, 0)
+	require.NoError(t, err)
+	require.True(t, success, "Initial partition creation should succeed")
+
+	// Test concurrent updates - all workers try to claim the partition from version 1
+	const numWorkers = 10
+	var wg sync.WaitGroup
+	results := make([]bool, numWorkers)
+	errors := make([]error, numWorkers)
+
+	// All workers simultaneously try to update from version 1 to version 2
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func(workerIndex int) {
+			defer wg.Done()
+
+			claimedPartition := fmt.Sprintf(`{"id":1,"status":"claimed","worker":"worker-%d","version":2}`, workerIndex)
+
+			// All workers expect version 1 and try to update to version 2
+			success, err := store.HUpdatePartitionWithVersion(ctx, key, "1", claimedPartition, 1)
+			results[workerIndex] = success
+			errors[workerIndex] = err
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Analyze results
+	successCount := 0
+	optimisticLockFailures := 0
+	otherErrors := 0
+
+	for i := 0; i < numWorkers; i++ {
+		if errors[i] != nil {
+			if errors[i] == ErrOptimisticLockFailed {
+				optimisticLockFailures++
+			} else {
+				otherErrors++
+				t.Logf("Worker %d unexpected error: %v", i, errors[i])
+			}
+		} else if results[i] {
+			successCount++
+			t.Logf("Worker %d succeeded", i)
+		} else {
+			// success=false without error means optimistic lock failure
+			optimisticLockFailures++
+		}
+	}
+
+	t.Logf("Results: %d successes, %d optimistic lock failures, %d other errors",
+		successCount, optimisticLockFailures, otherErrors)
+
+	// CRITICAL: Only ONE worker should succeed
+	assert.Equal(t, 1, successCount, "Exactly one worker should succeed in claiming the partition")
+	assert.Equal(t, numWorkers-1, optimisticLockFailures, "All other workers should get optimistic lock failures")
+	assert.Equal(t, 0, otherErrors, "Should not have any other errors")
+
+	// Verify final state
+	finalPartition, err := store.HGetPartition(ctx, key, "1")
+	require.NoError(t, err)
+	t.Logf("Final partition state: %s", finalPartition)
+
+	// Verify that the final partition has version 2 and is claimed
+	assert.Contains(t, finalPartition, `"version":2`, "Final partition should have version 2")
+	assert.Contains(t, finalPartition, `"status":"claimed"`, "Final partition should be claimed")
+}
+
+// TestHUpdatePartitionWithVersion_VersionSequence tests version sequencing
+func TestHUpdatePartitionWithVersion_VersionSequence(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	key := "test:sequence_partitions"
+
+	// 1. Create partition (expectedVersion=0, newVersion=1)
+	partition1 := `{"id":1,"status":"pending","version":1}`
+	success, err := store.HUpdatePartitionWithVersion(ctx, key, "1", partition1, 0)
+	require.NoError(t, err)
+	assert.True(t, success, "Creation should succeed")
+
+	// 2. Update from version 1 to 2
+	partition2 := `{"id":1,"status":"claimed","worker":"worker-1","version":2}`
+	success, err = store.HUpdatePartitionWithVersion(ctx, key, "1", partition2, 1)
+	require.NoError(t, err)
+	assert.True(t, success, "First update should succeed")
+
+	// 3. Try to update with wrong expected version (expecting 1, but actual is 2)
+	partition3 := `{"id":1,"status":"stolen","worker":"worker-2","version":3}`
+	success, err = store.HUpdatePartitionWithVersion(ctx, key, "1", partition3, 1)
+
+	// This should fail - either return false with ErrOptimisticLockFailed or false with no error
+	if err != nil {
+		assert.Equal(t, ErrOptimisticLockFailed, err, "Should return optimistic lock failed error")
+		assert.False(t, success, "Should not succeed when error is returned")
+	} else {
+		assert.False(t, success, "Should return false for version mismatch")
+	}
+
+	// 4. Update with correct expected version (expecting 2, updating to 3)
+	partition4 := `{"id":1,"status":"transferred","worker":"worker-3","version":3}`
+	success, err = store.HUpdatePartitionWithVersion(ctx, key, "1", partition4, 2)
+	require.NoError(t, err)
+	assert.True(t, success, "Update with correct expected version should succeed")
+
+	// Verify final state
+	finalPartition, err := store.HGetPartition(ctx, key, "1")
+	require.NoError(t, err)
+	assert.Contains(t, finalPartition, `"version":3`, "Final partition should have version 3")
+	assert.Contains(t, finalPartition, `"worker":"worker-3"`, "Final partition should be owned by worker-3")
 }
