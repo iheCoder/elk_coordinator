@@ -37,6 +37,7 @@ type Mgr struct {
 	PartitionLockExpiry     time.Duration // 分区锁过期时间
 	LeaderLockExpiry        time.Duration // Leader锁过期时间
 	WorkerPartitionMultiple int64         // 每个工作节点分配的分区倍数，用于计算ID探测范围
+	AllocationInterval      time.Duration // 分区分配检查间隔，默认2分钟
 
 	// 任务窗口配置
 	TaskWindowSize int // 任务窗口大小（同时处理的最大分区数）
@@ -74,6 +75,7 @@ func NewMgr(namespace string, dataStore data.DataStore, processor task.Processor
 		PartitionLockExpiry:     model.DefaultPartitionLockExpiry,
 		LeaderLockExpiry:        model.DefaultLeaderLockExpiry,
 		WorkerPartitionMultiple: model.DefaultWorkerPartitionMultiple,
+		AllocationInterval:      model.DefaultAllocationInterval,
 
 		// 分区策略配置
 		PartitionStrategyType: strategyType,
@@ -192,6 +194,7 @@ func (m *Mgr) Lead(ctx context.Context) error {
 		LockExpiry:              m.LeaderLockExpiry,
 		WorkerPartitionMultiple: m.WorkerPartitionMultiple,
 		ValidHeartbeatDuration:  m.HeartbeatInterval * 3,
+		AllocationInterval:      m.AllocationInterval,
 		Planer:                  m.PartitionPlaner, // 直接使用Mgr中的PartitionPlaner
 		Strategy:                m.PartitionStrategy,
 	}

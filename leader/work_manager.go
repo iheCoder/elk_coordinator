@@ -26,10 +26,16 @@ type WorkManagerConfig struct {
 	}
 	Logger                 utils.Logger
 	ValidHeartbeatDuration time.Duration // 有效心跳持续时间
+	AllocationInterval     time.Duration // 分区分配检查间隔，默认2分钟
 }
 
 // NewWorkManager 创建新的工作管理器
 func NewWorkManager(config WorkManagerConfig) *WorkManager {
+	// 如果未设置分配间隔，使用默认值
+	if config.AllocationInterval <= 0 {
+		config.AllocationInterval = model.DefaultAllocationInterval
+	}
+
 	return &WorkManager{
 		config: config,
 	}
@@ -40,9 +46,8 @@ func (wm *WorkManager) RunPartitionAllocationLoop(ctx context.Context, leaderCtx
 	// 初始运行一次分区分配，确保刚启动时有任务可执行
 	go wm.tryAllocatePartitions(ctx, pm)
 
-	// 使用较长时间间隔进行常规分区检查和分配
-	allocationInterval := 2 * time.Minute // 使用适中的间隔，可以根据需求调整
-	ticker := time.NewTicker(allocationInterval)
+	// 使用配置的分配间隔
+	ticker := time.NewTicker(wm.config.AllocationInterval)
 	defer ticker.Stop()
 
 	// 持续分配分区任务

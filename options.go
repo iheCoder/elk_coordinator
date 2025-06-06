@@ -76,3 +76,13 @@ func WithTaskWindow(windowSize int) MgrOption {
 		m.TaskWindowSize = windowSize
 	}
 }
+
+// WithAllocationInterval 设置分区分配检查间隔
+func WithAllocationInterval(interval time.Duration) MgrOption {
+	return func(m *Mgr) {
+		if interval <= 0 {
+			interval = model.DefaultAllocationInterval
+		}
+		m.AllocationInterval = interval
+	}
+}

@@ -40,6 +40,7 @@ func NewLeaderManager(config LeaderConfig) *LeaderManager {
 		DataStore:              config.DataStore,
 		Logger:                 config.Logger,
 		ValidHeartbeatDuration: config.ValidHeartbeatDuration,
+		AllocationInterval:     config.AllocationInterval,
 	})
 
 	// 创建并配置分区管理器
@@ -72,6 +73,7 @@ type LeaderConfig struct {
 	WorkerPartitionMultiple int64
 	ValidHeartbeatDuration  time.Duration
 	Strategy                partition.PartitionStrategy
+	AllocationInterval      time.Duration // 分区分配检查间隔，默认2分钟
 }
 
 // Start 启动领导者管理
