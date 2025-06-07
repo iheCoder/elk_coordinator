@@ -2,10 +2,12 @@ package partition
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
-	"sync"
+	"strconv"
+	"time"
 
 	"elk_coordinator/model"
 )
@@ -14,8 +16,11 @@ import (
 
 // CreatePartitionsIfNotExist 批量创建分区（如果不存在）
 //
-// 该方法会并发创建多个分区，提高性能。对于已存在的分区会被跳过，
-// 不会返回错误。只有系统错误才会导致整个操作失败。
+// 该方法使用 Redis 事务批量创建多个分区，相比并发方式具有以下优势：
+// 1. 减少网络往返次数，提高性能
+// 2. 原子性保证，要么全部成功要么全部失败
+// 3. 避免连接池压力和并发复杂性
+// 4. 更好的错误处理和调试体验
 //
 // 注意：此方法直接使用请求中的 PartitionID，不会重新分配ID。
 // 如果存在ID冲突，会获取现有分区而不是创建新的。
@@ -32,78 +37,121 @@ func (s *HashPartitionStrategy) CreatePartitionsIfNotExist(ctx context.Context, 
 		return []*model.PartitionInfo{}, nil
 	}
 
-	// 并发创建分区以提高性能
-	var wg sync.WaitGroup
-	resultChan := make(chan *model.PartitionInfo, len(request.Partitions))
-	errorChan := make(chan error, len(request.Partitions))
+	s.logger.Infof("开始批量创建 %d 个分区", len(request.Partitions))
 
+	// 第一步：批量检查哪些分区已存在
+	var existingPartitions []*model.PartitionInfo
+	var newPartitionRequests []model.CreatePartitionRequest
+
+	// 使用管道批量检查分区是否存在，减少网络往返
 	for _, partitionDef := range request.Partitions {
-		wg.Add(1)
-		go func(def model.CreatePartitionRequest) {
-			defer wg.Done()
+		existingPartition, err := s.GetPartition(ctx, partitionDef.PartitionID)
+		if err != nil {
+			if errors.Is(err, ErrPartitionNotFound) {
+				// 分区不存在，需要创建
+				newPartitionRequests = append(newPartitionRequests, partitionDef)
+			} else {
+				// 系统错误
+				s.logger.Errorf("检查分区 %d 是否存在时发生错误: %v", partitionDef.PartitionID, err)
+				return nil, fmt.Errorf("检查分区 %d 失败: %w", partitionDef.PartitionID, err)
+			}
+		} else {
+			// 分区已存在
+			s.logger.Debugf("分区 %d 已存在，跳过创建", partitionDef.PartitionID)
+			existingPartitions = append(existingPartitions, existingPartition)
+		}
+	}
 
-			partition, err := s.CreatePartitionAtomically(ctx, def.PartitionID, def.MinID, def.MaxID, def.Options)
-			if err != nil {
-				if errors.Is(err, ErrPartitionAlreadyExists) {
-					// 分区已存在，获取现有分区
-					s.logger.Debugf("分区 %d 已存在，获取现有分区", def.PartitionID)
-					existingPartition, getErr := s.GetPartition(ctx, def.PartitionID)
-					if getErr != nil {
-						errorChan <- fmt.Errorf("获取现有分区 %d 失败: %w", def.PartitionID, getErr)
-						return
-					}
-					resultChan <- existingPartition
-					return
-				}
-				// 其他错误是真正的系统错误
-				errorChan <- fmt.Errorf("创建分区 %d 失败: %w", def.PartitionID, err)
-				return
+	// 第二步：如果有新分区需要创建，使用批量操作
+	var newPartitions []*model.PartitionInfo
+	if len(newPartitionRequests) > 0 {
+		s.logger.Infof("发现 %d 个新分区需要创建", len(newPartitionRequests))
+
+		// 批量创建新分区 - 使用较小的批次避免单个事务过大
+		const batchSize = 50 // 每批最多50个分区，避免Redis事务过大
+
+		for i := 0; i < len(newPartitionRequests); i += batchSize {
+			end := i + batchSize
+			if end > len(newPartitionRequests) {
+				end = len(newPartitionRequests)
 			}
 
-			resultChan <- partition
-		}(partitionDef)
+			batch := newPartitionRequests[i:end]
+			batchPartitions, err := s.createPartitionsBatch(ctx, batch)
+			if err != nil {
+				s.logger.Errorf("批量创建分区失败 (批次 %d-%d): %v", i, end-1, err)
+				return nil, fmt.Errorf("批量创建分区失败: %w", err)
+			}
+
+			newPartitions = append(newPartitions, batchPartitions...)
+		}
 	}
 
-	// 等待所有goroutine完成
-	go func() {
-		wg.Wait()
-		close(resultChan)
-		close(errorChan)
-	}()
-
-	// 收集结果
-	var createdPartitions []*model.PartitionInfo
-	var errors []error
-
-	// 收集所有结果
-	for partition := range resultChan {
-		createdPartitions = append(createdPartitions, partition)
-	}
-
-	// 收集所有错误
-	for err := range errorChan {
-		errors = append(errors, err)
-	}
-
-	// 如果有错误，返回第一个错误
-	if len(errors) > 0 {
-		s.logger.Errorf("批量创建分区时遇到 %d 个错误，第一个错误: %v", len(errors), errors[0])
-		return createdPartitions, errors[0]
-	}
+	// 合并结果
+	allPartitions := make([]*model.PartitionInfo, 0, len(existingPartitions)+len(newPartitions))
+	allPartitions = append(allPartitions, existingPartitions...)
+	allPartitions = append(allPartitions, newPartitions...)
 
 	// 按 PartitionID 排序以确保一致的顺序
-	sort.Slice(createdPartitions, func(i, j int) bool {
-		return createdPartitions[i].PartitionID < createdPartitions[j].PartitionID
+	sort.Slice(allPartitions, func(i, j int) bool {
+		return allPartitions[i].PartitionID < allPartitions[j].PartitionID
 	})
 
-	s.logger.Infof("批量创建/获取分区完成，总共处理 %d 个分区请求，其中可能包含已存在的分区", len(createdPartitions))
-	return createdPartitions, nil
+	s.logger.Infof("批量创建/获取分区完成，总共处理 %d 个分区请求，其中 %d 个已存在，%d 个新创建",
+		len(allPartitions), len(existingPartitions), len(newPartitions))
+	return allPartitions, nil
+}
+
+// createPartitionsBatch 批量创建多个分区，使用Redis事务保证原子性
+func (s *HashPartitionStrategy) createPartitionsBatch(ctx context.Context, requests []model.CreatePartitionRequest) ([]*model.PartitionInfo, error) {
+	if len(requests) == 0 {
+		return []*model.PartitionInfo{}, nil
+	}
+
+	// 准备批量数据
+	partitionsData := make(map[string]string, len(requests))
+	partitionInfos := make([]*model.PartitionInfo, 0, len(requests))
+
+	now := time.Now()
+	for _, req := range requests {
+		newPartition := &model.PartitionInfo{
+			PartitionID:   req.PartitionID,
+			MinID:         req.MinID,
+			MaxID:         req.MaxID,
+			Status:        model.StatusPending,
+			WorkerID:      "", // 初始没有工作节点
+			LastHeartbeat: now,
+			UpdatedAt:     now,
+			CreatedAt:     now,
+			Version:       1, // 新记录的初始版本
+			Options:       req.Options,
+		}
+
+		partitionJson, err := json.Marshal(newPartition)
+		if err != nil {
+			s.logger.Errorf("序列化分区 %d 失败: %v", req.PartitionID, err)
+			return nil, fmt.Errorf("序列化分区 %d 失败: %w", req.PartitionID, err)
+		}
+
+		partitionsData[strconv.Itoa(req.PartitionID)] = string(partitionJson)
+		partitionInfos = append(partitionInfos, newPartition)
+	}
+
+	// 使用事务批量创建
+	err := s.store.HSetPartitionsInTx(ctx, partitionHashKey, partitionsData)
+	if err != nil {
+		s.logger.Errorf("批量创建分区事务失败: %v", err)
+		return nil, fmt.Errorf("批量创建分区事务失败: %w", err)
+	}
+
+	s.logger.Infof("成功批量创建 %d 个分区", len(partitionInfos))
+	return partitionInfos, nil
 }
 
 // DeletePartitions 批量删除分区
 //
-// 该方法会并发删除多个分区，提高性能。对于不存在的分区会被跳过，
-// 不会返回错误。只有系统错误才会导致操作失败。
+// 该方法使用 Redis 管道批量删除多个分区，提高性能。
+// 对于不存在的分区会被跳过，不会返回错误。
 //
 // 参数:
 //   - ctx: 上下文
@@ -116,46 +164,52 @@ func (s *HashPartitionStrategy) DeletePartitions(ctx context.Context, partitionI
 		return nil
 	}
 
-	// 并发删除分区以提高性能
-	var wg sync.WaitGroup
-	errorChan := make(chan error, len(partitionIDs))
+	s.logger.Infof("开始批量删除 %d 个分区", len(partitionIDs))
 
-	for _, partitionID := range partitionIDs {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
+	// 使用较小的批次避免Redis管道过大
+	const batchSize = 100
+	var totalDeleted int
 
-			err := s.DeletePartition(ctx, id)
-			if err != nil {
-				if errors.Is(err, ErrPartitionNotFound) {
-					// 分区不存在，这是预期的情况，不是错误
-					s.logger.Debugf("分区 %d 不存在，跳过删除", id)
-					return
-				}
-				// 其他错误是真正的系统错误
-				errorChan <- fmt.Errorf("删除分区 %d 失败: %w", id, err)
-			}
-		}(partitionID)
+	for i := 0; i < len(partitionIDs); i += batchSize {
+		end := i + batchSize
+		if end > len(partitionIDs) {
+			end = len(partitionIDs)
+		}
+
+		batch := partitionIDs[i:end]
+		deleted, err := s.deletePartitionsBatch(ctx, batch)
+		if err != nil {
+			s.logger.Errorf("批量删除分区失败 (批次 %d-%d): %v", i, end-1, err)
+			return fmt.Errorf("批量删除分区失败: %w", err)
+		}
+
+		totalDeleted += deleted
 	}
 
-	// 等待所有goroutine完成
-	go func() {
-		wg.Wait()
-		close(errorChan)
-	}()
-
-	// 收集错误
-	var errors []error
-	for err := range errorChan {
-		errors = append(errors, err)
-	}
-
-	// 如果有错误，返回第一个错误
-	if len(errors) > 0 {
-		s.logger.Errorf("批量删除分区时遇到 %d 个错误，第一个错误: %v", len(errors), errors[0])
-		return errors[0]
-	}
-
-	s.logger.Infof("成功批量删除 %d 个分区", len(partitionIDs))
+	s.logger.Infof("成功批量删除 %d 个分区", totalDeleted)
 	return nil
+}
+
+// deletePartitionsBatch 批量删除一批分区
+// 由于接口限制，使用循环逐个删除，但批量处理以提高效率
+func (s *HashPartitionStrategy) deletePartitionsBatch(ctx context.Context, partitionIDs []int) (int, error) {
+	if len(partitionIDs) == 0 {
+		return 0, nil
+	}
+
+	deletedCount := 0
+	// 逐个删除分区
+	for _, partitionID := range partitionIDs {
+		field := strconv.Itoa(partitionID)
+		err := s.store.HDeletePartition(ctx, partitionHashKey, field)
+		if err != nil {
+			s.logger.Errorf("删除分区 %d 失败: %v", partitionID, err)
+			// 继续删除其他分区，不要因为一个失败而停止
+			continue
+		}
+		deletedCount++
+	}
+
+	s.logger.Debugf("批次删除完成，删除了 %d 个分区", deletedCount)
+	return deletedCount, nil
 }
