@@ -704,6 +704,201 @@ func TestSimpleStrategy_CreatePartitionsIfNotExist(t *testing.T) {
 	assert.Len(t, allPartitions, 2)
 }
 
+// TestSimpleStrategy_CreatePartitionsIfNotExist_DataRangeConflict 测试数据范围冲突时的处理
+func TestSimpleStrategy_CreatePartitionsIfNotExist_DataRangeConflict(t *testing.T) {
+	strategy, _, cleanup := setupSimpleStrategyTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// 1. 先创建一个分区
+	request1 := model.CreatePartitionsRequest{
+		Partitions: []model.CreatePartitionRequest{
+			{
+				PartitionID: 1,
+				MinID:       1,
+				MaxID:       1000,
+				Options:     map[string]interface{}{"priority": "high"},
+			},
+		},
+	}
+
+	created1, err := strategy.CreatePartitionsIfNotExist(ctx, request1)
+	assert.NoError(t, err)
+	assert.Len(t, created1, 1)
+	assert.Equal(t, 1, created1[0].PartitionID)
+	assert.Equal(t, int64(1), created1[0].MinID)
+	assert.Equal(t, int64(1000), created1[0].MaxID)
+
+	// 2. 测试相同ID但相同数据范围 - 应该返回现有分区
+	request2 := model.CreatePartitionsRequest{
+		Partitions: []model.CreatePartitionRequest{
+			{
+				PartitionID: 1,
+				MinID:       1,                                            // 相同范围
+				MaxID:       1000,                                         // 相同范围
+				Options:     map[string]interface{}{"priority": "normal"}, // 不同选项
+			},
+		},
+	}
+
+	created2, err := strategy.CreatePartitionsIfNotExist(ctx, request2)
+	assert.NoError(t, err)
+	assert.Len(t, created2, 1)
+	assert.Equal(t, 1, created2[0].PartitionID) // 仍然是原来的ID
+	assert.Equal(t, int64(1), created2[0].MinID)
+	assert.Equal(t, int64(1000), created2[0].MaxID)
+	assert.Equal(t, created1[0].Version, created2[0].Version) // 版本应该相同，因为是同一个分区
+
+	// 3. 测试相同ID但不同数据范围 - 应该生成新的分区ID
+	request3 := model.CreatePartitionsRequest{
+		Partitions: []model.CreatePartitionRequest{
+			{
+				PartitionID: 1,
+				MinID:       2000, // 不同范围
+				MaxID:       3000, // 不同范围
+				Options:     map[string]interface{}{"priority": "urgent"},
+			},
+		},
+	}
+
+	created3, err := strategy.CreatePartitionsIfNotExist(ctx, request3)
+	assert.NoError(t, err)
+	assert.Len(t, created3, 1)
+	assert.NotEqual(t, 1, created3[0].PartitionID) // 应该是新的ID
+	assert.Equal(t, int64(2000), created3[0].MinID)
+	assert.Equal(t, int64(3000), created3[0].MaxID)
+
+	// 4. 验证现在总共有两个分区
+	allPartitions, err := strategy.GetAllPartitions(ctx)
+	assert.NoError(t, err)
+	assert.Len(t, allPartitions, 2)
+
+	// 验证两个分区的数据范围都正确保存
+	partitionMap := make(map[int]*model.PartitionInfo)
+	for _, p := range allPartitions {
+		partitionMap[p.PartitionID] = p
+	}
+
+	// 原分区应该保持不变
+	assert.Contains(t, partitionMap, 1)
+	assert.Equal(t, int64(1), partitionMap[1].MinID)
+	assert.Equal(t, int64(1000), partitionMap[1].MaxID)
+
+	// 新分区应该有不同的ID和正确的数据范围
+	newPartitionID := created3[0].PartitionID
+	assert.Contains(t, partitionMap, newPartitionID)
+	assert.Equal(t, int64(2000), partitionMap[newPartitionID].MinID)
+	assert.Equal(t, int64(3000), partitionMap[newPartitionID].MaxID)
+
+	// 5. 测试多个冲突的分区在同一个请求中
+	request4 := model.CreatePartitionsRequest{
+		Partitions: []model.CreatePartitionRequest{
+			{
+				PartitionID: 1,
+				MinID:       4000, // 与现有分区1冲突
+				MaxID:       5000,
+			},
+			{
+				PartitionID: newPartitionID,
+				MinID:       6000, // 与现有新分区冲突
+				MaxID:       7000,
+			},
+			{
+				PartitionID: 999, // 全新的分区ID
+				MinID:       8000,
+				MaxID:       9000,
+			},
+		},
+	}
+
+	created4, err := strategy.CreatePartitionsIfNotExist(ctx, request4)
+	assert.NoError(t, err)
+	assert.Len(t, created4, 3)
+
+	// 验证冲突的分区都获得了新的ID
+	var newIDs []int
+	for _, p := range created4 {
+		newIDs = append(newIDs, p.PartitionID)
+	}
+
+	// 应该包含一个完全新的分区ID (999)
+	assert.Contains(t, newIDs, 999)
+
+	// 其他两个应该是重新分配的新ID（不等于原来的1和newPartitionID）
+	conflictResolvedCount := 0
+	for _, id := range newIDs {
+		if id != 999 && id != 1 && id != newPartitionID {
+			conflictResolvedCount++
+		}
+	}
+	assert.Equal(t, 2, conflictResolvedCount)
+
+	// 6. 验证最终的分区总数
+	finalPartitions, err := strategy.GetAllPartitions(ctx)
+	assert.NoError(t, err)
+	assert.Len(t, finalPartitions, 5) // 原来2个 + 新增3个 = 5个
+}
+
+// TestSimpleStrategy_CreatePartitionsIfNotExist_EdgeCases 测试边界情况
+func TestSimpleStrategy_CreatePartitionsIfNotExist_EdgeCases(t *testing.T) {
+	strategy, _, cleanup := setupSimpleStrategyTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// 1. 测试空请求
+	emptyRequest := model.CreatePartitionsRequest{
+		Partitions: []model.CreatePartitionRequest{},
+	}
+	created, err := strategy.CreatePartitionsIfNotExist(ctx, emptyRequest)
+	assert.NoError(t, err)
+	assert.Len(t, created, 0)
+
+	// 2. 测试相同数据范围但不同ID的多个分区请求
+	request := model.CreatePartitionsRequest{
+		Partitions: []model.CreatePartitionRequest{
+			{
+				PartitionID: 1,
+				MinID:       1,
+				MaxID:       1000,
+			},
+			{
+				PartitionID: 2,
+				MinID:       1,    // 相同数据范围
+				MaxID:       1000, // 相同数据范围
+			},
+		},
+	}
+
+	created, err = strategy.CreatePartitionsIfNotExist(ctx, request)
+	assert.NoError(t, err)
+	assert.Len(t, created, 2)
+
+	// 两个分区应该都被创建，有不同的ID但相同的数据范围
+	assert.Equal(t, 1, created[0].PartitionID)
+	assert.Equal(t, 2, created[1].PartitionID)
+	assert.Equal(t, created[0].MinID, created[1].MinID)
+	assert.Equal(t, created[0].MaxID, created[1].MaxID)
+
+	// 3. 测试零值数据范围
+	zeroRangeRequest := model.CreatePartitionsRequest{
+		Partitions: []model.CreatePartitionRequest{
+			{
+				PartitionID: 10,
+				MinID:       0,
+				MaxID:       0,
+			},
+		},
+	}
+
+	created, err = strategy.CreatePartitionsIfNotExist(ctx, zeroRangeRequest)
+	assert.NoError(t, err)
+	assert.Len(t, created, 1)
+	assert.Equal(t, int64(0), created[0].MinID)
+	assert.Equal(t, int64(0), created[0].MaxID)
+}
+
 // ==================== 并发安全操作测试 ====================
 
 // TestSimpleStrategy_UpdatePartition 测试安全更新分区信息
