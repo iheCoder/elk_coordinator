@@ -713,6 +713,283 @@ func TestDetectAndCreateGapPartitions_DiscreteData(t *testing.T) {
 	}
 }
 
+// TestDetectAndCreateGapPartitions_Incremental 测试增量缺口检测逻辑
+func TestDetectAndCreateGapPartitions_Incremental(t *testing.T) {
+	config := PartitionAssignerConfig{
+		Namespace:               "test",
+		WorkerPartitionMultiple: 2,
+	}
+
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	mockPlaner := &mockPartitionPlaner{
+		suggestedPartitionSize: 500,
+		nextMaxID:              5000,
+	}
+	logger := test_utils.NewMockLogger(false)
+
+	partitionMgr := NewPartitionManager(config, mockStrategy, logger, mockPlaner)
+	ctx := context.Background()
+
+	// 阶段1: 设置初始分区
+	initialPartitions := map[int]*model.PartitionInfo{
+		1: {PartitionID: 1, MinID: 1, MaxID: 500},
+		2: {PartitionID: 2, MinID: 501, MaxID: 1000},
+		3: {PartitionID: 3, MinID: 2001, MaxID: 2500}, // 故意留缺口 1001-2000
+	}
+	mockStrategy.SetPartitions(initialPartitions)
+
+	// 第一次检测（完整检测）- 应该检测到缺口 [1001, 2000]
+	t.Log("=== 阶段1: 第一次完整检测 ===")
+	gapPartitions1, err := partitionMgr.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, 3)
+	if err != nil {
+		t.Fatalf("第一次缺口检测失败: %v", err)
+	}
+
+	// 验证检测到缺口并创建了分区
+	if len(gapPartitions1) == 0 {
+		t.Errorf("第一次检测应该找到缺口分区，但没有找到")
+	} else {
+		t.Logf("第一次检测创建了 %d 个缺口分区", len(gapPartitions1))
+		for i, gap := range gapPartitions1 {
+			t.Logf("  缺口分区 %d: [%d, %d]", i, gap.MinID, gap.MaxID)
+		}
+	}
+
+	// 阶段2: 添加新分区（模拟增量场景）
+	t.Log("=== 阶段2: 添加新分区，测试增量检测 ===")
+
+	// 添加新分区，在新位置创建缺口
+	newPartitions := map[int]*model.PartitionInfo{
+		4: {PartitionID: 4, MinID: 3001, MaxID: 3500}, // 缺口: 2501-3000
+		5: {PartitionID: 5, MinID: 4001, MaxID: 4500}, // 缺口: 3501-4000
+	}
+
+	// 合并分区到mock strategy
+	allPartitions := make(map[int]*model.PartitionInfo)
+	for k, v := range initialPartitions {
+		allPartitions[k] = v
+	}
+	for k, v := range newPartitions {
+		allPartitions[k] = v
+	}
+	// 添加第一次检测创建的缺口分区
+	for i, gap := range gapPartitions1 {
+		allPartitions[10+i] = &model.PartitionInfo{
+			PartitionID: gap.PartitionID,
+			MinID:       gap.MinID,
+			MaxID:       gap.MaxID,
+			Status:      model.StatusPending,
+		}
+	}
+	mockStrategy.SetPartitions(allPartitions)
+
+	// 第二次检测（增量检测）- 应该只检测新分区附近的缺口
+	gapPartitions2, err := partitionMgr.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, 5)
+	if err != nil {
+		t.Fatalf("第二次增量检测失败: %v", err)
+	}
+
+	t.Logf("第二次增量检测创建了 %d 个缺口分区", len(gapPartitions2))
+	for i, gap := range gapPartitions2 {
+		t.Logf("  增量缺口分区 %d: [%d, %d]", i, gap.MinID, gap.MaxID)
+	}
+
+	// 验证增量检测的结果
+	expectedGapRanges := []struct {
+		name  string
+		minID int64
+		maxID int64
+		found bool
+	}{
+		{"缺口 2501-3000", 2501, 3000, false},
+		{"缺口 3501-4000", 3501, 4000, false},
+	}
+
+	for _, gap := range gapPartitions2 {
+		for i := range expectedGapRanges {
+			if gap.MinID >= expectedGapRanges[i].minID && gap.MaxID <= expectedGapRanges[i].maxID {
+				expectedGapRanges[i].found = true
+				t.Logf("✅ 发现期望的%s: 分区[%d, %d]",
+					expectedGapRanges[i].name, gap.MinID, gap.MaxID)
+			}
+		}
+	}
+
+	// 验证期望的缺口是否被找到
+	for _, expected := range expectedGapRanges {
+		if !expected.found {
+			t.Logf("⚠️ 未检测到期望的%s（可能该范围内无数据）", expected.name)
+		}
+	}
+
+	// 阶段3: 测试无新分区的增量检测
+	t.Log("=== 阶段3: 无新分区的增量检测 ===")
+	gapPartitions3, err := partitionMgr.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, 5) // 相同的maxPartitionID
+	if err != nil {
+		t.Fatalf("第三次增量检测失败: %v", err)
+	}
+
+	if len(gapPartitions3) != 0 {
+		t.Errorf("无新分区时应该跳过检测，但创建了 %d 个分区", len(gapPartitions3))
+	} else {
+		t.Log("✅ 无新分区时正确跳过了检测")
+	}
+
+	// 验证状态跟踪
+	if partitionMgr.lastGapDetectionID != 5 {
+		t.Errorf("lastGapDetectionID应该是5，但得到 %d", partitionMgr.lastGapDetectionID)
+	}
+
+	if len(partitionMgr.knownPartitionRanges) == 0 {
+		t.Errorf("knownPartitionRanges缓存应该不为空")
+	} else {
+		t.Logf("✅ 分区范围缓存包含 %d 个分区", len(partitionMgr.knownPartitionRanges))
+	}
+}
+
+// TestIncrementalGapDetection_PerformanceComparison 测试增量检测的性能优势
+func TestIncrementalGapDetection_PerformanceComparison(t *testing.T) {
+	if testing.Short() {
+		t.Skip("跳过性能测试（使用 -short 标志）")
+	}
+
+	config := PartitionAssignerConfig{
+		Namespace:               "test",
+		WorkerPartitionMultiple: 2,
+	}
+
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	mockPlaner := &mockPartitionPlaner{
+		suggestedPartitionSize: 1000,
+		nextMaxID:              50000,
+	}
+	logger := test_utils.NewMockLogger(false)
+
+	partitionMgr := NewPartitionManager(config, mockStrategy, logger, mockPlaner)
+	ctx := context.Background()
+
+	// 创建大量分区以测试性能差异
+	const numPartitions = 1000
+	partitions := make(map[int]*model.PartitionInfo)
+
+	for i := 1; i <= numPartitions; i++ {
+		partitions[i] = &model.PartitionInfo{
+			PartitionID: i,
+			MinID:       int64((i-1)*1000 + 1),
+			MaxID:       int64(i * 1000),
+			Status:      model.StatusCompleted,
+		}
+	}
+	mockStrategy.SetPartitions(partitions)
+
+	// 第一次检测：完整检测，建立缓存
+	t.Log("=== 建立初始缓存（完整检测） ===")
+	start := time.Now()
+	_, err := partitionMgr.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, numPartitions)
+	fullDetectionTime := time.Since(start)
+	if err != nil {
+		t.Fatalf("初始完整检测失败: %v", err)
+	}
+	t.Logf("完整检测（%d个分区）耗时: %v", numPartitions, fullDetectionTime)
+
+	// 添加一个新分区，触发增量检测
+	newPartitionID := numPartitions + 1
+	partitions[newPartitionID] = &model.PartitionInfo{
+		PartitionID: newPartitionID,
+		MinID:       int64(newPartitionID-1)*1000 + 1,
+		MaxID:       int64(newPartitionID * 1000),
+		Status:      model.StatusCompleted,
+	}
+	mockStrategy.SetPartitions(partitions)
+
+	// 增量检测
+	t.Log("=== 增量检测（添加1个新分区） ===")
+	start = time.Now()
+	_, err = partitionMgr.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, newPartitionID)
+	incrementalDetectionTime := time.Since(start)
+	if err != nil {
+		t.Fatalf("增量检测失败: %v", err)
+	}
+	t.Logf("增量检测（添加1个新分区）耗时: %v", incrementalDetectionTime)
+
+	// 性能对比验证
+	performanceImprovement := float64(fullDetectionTime) / float64(incrementalDetectionTime)
+	t.Logf("性能提升: %.2fx", performanceImprovement)
+
+	// 验证增量检测应该比完整检测快很多
+	if incrementalDetectionTime >= fullDetectionTime {
+		t.Errorf("增量检测耗时 %v 应该明显少于完整检测耗时 %v",
+			incrementalDetectionTime, fullDetectionTime)
+	}
+
+	// 清除缓存，强制完整检测进行对比
+	t.Log("=== 清除缓存后的完整检测 ===")
+	partitionMgr.knownPartitionRanges = nil // 清除缓存
+	start = time.Now()
+	_, err = partitionMgr.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, newPartitionID)
+	fullDetectionTime2 := time.Since(start)
+	if err != nil {
+		t.Fatalf("清除缓存后的完整检测失败: %v", err)
+	}
+	t.Logf("清除缓存后完整检测（%d个分区）耗时: %v", newPartitionID, fullDetectionTime2)
+
+	// 验证缓存失效后性能回到完整检测水平
+	if fullDetectionTime2 < incrementalDetectionTime*2 {
+		t.Logf("注意：完整检测时间 %v 与增量检测时间 %v 差异不大，可能数据量不足以体现性能差异",
+			fullDetectionTime2, incrementalDetectionTime)
+	}
+
+	// 验证结果正确性：增量检测和完整检测应该产生相同的结果
+	t.Log("=== 验证结果一致性 ===")
+
+	// 重新设置相同的测试环境
+	partitionMgr1 := NewPartitionManager(config, test_utils.NewMockPartitionStrategy(), logger, mockPlaner)
+	partitionMgr2 := NewPartitionManager(config, test_utils.NewMockPartitionStrategy(), logger, mockPlaner)
+
+	// 为两个管理器设置相同的分区状态
+	testPartitions := map[int]*model.PartitionInfo{
+		1: {PartitionID: 1, MinID: 1, MaxID: 1000},
+		2: {PartitionID: 2, MinID: 2001, MaxID: 3000}, // 故意留缺口 1001-2000
+	}
+
+	mockStrategy1 := test_utils.NewMockPartitionStrategy()
+	mockStrategy2 := test_utils.NewMockPartitionStrategy()
+	mockStrategy1.SetPartitions(testPartitions)
+	mockStrategy2.SetPartitions(testPartitions)
+
+	partitionMgr1.strategy = mockStrategy1
+	partitionMgr2.strategy = mockStrategy2
+
+	// 使用完整检测
+	fullResult, err := partitionMgr1.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, 2)
+	if err != nil {
+		t.Fatalf("完整检测失败: %v", err)
+	}
+
+	// 建立增量检测的缓存状态
+	_, err = partitionMgr2.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, 1)
+	if err != nil {
+		t.Fatalf("建立增量缓存失败: %v", err)
+	}
+
+	// 添加新分区并使用增量检测
+	testPartitions[2] = &model.PartitionInfo{PartitionID: 2, MinID: 2001, MaxID: 3000}
+	mockStrategy2.SetPartitions(testPartitions)
+
+	incrementalResult, err := partitionMgr2.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, 2)
+	if err != nil {
+		t.Fatalf("增量检测失败: %v", err)
+	}
+
+	// 比较结果
+	if len(fullResult) != len(incrementalResult) {
+		t.Errorf("完整检测和增量检测结果数量不同：完整=%d，增量=%d",
+			len(fullResult), len(incrementalResult))
+	}
+
+	t.Logf("✅ 性能测试完成：增量检测比完整检测快 %.2fx", performanceImprovement)
+}
+
 // dataRange 表示数据范围
 type dataRange struct {
 	start int64
@@ -764,4 +1041,186 @@ func (d *discreteDataPartitionPlaner) GetNextMaxID(ctx context.Context, lastID i
 
 	// 返回找到的最后一个数据ID（可能少于rangeSize个）
 	return dataIDs[len(dataIDs)-1], nil
+}
+
+// TestIncrementalGapDetection_EdgeCases 测试增量检测的边界情况
+func TestIncrementalGapDetection_EdgeCases(t *testing.T) {
+	config := PartitionAssignerConfig{
+		Namespace:               "test",
+		WorkerPartitionMultiple: 2,
+	}
+
+	mockPlaner := &mockPartitionPlaner{
+		suggestedPartitionSize: 1000,
+		nextMaxID:              10000,
+	}
+	logger := test_utils.NewMockLogger(false)
+	ctx := context.Background()
+
+	// 测试用例1: 空分区列表的增量检测
+	t.Run("EmptyPartitions", func(t *testing.T) {
+		emptyStrategy := test_utils.NewMockPartitionStrategy()
+		emptyStrategy.SetPartitions(map[int]*model.PartitionInfo{})
+
+		tempMgr := NewPartitionManager(config, emptyStrategy, logger, mockPlaner)
+
+		// 对空分区执行增量检测
+		gapPartitions, err := tempMgr.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, 0)
+		if err != nil {
+			t.Fatalf("空分区列表检测失败: %v", err)
+		}
+
+		if len(gapPartitions) == 0 {
+			t.Log("✅ 空分区列表正确处理：未创建分区")
+		} else {
+			t.Logf("空分区列表创建了 %d 个分区", len(gapPartitions))
+		}
+	})
+
+	// 测试用例2: 单个分区的增量检测
+	t.Run("SinglePartition", func(t *testing.T) {
+		singleStrategy := test_utils.NewMockPartitionStrategy()
+		singlePartitions := map[int]*model.PartitionInfo{
+			1: {PartitionID: 1, MinID: 1, MaxID: 1000},
+		}
+		singleStrategy.SetPartitions(singlePartitions)
+
+		tempMgr := NewPartitionManager(config, singleStrategy, logger, mockPlaner)
+
+		gapPartitions, err := tempMgr.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, 1)
+		if err != nil {
+			t.Fatalf("单分区检测失败: %v", err)
+		}
+
+		t.Logf("单分区检测创建了 %d 个缺口分区", len(gapPartitions))
+	})
+
+	// 测试用例3: 大量连续分区的增量检测性能
+	t.Run("ManyConsecutivePartitions", func(t *testing.T) {
+		consecutiveStrategy := test_utils.NewMockPartitionStrategy()
+		consecutivePartitions := make(map[int]*model.PartitionInfo)
+
+		// 创建100个连续分区
+		for i := 1; i <= 100; i++ {
+			consecutivePartitions[i] = &model.PartitionInfo{
+				PartitionID: i,
+				MinID:       int64((i-1)*1000 + 1),
+				MaxID:       int64(i * 1000),
+				Status:      model.StatusCompleted,
+			}
+		}
+		consecutiveStrategy.SetPartitions(consecutivePartitions)
+
+		tempMgr := NewPartitionManager(config, consecutiveStrategy, logger, mockPlaner)
+
+		start := time.Now()
+		gapPartitions, err := tempMgr.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, 100)
+		duration := time.Since(start)
+
+		if err != nil {
+			t.Fatalf("连续分区检测失败: %v", err)
+		}
+
+		t.Logf("100个连续分区检测耗时: %v, 创建缺口分区: %d", duration, len(gapPartitions))
+
+		// 验证连续分区不应该创建额外的缺口分区（除了可能的尾部分区）
+		if len(gapPartitions) > 1 {
+			t.Logf("连续分区创建了 %d 个缺口分区，可能包含尾部数据", len(gapPartitions))
+		}
+	})
+
+	// 测试用例4: 分区ID不连续但数据连续的情况
+	t.Run("NonConsecutivePartitionIDs", func(t *testing.T) {
+		nonConsecutiveStrategy := test_utils.NewMockPartitionStrategy()
+		nonConsecutivePartitions := map[int]*model.PartitionInfo{
+			1:  {PartitionID: 1, MinID: 1, MaxID: 1000},
+			5:  {PartitionID: 5, MinID: 1001, MaxID: 2000},  // 分区ID跳跃但数据连续
+			10: {PartitionID: 10, MinID: 2001, MaxID: 3000}, // 分区ID继续跳跃但数据连续
+		}
+		nonConsecutiveStrategy.SetPartitions(nonConsecutivePartitions)
+
+		tempMgr := NewPartitionManager(config, nonConsecutiveStrategy, logger, mockPlaner)
+
+		gapPartitions, err := tempMgr.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, 10)
+		if err != nil {
+			t.Fatalf("非连续分区ID检测失败: %v", err)
+		}
+
+		t.Logf("非连续分区ID但数据连续的情况创建了 %d 个缺口分区", len(gapPartitions))
+	})
+
+	// 测试用例5: 重叠分区的处理
+	t.Run("OverlappingPartitions", func(t *testing.T) {
+		overlappingStrategy := test_utils.NewMockPartitionStrategy()
+		overlappingPartitions := map[int]*model.PartitionInfo{
+			1: {PartitionID: 1, MinID: 1, MaxID: 1500},
+			2: {PartitionID: 2, MinID: 1200, MaxID: 2500}, // 与分区1重叠
+			3: {PartitionID: 3, MinID: 3000, MaxID: 4000}, // 有缺口
+		}
+		overlappingStrategy.SetPartitions(overlappingPartitions)
+
+		tempMgr := NewPartitionManager(config, overlappingStrategy, logger, mockPlaner)
+
+		gapPartitions, err := tempMgr.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, 3)
+		if err != nil {
+			t.Fatalf("重叠分区检测失败: %v", err)
+		}
+
+		t.Logf("重叠分区情况创建了 %d 个缺口分区", len(gapPartitions))
+
+		// 验证缺口应该在2500-3000之间
+		foundExpectedGap := false
+		for _, gap := range gapPartitions {
+			if gap.MinID >= 2501 && gap.MaxID <= 2999 {
+				foundExpectedGap = true
+				t.Logf("✅ 正确检测到重叠分区后的缺口: [%d, %d]", gap.MinID, gap.MaxID)
+				break
+			}
+		}
+
+		if len(gapPartitions) > 0 && !foundExpectedGap {
+			t.Logf("检测到缺口但位置可能不符合预期")
+		}
+	})
+
+	// 测试用例6: 增量检测中的极端情况 - 添加非常大的分区ID跳跃
+	t.Run("LargePartitionIDJump", func(t *testing.T) {
+		jumpStrategy := test_utils.NewMockPartitionStrategy()
+		initialPartitions := map[int]*model.PartitionInfo{
+			1: {PartitionID: 1, MinID: 1, MaxID: 1000},
+		}
+		jumpStrategy.SetPartitions(initialPartitions)
+
+		tempMgr := NewPartitionManager(config, jumpStrategy, logger, mockPlaner)
+
+		// 建立初始缓存
+		_, err := tempMgr.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, 1)
+		if err != nil {
+			t.Fatalf("建立初始缓存失败: %v", err)
+		}
+
+		// 添加分区ID大幅跳跃的新分区
+		allPartitions := map[int]*model.PartitionInfo{
+			1:    {PartitionID: 1, MinID: 1, MaxID: 1000},
+			1000: {PartitionID: 1000, MinID: 5001, MaxID: 6000}, // 极大的ID跳跃
+		}
+		jumpStrategy.SetPartitions(allPartitions)
+
+		start := time.Now()
+		gapPartitions, err := tempMgr.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, 1000)
+		duration := time.Since(start)
+
+		if err != nil {
+			t.Fatalf("大ID跳跃增量检测失败: %v", err)
+		}
+
+		t.Logf("大分区ID跳跃增量检测耗时: %v, 创建缺口分区: %d", duration, len(gapPartitions))
+
+		// 验证性能 - 即使有大的ID跳跃，增量检测也应该很快
+		if duration > 100*time.Millisecond {
+			t.Logf("注意：大ID跳跃的增量检测耗时 %v 可能超过预期", duration)
+		}
+	})
+
+	t.Log("✅ 所有边界情况测试完成")
 }

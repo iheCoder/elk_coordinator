@@ -10,6 +10,13 @@ import (
 	"github.com/pkg/errors"
 )
 
+// PartitionRange 表示分区的数据范围
+type PartitionRange struct {
+	PartitionID int   // 分区ID
+	MinID       int64 // 最小数据ID
+	MaxID       int64 // 最大数据ID
+}
+
 // PartitionAssignerConfig 分区分配器的配置参数（只包含配置，不包含依赖）
 type PartitionAssignerConfig struct {
 	Namespace               string
@@ -21,10 +28,12 @@ type PartitionAssignerConfig struct {
 
 // PartitionAssigner 分区分配器。负责分配和管理分区任务的执行
 type PartitionAssigner struct {
-	config   PartitionAssignerConfig
-	strategy partition.PartitionStrategy
-	logger   utils.Logger
-	planer   PartitionPlaner
+	config               PartitionAssignerConfig
+	strategy             partition.PartitionStrategy
+	logger               utils.Logger
+	planer               PartitionPlaner
+	lastGapDetectionID   int              // 上次缺口检测时的最大分区ID
+	knownPartitionRanges []PartitionRange // 已知的分区范围缓存
 }
 
 // NewPartitionManager 创建新的分区管理器
@@ -335,10 +344,30 @@ func (pm *PartitionAssigner) createPartitionsForGap(ctx context.Context, gap Dat
 	return partitions
 }
 
-// DetectAndCreateGapPartitions 检测并创建分区缺口
-// 专注于检测现有分区之间是否有遗漏的数据范围
+// DetectAndCreateGapPartitions 增量缺口检测
 func (pm *PartitionAssigner) DetectAndCreateGapPartitions(ctx context.Context, activeWorkers []string, maxPartitionID int) ([]model.CreatePartitionRequest, error) {
-	// 获取当前所有分区
+	pm.logger.Debugf("执行增量缺口检测，当前最大分区ID: %d，上次检测ID: %d", maxPartitionID, pm.lastGapDetectionID)
+
+	// 如果是第一次检测或者已知范围为空，进行完整检测
+	if pm.lastGapDetectionID == 0 || len(pm.knownPartitionRanges) == 0 {
+		return pm.fullGapDetection(ctx, maxPartitionID)
+	}
+
+	// 如果没有新分区，跳过检测
+	if maxPartitionID <= pm.lastGapDetectionID {
+		pm.logger.Debugf("没有新分区，跳过缺口检测")
+		return nil, nil
+	}
+
+	// 增量检测：只获取新分区
+	return pm.incrementalGapDetection(ctx, maxPartitionID)
+}
+
+// fullGapDetection 完整的缺口检测（首次检测或缓存重置时使用）
+func (pm *PartitionAssigner) fullGapDetection(ctx context.Context, maxPartitionID int) ([]model.CreatePartitionRequest, error) {
+	pm.logger.Debugf("执行完整缺口检测")
+
+	// 获取所有分区
 	allPartitions, err := pm.strategy.GetAllPartitions(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "获取所有分区失败")
@@ -346,16 +375,202 @@ func (pm *PartitionAssigner) DetectAndCreateGapPartitions(ctx context.Context, a
 
 	if len(allPartitions) == 0 {
 		pm.logger.Debugf("没有现有分区，无法检测缺口")
+		pm.lastGapDetectionID = maxPartitionID
 		return nil, nil
 	}
 
-	// 检测分区之间的数据缺口
+	// 重建分区范围缓存
+	pm.rebuildPartitionRangeCache(allPartitions)
+
+	// 检测缺口
 	realGaps := pm.detectGapsBetweenPartitions(ctx, allPartitions)
 	if len(realGaps) == 0 {
 		pm.logger.Debugf("未检测到数据缺口")
+		pm.lastGapDetectionID = maxPartitionID
 		return nil, nil
 	}
 
+	// 创建缺口分区
+	gapPartitions, err := pm.createGapPartitions(ctx, realGaps, maxPartitionID)
+	if err != nil {
+		return nil, err
+	}
+
+	pm.lastGapDetectionID = maxPartitionID
+	return gapPartitions, nil
+}
+
+// incrementalGapDetection 增量缺口检测：只检查新分区
+func (pm *PartitionAssigner) incrementalGapDetection(ctx context.Context, maxPartitionID int) ([]model.CreatePartitionRequest, error) {
+	pm.logger.Debugf("执行增量缺口检测，检查分区ID %d 到 %d", pm.lastGapDetectionID+1, maxPartitionID)
+
+	// 获取新分区
+	minID := pm.lastGapDetectionID + 1
+	filters := model.GetPartitionsFilters{
+		MinID: &minID,
+	}
+	newPartitions, err := pm.strategy.GetFilteredPartitions(ctx, filters)
+	if err != nil {
+		pm.logger.Warnf("获取新分区失败，降级为完整检测: %v", err)
+		return pm.fullGapDetection(ctx, maxPartitionID)
+	}
+
+	if len(newPartitions) == 0 {
+		pm.logger.Debugf("没有新分区，跳过缺口检测")
+		pm.lastGapDetectionID = maxPartitionID
+		return nil, nil
+	}
+
+	pm.logger.Debugf("发现 %d 个新分区，检查缺口", len(newPartitions))
+
+	// 更新分区范围缓存
+	pm.updatePartitionRangeCache(newPartitions)
+
+	// 检测新分区附近的缺口
+	gaps := pm.detectGapsAroundNewPartitions(ctx, newPartitions)
+	if len(gaps) == 0 {
+		pm.logger.Debugf("新分区附近未检测到缺口")
+		pm.lastGapDetectionID = maxPartitionID
+		return nil, nil
+	}
+
+	// 创建缺口分区
+	gapPartitions, err := pm.createGapPartitions(ctx, gaps, maxPartitionID)
+	if err != nil {
+		return nil, err
+	}
+
+	pm.lastGapDetectionID = maxPartitionID
+	return gapPartitions, nil
+}
+
+// rebuildPartitionRangeCache 重建分区范围缓存
+func (pm *PartitionAssigner) rebuildPartitionRangeCache(allPartitions []*model.PartitionInfo) {
+	pm.knownPartitionRanges = make([]PartitionRange, 0, len(allPartitions))
+	for _, p := range allPartitions {
+		pm.knownPartitionRanges = append(pm.knownPartitionRanges, PartitionRange{
+			PartitionID: p.PartitionID,
+			MinID:       p.MinID,
+			MaxID:       p.MaxID,
+		})
+	}
+
+	// 按MinID排序，便于后续缺口检测
+	sort.Slice(pm.knownPartitionRanges, func(i, j int) bool {
+		return pm.knownPartitionRanges[i].MinID < pm.knownPartitionRanges[j].MinID
+	})
+
+	pm.logger.Debugf("重建分区范围缓存，共 %d 个分区", len(pm.knownPartitionRanges))
+}
+
+// updatePartitionRangeCache 更新分区范围缓存（增量添加新分区）
+func (pm *PartitionAssigner) updatePartitionRangeCache(newPartitions []*model.PartitionInfo) {
+	for _, p := range newPartitions {
+		newRange := PartitionRange{
+			PartitionID: p.PartitionID,
+			MinID:       p.MinID,
+			MaxID:       p.MaxID,
+		}
+		pm.knownPartitionRanges = append(pm.knownPartitionRanges, newRange)
+	}
+
+	// 重新排序
+	sort.Slice(pm.knownPartitionRanges, func(i, j int) bool {
+		return pm.knownPartitionRanges[i].MinID < pm.knownPartitionRanges[j].MinID
+	})
+
+	pm.logger.Debugf("更新分区范围缓存，新增 %d 个分区，总共 %d 个分区",
+		len(newPartitions), len(pm.knownPartitionRanges))
+}
+
+// detectGapsAroundNewPartitions 检测新分区附近的缺口
+func (pm *PartitionAssigner) detectGapsAroundNewPartitions(ctx context.Context, newPartitions []*model.PartitionInfo) []DataGap {
+	var gaps []DataGap
+
+	for _, newPartition := range newPartitions {
+		// 查找新分区前后的相邻分区
+		prevRange, nextRange := pm.findAdjacentRanges(newPartition.MinID, newPartition.MaxID, newPartition.PartitionID)
+
+		// 检查前面的缺口
+		if prevRange != nil && prevRange.MaxID+1 < newPartition.MinID {
+			gapStart := prevRange.MaxID + 1
+			gapEnd := newPartition.MinID - 1
+			if pm.hasDataInRange(ctx, gapStart, gapEnd) {
+				gap := DataGap{StartID: gapStart, EndID: gapEnd}
+				gaps = append(gaps, gap)
+				pm.logger.Debugf("发现新分区 %d 前面的缺口: [%d, %d]",
+					newPartition.PartitionID, gapStart, gapEnd)
+			}
+		}
+
+		// 检查后面的缺口
+		if nextRange != nil && newPartition.MaxID+1 < nextRange.MinID {
+			gapStart := newPartition.MaxID + 1
+			gapEnd := nextRange.MinID - 1
+			if pm.hasDataInRange(ctx, gapStart, gapEnd) {
+				gap := DataGap{StartID: gapStart, EndID: gapEnd}
+				gaps = append(gaps, gap)
+				pm.logger.Debugf("发现新分区 %d 后面的缺口: [%d, %d]",
+					newPartition.PartitionID, gapStart, gapEnd)
+			}
+		}
+	}
+
+	// 去重缺口
+	return pm.deduplicateGaps(gaps)
+}
+
+// findAdjacentRanges 在缓存中查找指定范围的前后相邻分区
+func (pm *PartitionAssigner) findAdjacentRanges(minID, maxID int64, currentPartitionID int) (*PartitionRange, *PartitionRange) {
+	var prevRange, nextRange *PartitionRange
+
+	for i := range pm.knownPartitionRanges {
+		r := &pm.knownPartitionRanges[i]
+
+		// 跳过当前分区自己
+		if r.PartitionID == currentPartitionID {
+			continue
+		}
+
+		// 查找前面最近的分区
+		if r.MaxID < minID {
+			if prevRange == nil || r.MaxID > prevRange.MaxID {
+				prevRange = r
+			}
+		}
+
+		// 查找后面最近的分区
+		if r.MinID > maxID {
+			if nextRange == nil || r.MinID < nextRange.MinID {
+				nextRange = r
+			}
+		}
+	}
+
+	return prevRange, nextRange
+}
+
+// deduplicateGaps 去重相同的缺口
+func (pm *PartitionAssigner) deduplicateGaps(gaps []DataGap) []DataGap {
+	if len(gaps) <= 1 {
+		return gaps
+	}
+
+	seen := make(map[DataGap]bool)
+	var unique []DataGap
+
+	for _, gap := range gaps {
+		if !seen[gap] {
+			seen[gap] = true
+			unique = append(unique, gap)
+		}
+	}
+
+	return unique
+}
+
+// createGapPartitions 为缺口创建分区（提取的公共方法）
+func (pm *PartitionAssigner) createGapPartitions(ctx context.Context, gaps []DataGap, maxPartitionID int) ([]model.CreatePartitionRequest, error) {
 	// 获取分区大小，只调用一次
 	partitionSize, err := pm.GetEffectivePartitionSize(ctx)
 	if err != nil {
@@ -367,7 +582,7 @@ func (pm *PartitionAssigner) DetectAndCreateGapPartitions(ctx context.Context, a
 	var gapPartitions []model.CreatePartitionRequest
 	currentPartitionID := maxPartitionID + 1
 
-	for _, gap := range realGaps {
+	for _, gap := range gaps {
 		partitionsForGap := pm.createPartitionsForGap(ctx, gap, partitionSize, &currentPartitionID)
 		gapPartitions = append(gapPartitions, partitionsForGap...)
 

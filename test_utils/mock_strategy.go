@@ -12,6 +12,9 @@ import (
 type MockPartitionStrategy struct {
 	Partitions map[int]*model.PartitionInfo
 	mutex      sync.RWMutex
+
+	// 可配置的行为函数，用于测试特殊场景
+	GetFilteredPartitionsFunc func(ctx context.Context, filters model.GetPartitionsFilters) ([]*model.PartitionInfo, error)
 }
 
 // NewMockPartitionStrategy 创建一个新的模拟分区策略实例
@@ -79,6 +82,12 @@ func (m *MockPartitionStrategy) DeletePartition(ctx context.Context, partitionID
 
 // GetFilteredPartitions 根据过滤器获取分区
 func (m *MockPartitionStrategy) GetFilteredPartitions(ctx context.Context, filters model.GetPartitionsFilters) ([]*model.PartitionInfo, error) {
+	// 如果设置了自定义函数，使用自定义函数
+	if m.GetFilteredPartitionsFunc != nil {
+		return m.GetFilteredPartitionsFunc(ctx, filters)
+	}
+
+	// 默认实现
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 
