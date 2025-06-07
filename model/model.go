@@ -42,7 +42,6 @@ const (
 
 // 系统错误定义
 var (
-	ErrNoAvailablePartition   = errors.New("no available partition to claim")
 	ErrMaxRetriesExceeded     = errors.New("maximum retry attempts exceeded")
 	ErrOptimisticLockFailed   = errors.New("optimistic lock failed: version mismatch")
 	ErrPartitionAlreadyExists = errors.New("partition already exists")

@@ -168,7 +168,7 @@ func (tw *TaskWindow) fillTaskQueue(ctx context.Context) {
 		// 尝试获取一个新任务
 		task, err := tw.runner.acquirePartitionTask(ctx)
 		if err != nil {
-			if err != model.ErrNoAvailablePartition {
+			if err != ErrNoAvailablePartition {
 				tw.logger.Warnf("获取分区任务失败: %v", err)
 			}
 			return // 无法获取更多任务，退出方法

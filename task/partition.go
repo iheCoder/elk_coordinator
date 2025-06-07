@@ -21,7 +21,7 @@ func (r *Runner) acquirePartitionTask(ctx context.Context) (model.PartitionInfo,
 	}
 
 	if len(allPartitions) == 0 {
-		return model.PartitionInfo{}, model.ErrNoAvailablePartition
+		return model.PartitionInfo{}, ErrNoAvailablePartition
 	}
 
 	// 按优先级顺序尝试获取分区
@@ -56,7 +56,7 @@ func (r *Runner) acquirePartitionTask(ctx context.Context) (model.PartitionInfo,
 		}
 	}
 
-	return model.PartitionInfo{}, model.ErrNoAvailablePartition
+	return model.PartitionInfo{}, ErrNoAvailablePartition
 }
 
 // tryAcquirePartition 尝试获取指定的分区

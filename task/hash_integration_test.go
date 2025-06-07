@@ -325,7 +325,7 @@ func TestTaskIntegration_ConcurrentWorkers(t *testing.T) {
 					if err != nil {
 						t.Logf("Worker %s 处理分区 %d 失败: %v", workerName, task.PartitionID, err)
 					}
-				} else if err != model.ErrNoAvailablePartition {
+				} else if err != ErrNoAvailablePartition {
 					t.Logf("Worker %s 获取任务失败: %v", workerName, err)
 				}
 
@@ -720,7 +720,7 @@ func TestTaskIntegration_ComplexDistributedWorkflow(t *testing.T) {
 
 				task, err := runner.acquirePartitionTask(ctx)
 				if err != nil {
-					if err == model.ErrNoAvailablePartition {
+					if err == ErrNoAvailablePartition {
 						stats["no_task"] = stats["no_task"].(int) + 1
 						time.Sleep(100 * time.Millisecond)
 						continue

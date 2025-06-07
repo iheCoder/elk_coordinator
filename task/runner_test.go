@@ -132,7 +132,7 @@ func TestRunner_AcquirePartitionTask_NoAvailablePartition(t *testing.T) {
 
 	// 验证结果
 	assert.Error(t, err)
-	assert.Equal(t, model.ErrNoAvailablePartition, err)
+	assert.Equal(t, ErrNoAvailablePartition, err)
 	assert.Equal(t, model.PartitionInfo{}, task)
 }
 
