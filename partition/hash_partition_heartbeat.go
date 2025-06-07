@@ -224,7 +224,7 @@ func (s *HashPartitionStrategy) AcquirePartition(ctx context.Context, partitionI
 	// 设置默认选项
 	if options == nil {
 		options = &model.AcquirePartitionOptions{
-			AllowPreemption:   false,
+			AllowPreemption:   true,
 			PreemptionTimeout: s.staleThreshold,
 		}
 	}

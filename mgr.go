@@ -81,6 +81,7 @@ func NewMgr(namespace string, dataStore data.DataStore, processor task.Processor
 		LeaderLockExpiry:        model.DefaultLeaderLockExpiry,
 		WorkerPartitionMultiple: model.DefaultWorkerPartitionMultiple,
 		AllocationInterval:      model.DefaultAllocationInterval,
+		AllowPreemption:         true, // 默认启用抢占功能
 
 		// 分区策略配置
 		PartitionStrategyType: strategyType,
