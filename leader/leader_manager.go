@@ -19,6 +19,10 @@ type LeaderManager struct {
 	leaderCtx    context.Context
 	cancelLeader context.CancelFunc
 	mu           sync.RWMutex
+
+	// 用于整个 LeaderManager 生命周期控制
+	stopOnce sync.Once
+	stopped  chan struct{}
 }
 
 // NewLeaderManager 创建一个新的领导者管理器
@@ -53,6 +57,7 @@ func NewLeaderManager(config LeaderConfig) *LeaderManager {
 		election:     election,
 		workManager:  workManager,
 		partitionMgr: partitionMgr,
+		stopped:      make(chan struct{}),
 	}
 }
 
@@ -78,7 +83,7 @@ type LeaderConfig struct {
 
 // Start 启动领导者管理
 func (lm *LeaderManager) Start(ctx context.Context) error {
-	// 初始化上下文
+	// 初始化领导者工作的上下文
 	lm.leaderCtx, lm.cancelLeader = context.WithCancel(context.Background())
 
 	// 运行选举循环
@@ -87,9 +92,12 @@ func (lm *LeaderManager) Start(ctx context.Context) error {
 
 // Stop 停止领导者管理
 func (lm *LeaderManager) Stop() {
-	if lm.cancelLeader != nil {
-		lm.cancelLeader()
-	}
+	lm.stopOnce.Do(func() {
+		// 先停止领导者工作
+		lm.relinquishLeadership()
+		// 然后关闭 stopped channel，这会优雅地停止选举循环
+		close(lm.stopped)
+	})
 }
 
 // IsLeader 返回当前节点是否是领导者
@@ -116,6 +124,9 @@ func (lm *LeaderManager) runElectionLoop(ctx context.Context) error {
 		case <-ctx.Done():
 			lm.election.config.Logger.Infof("Leader选举任务停止 (上下文取消)")
 			return ctx.Err()
+		case <-lm.stopped:
+			lm.election.config.Logger.Infof("Leader选举任务停止 (停止信号)")
+			return nil
 		case <-ticker.C:
 			lm.periodicElection(ctx)
 		}
