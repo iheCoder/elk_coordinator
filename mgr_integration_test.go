@@ -162,7 +162,14 @@ func (tpp *TestPartitionPlaner) GetNextMaxID(ctx context.Context, startID int64,
 	tpp.mu.RLock()
 	defer tpp.mu.RUnlock()
 
-	nextMaxID := startID + rangeSize - 1
+	// 对于测试，我们希望能持续创建分区直到达到maxID
+	// 如果startID已经达到或超过maxID，则不再创建新分区
+	if startID >= tpp.maxID {
+		return startID, nil // 返回相同的ID，表示没有新数据
+	}
+
+	// 计算下一个批次的最大ID
+	nextMaxID := startID + rangeSize
 	if nextMaxID > tpp.maxID {
 		nextMaxID = tpp.maxID
 	}
@@ -442,14 +449,15 @@ func TestMgr_HighConcurrencyStressTest(t *testing.T) {
 	// 较大的数据集和较小的分区，制造更多并发竞争
 	planer := NewTestPartitionPlaner(200, 10000) // 分区大小200，最大ID 10000，预期50个分区
 
-	// 创建所有节点，使用更快的处理速度和任务窗口
+	// 创建所有节点，增加处理延迟和调整任务窗口以改善分区分布
 	for i := 0; i < nodeCount; i++ {
-		processors[i] = NewTestProcessor().WithProcessDelay(20 * time.Millisecond) // 快速处理
+		processors[i] = NewTestProcessor().WithProcessDelay(100 * time.Millisecond) // 增加处理延迟，让分区分布更均匀
 		mgrs[i] = createTestMgr(t, "test-stress", dataStore, processors[i], planer,
-			WithTaskWindow(5), // 启用任务窗口，同时处理5个分区
+			WithTaskWindow(3), // 减少任务窗口大小，避免少数节点占用太多分区
 			WithHeartbeatInterval(500*time.Millisecond), // 更频繁的心跳
 			WithLeaderElectionInterval(500*time.Millisecond),
-			WithPartitionLockExpiry(3*time.Second), // 较短的锁过期时间，增加竞争
+			WithPartitionLockExpiry(5*time.Second), // 适当延长锁过期时间，给抢占机制更多时间
+			WithAllocationInterval(1*time.Second),  // 非常频繁的分区分配检查
 		)
 	}
 

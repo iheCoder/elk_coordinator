@@ -86,3 +86,10 @@ func WithAllocationInterval(interval time.Duration) MgrOption {
 		m.AllocationInterval = interval
 	}
 }
+
+// WithAllowPreemption 设置是否允许抢占其他节点的分区
+func WithAllowPreemption(allowPreemption bool) MgrOption {
+	return func(m *Mgr) {
+		m.AllowPreemption = allowPreemption
+	}
+}

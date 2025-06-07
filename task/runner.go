@@ -5,8 +5,9 @@ import (
 	"elk_coordinator/model"
 	"elk_coordinator/partition"
 	"elk_coordinator/utils"
-	"github.com/pkg/errors"
 	"time"
+
+	"github.com/pkg/errors"
 )
 
 // Runner 分区任务执行器
@@ -16,6 +17,7 @@ type Runner struct {
 	namespace           string
 	workerID            string
 	partitionLockExpiry time.Duration
+	allowPreemption     bool // 是否允许抢占其他节点的分区
 
 	// 依赖组件
 	partitionStrategy partition.PartitionStrategy
@@ -32,6 +34,7 @@ type RunnerConfig struct {
 	Namespace           string
 	WorkerID            string
 	PartitionLockExpiry time.Duration
+	AllowPreemption     bool // 是否允许抢占其他节点的分区，默认false
 
 	// 依赖组件
 	PartitionStrategy partition.PartitionStrategy
@@ -76,6 +79,7 @@ func NewRunner(config RunnerConfig) *Runner {
 		namespace:           config.Namespace,
 		workerID:            config.WorkerID,
 		partitionLockExpiry: config.PartitionLockExpiry,
+		allowPreemption:     config.AllowPreemption, // 使用配置中的抢占设置
 
 		// 依赖组件
 		partitionStrategy: config.PartitionStrategy,

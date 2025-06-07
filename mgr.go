@@ -38,6 +38,7 @@ type Mgr struct {
 	LeaderLockExpiry        time.Duration // Leader锁过期时间
 	WorkerPartitionMultiple int64         // 每个工作节点分配的分区倍数，用于计算ID探测范围
 	AllocationInterval      time.Duration // 分区分配检查间隔，默认2分钟
+	AllowPreemption         bool          // 是否允许抢占其他节点的分区，默认false
 
 	// 任务窗口配置
 	TaskWindowSize int // 任务窗口大小（同时处理的最大分区数）
@@ -214,6 +215,7 @@ func (m *Mgr) Handle(ctx context.Context) error {
 		WorkerID:            m.ID,
 		WindowSize:          m.TaskWindowSize,
 		PartitionLockExpiry: m.PartitionLockExpiry,
+		AllowPreemption:     m.AllowPreemption, // 传递抢占配置
 		PartitionStrategy:   m.PartitionStrategy,
 		Processor:           m.TaskProcessor,
 		Logger:              m.Logger,

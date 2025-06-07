@@ -4,8 +4,9 @@ package task
 import (
 	"context"
 	"elk_coordinator/model"
-	"github.com/pkg/errors"
 	"time"
+
+	"github.com/pkg/errors"
 )
 
 // ------------- 分区获取相关函数 -------------
@@ -61,9 +62,9 @@ func (r *Runner) acquirePartitionTask(ctx context.Context) (model.PartitionInfo,
 // tryAcquirePartition 尝试获取指定的分区
 // 使用策略接口的 AcquirePartition 方法
 func (r *Runner) tryAcquirePartition(ctx context.Context, partitionID int) (*model.PartitionInfo, bool) {
-	// 使用策略接口获取分区
+	// 使用策略接口获取分区，根据配置决定是否启用抢占机制
 	options := &model.AcquirePartitionOptions{
-		AllowPreemption:   false, // 默认不允许抢占
+		AllowPreemption:   r.allowPreemption, // 使用配置中的抢占设置
 		PreemptionTimeout: r.partitionLockExpiry,
 	}
 
@@ -74,7 +75,11 @@ func (r *Runner) tryAcquirePartition(ctx context.Context, partitionID int) (*mod
 	}
 
 	if success {
-		r.logger.Infof("成功获取分区 %d", partitionID)
+		if r.allowPreemption {
+			r.logger.Infof("成功获取分区 %d (抢占模式: 开启)", partitionID)
+		} else {
+			r.logger.Infof("成功获取分区 %d (抢占模式: 关闭)", partitionID)
+		}
 		return partition, true
 	}
 

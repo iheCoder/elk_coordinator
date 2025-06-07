@@ -15,6 +15,7 @@ type TaskWindowConfig struct {
 	WorkerID            string
 	WindowSize          int
 	PartitionLockExpiry time.Duration
+	AllowPreemption     bool // 是否允许抢占其他节点的分区
 
 	// 任务获取重试间隔（可选，默认5秒）
 	FetchRetryInterval time.Duration
@@ -73,6 +74,7 @@ func NewTaskWindow(config TaskWindowConfig) *TaskWindow {
 		Namespace:           config.Namespace,
 		WorkerID:            config.WorkerID,
 		PartitionLockExpiry: config.PartitionLockExpiry,
+		AllowPreemption:     config.AllowPreemption, // 传递抢占配置
 		PartitionStrategy:   config.PartitionStrategy,
 		Processor:           config.Processor,
 		Logger:              config.Logger,
