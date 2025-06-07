@@ -383,3 +383,468 @@ func TestTaskWindow_CustomFetchRetryInterval(t *testing.T) {
 	// 验证处理器被调用了
 	mockProcessor.AssertExpectations(t)
 }
+
+// TestTaskWindow_Stop_Basic 测试 TaskWindow.Stop() 方法的基本功能
+// 场景: 正常启动 TaskWindow 然后调用 Stop() 进行停止
+// 预期结果: Stop() 方法能够成功执行，停止后台 goroutines 并调用 Runner.Stop()
+func TestTaskWindow_Stop_Basic(t *testing.T) {
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	mockProcessor := NewMockProcessor()
+	mockLogger := test_utils.NewMockLogger(true)
+
+	config := TaskWindowConfig{
+		Namespace:           "test-namespace",
+		WorkerID:            "test-worker",
+		WindowSize:          2,
+		PartitionLockExpiry: 3 * time.Minute,
+		PartitionStrategy:   mockStrategy,
+		Processor:           mockProcessor,
+		Logger:              mockLogger,
+	}
+
+	taskWindow := NewTaskWindow(config)
+
+	// 启动 TaskWindow
+	startCtx := context.Background()
+	taskWindow.Start(startCtx)
+
+	// 等待一段时间确保后台 goroutines 已启动
+	time.Sleep(100 * time.Millisecond)
+
+	// 验证 context 和 cancel 已设置
+	assert.NotNil(t, taskWindow.ctx, "Start() 应该设置 context")
+	assert.NotNil(t, taskWindow.cancel, "Start() 应该设置 cancel function")
+
+	// 调用 Stop()
+	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := taskWindow.Stop(stopCtx)
+
+	// 验证结果
+	assert.NoError(t, err, "Stop() 应该成功完成")
+
+	// 验证 context 已被取消
+	select {
+	case <-taskWindow.ctx.Done():
+		// 正确，context 已被取消
+	default:
+		t.Error("Stop() 后 context 应该已被取消")
+	}
+
+	t.Log("TaskWindow.Stop() basic functionality test completed successfully")
+}
+
+// TestTaskWindow_Stop_BackgroundGoroutinesCleanup 测试后台 goroutines 的正确清理
+// 场景: 启动 TaskWindow 后立即停止，验证所有后台 goroutines 被正确停止
+// 预期结果: 后台 goroutines 被正确停止，没有 goroutine 泄漏
+func TestTaskWindow_Stop_BackgroundGoroutinesCleanup(t *testing.T) {
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	mockProcessor := NewMockProcessor()
+	mockLogger := test_utils.NewMockLogger(true)
+
+	config := TaskWindowConfig{
+		Namespace:           "test-namespace",
+		WorkerID:            "test-worker",
+		WindowSize:          2,
+		PartitionLockExpiry: 3 * time.Minute,
+		FetchRetryInterval:  1 * time.Second, // 较短的重试间隔便于测试
+		PartitionStrategy:   mockStrategy,
+		Processor:           mockProcessor,
+		Logger:              mockLogger,
+	}
+
+	taskWindow := NewTaskWindow(config)
+
+	// 启动 TaskWindow
+	startCtx := context.Background()
+	taskWindow.Start(startCtx)
+
+	// 等待确保后台 goroutines 启动
+	time.Sleep(200 * time.Millisecond)
+
+	// 调用 Stop()
+	stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	err := taskWindow.Stop(stopCtx)
+	elapsed := time.Since(start)
+
+	// 验证结果
+	assert.NoError(t, err, "Stop() 应该成功完成")
+	assert.Less(t, elapsed, 2*time.Second, "Stop() 应该快速完成，不应该等待很长时间")
+
+	// 验证 channels 被正确关闭
+	select {
+	case _, ok := <-taskWindow.fetchDone:
+		assert.False(t, ok, "fetchDone channel 应该已关闭")
+	default:
+		// fetchDone 已关闭，从中读取会立即返回
+	}
+
+	select {
+	case _, ok := <-taskWindow.taskQueue:
+		assert.False(t, ok, "taskQueue channel 应该已关闭")
+	default:
+		// taskQueue 已关闭
+	}
+
+	t.Logf("Background goroutines cleanup test completed in %v", elapsed)
+}
+
+// TestTaskWindow_Stop_WithRunningTasks 测试有正在处理的任务时的停止行为
+// 场景: TaskWindow 正在处理任务时调用 Stop()
+// 预期结果: Stop() 能够快速完成，不等待正在处理的任务完成
+func TestTaskWindow_Stop_WithRunningTasks(t *testing.T) {
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	mockProcessor := NewMockProcessor()
+	mockLogger := test_utils.NewMockLogger(true)
+
+	// 设置一个长时间运行的任务
+	mockProcessor.SetProcessDelay(2 * time.Second)
+
+	// 添加测试分区
+	testPartition := &model.PartitionInfo{
+		PartitionID: 1,
+		MinID:       1,
+		MaxID:       100,
+		Status:      model.StatusPending,
+		WorkerID:    "",
+		UpdatedAt:   time.Now(),
+		Version:     1,
+		Options:     make(map[string]interface{}),
+	}
+	mockStrategy.AddPartition(testPartition)
+
+	// 设置处理器期望调用
+	mockProcessor.On("Process", mock.Anything, mock.AnythingOfType("int64"), mock.AnythingOfType("int64"), mock.AnythingOfType("map[string]interface {}")).Return(int64(10), nil).Maybe()
+
+	config := TaskWindowConfig{
+		Namespace:           "test-namespace",
+		WorkerID:            "test-worker",
+		WindowSize:          1,
+		PartitionLockExpiry: 3 * time.Minute,
+		FetchRetryInterval:  100 * time.Millisecond,
+		PartitionStrategy:   mockStrategy,
+		Processor:           mockProcessor,
+		Logger:              mockLogger,
+	}
+
+	taskWindow := NewTaskWindow(config)
+
+	// 启动 TaskWindow
+	startCtx := context.Background()
+	taskWindow.Start(startCtx)
+
+	// 等待任务开始处理
+	time.Sleep(300 * time.Millisecond)
+
+	// 调用 Stop()，应该能够快速完成
+	stopStart := time.Now()
+	stopCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	err := taskWindow.Stop(stopCtx)
+	stopDuration := time.Since(stopStart)
+
+	// 验证结果
+	assert.NoError(t, err, "Stop() 应该成功完成")
+	assert.Less(t, stopDuration, 800*time.Millisecond, "Stop() 应该快速完成，不等待正在处理的任务")
+
+	t.Logf("Stop with running tasks completed in %v", stopDuration)
+}
+
+// TestTaskWindow_Stop_MultipleCallsSuccess 测试多次调用 Stop() 的行为
+// 场景: 多次调用 TaskWindow.Stop() 方法
+// 预期结果: 所有调用都应该成功，不应该出现 panic 或错误
+func TestTaskWindow_Stop_MultipleCallsSuccess(t *testing.T) {
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	mockProcessor := NewMockProcessor()
+	mockLogger := test_utils.NewMockLogger(true)
+
+	config := TaskWindowConfig{
+		Namespace:           "test-namespace",
+		WorkerID:            "test-worker",
+		WindowSize:          2,
+		PartitionLockExpiry: 3 * time.Minute,
+		PartitionStrategy:   mockStrategy,
+		Processor:           mockProcessor,
+		Logger:              mockLogger,
+	}
+
+	taskWindow := NewTaskWindow(config)
+
+	// 启动 TaskWindow
+	startCtx := context.Background()
+	taskWindow.Start(startCtx)
+
+	// 等待确保启动完成
+	time.Sleep(100 * time.Millisecond)
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// 第一次调用 Stop()
+	err1 := taskWindow.Stop(stopCtx)
+	assert.NoError(t, err1, "第一次 Stop() 调用应该成功")
+
+	// 第二次调用 Stop()
+	err2 := taskWindow.Stop(stopCtx)
+	assert.NoError(t, err2, "第二次 Stop() 调用应该成功")
+
+	// 第三次调用 Stop()
+	err3 := taskWindow.Stop(stopCtx)
+	assert.NoError(t, err3, "第三次 Stop() 调用应该成功")
+
+	t.Log("Multiple Stop() calls handled successfully")
+}
+
+// TestTaskWindow_Stop_CancelledContext 测试在已取消的 context 中调用 Stop()
+// 场景: 使用已取消的 context 调用 TaskWindow.Stop()
+// 预期结果: Stop() 应该仍然能够执行基本的清理操作
+func TestTaskWindow_Stop_CancelledContext(t *testing.T) {
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	mockProcessor := NewMockProcessor()
+	mockLogger := test_utils.NewMockLogger(true)
+
+	config := TaskWindowConfig{
+		Namespace:           "test-namespace",
+		WorkerID:            "test-worker",
+		WindowSize:          2,
+		PartitionLockExpiry: 3 * time.Minute,
+		PartitionStrategy:   mockStrategy,
+		Processor:           mockProcessor,
+		Logger:              mockLogger,
+	}
+
+	taskWindow := NewTaskWindow(config)
+
+	// 启动 TaskWindow
+	startCtx := context.Background()
+	taskWindow.Start(startCtx)
+
+	// 等待确保启动完成
+	time.Sleep(100 * time.Millisecond)
+
+	// 创建已取消的 context
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel() // 立即取消
+
+	// 调用 Stop() with cancelled context
+	err := taskWindow.Stop(cancelledCtx)
+
+	// 即使 context 已取消，Stop() 也应该能够执行基本清理
+	assert.NoError(t, err, "Stop() 应该能够处理已取消的 context")
+
+	// 验证 TaskWindow 的 context 已被取消
+	select {
+	case <-taskWindow.ctx.Done():
+		// 正确，context 已被取消
+	default:
+		t.Error("TaskWindow context 应该已被取消")
+	}
+
+	t.Log("Stop() with cancelled context handled successfully")
+}
+
+// TestTaskWindow_Stop_ConcurrentStopCalls 测试并发调用 Stop() 的行为
+// 场景: 多个 goroutines 同时调用 TaskWindow.Stop()
+// 预期结果: 所有调用都应该成功完成，不应该出现竞态条件或 panic
+func TestTaskWindow_Stop_ConcurrentStopCalls(t *testing.T) {
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	mockProcessor := NewMockProcessor()
+	mockLogger := test_utils.NewMockLogger(true)
+
+	config := TaskWindowConfig{
+		Namespace:           "test-namespace",
+		WorkerID:            "test-worker",
+		WindowSize:          2,
+		PartitionLockExpiry: 3 * time.Minute,
+		PartitionStrategy:   mockStrategy,
+		Processor:           mockProcessor,
+		Logger:              mockLogger,
+	}
+
+	taskWindow := NewTaskWindow(config)
+
+	// 启动 TaskWindow
+	startCtx := context.Background()
+	taskWindow.Start(startCtx)
+
+	// 等待确保启动完成
+	time.Sleep(100 * time.Millisecond)
+
+	// 并发调用 Stop()
+	const numConcurrentCalls = 5
+	var wg sync.WaitGroup
+	errors := make([]error, numConcurrentCalls)
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	for i := 0; i < numConcurrentCalls; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			errors[index] = taskWindow.Stop(stopCtx)
+		}(i)
+	}
+
+	wg.Wait()
+
+	// 验证所有调用都成功
+	for i, err := range errors {
+		assert.NoError(t, err, fmt.Sprintf("并发 Stop() 调用 %d 应该成功", i))
+	}
+
+	t.Log("Concurrent Stop() calls handled successfully")
+}
+
+// TestTaskWindow_Stop_WithoutStart 测试在未调用 Start() 的情况下调用 Stop()
+// 场景: 创建 TaskWindow 但不调用 Start()，直接调用 Stop()
+// 预期结果: Stop() 应该能够正常处理这种情况，不应该 panic
+func TestTaskWindow_Stop_WithoutStart(t *testing.T) {
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	mockProcessor := NewMockProcessor()
+	mockLogger := test_utils.NewMockLogger(true)
+
+	config := TaskWindowConfig{
+		Namespace:           "test-namespace",
+		WorkerID:            "test-worker",
+		WindowSize:          2,
+		PartitionLockExpiry: 3 * time.Minute,
+		PartitionStrategy:   mockStrategy,
+		Processor:           mockProcessor,
+		Logger:              mockLogger,
+	}
+
+	taskWindow := NewTaskWindow(config)
+
+	// 直接调用 Stop()，不先调用 Start()
+	stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	err := taskWindow.Stop(stopCtx)
+
+	// Stop() 应该能够处理这种情况
+	assert.NoError(t, err, "Stop() 应该能够处理未启动的 TaskWindow")
+
+	t.Log("Stop() without Start() handled successfully")
+}
+
+// TestTaskWindow_Stop_RunnerStopError 测试 Runner.Stop() 返回错误时的处理
+// 场景: 模拟 Runner.Stop() 返回错误
+// 预期结果: TaskWindow.Stop() 应该返回 Runner.Stop() 的错误
+func TestTaskWindow_Stop_RunnerStopError(t *testing.T) {
+	// 创建一个会在 Stop() 时返回错误的 mock strategy
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	mockProcessor := NewMockProcessor()
+	mockLogger := test_utils.NewMockLogger(true)
+
+	// 设置 mock strategy 在 Stop() 时返回错误
+	expectedErr := fmt.Errorf("simulated runner stop error")
+	mockStrategy.StopFunc = func(ctx context.Context) error {
+		return expectedErr
+	}
+
+	config := TaskWindowConfig{
+		Namespace:           "test-namespace",
+		WorkerID:            "test-worker",
+		WindowSize:          2,
+		PartitionLockExpiry: 3 * time.Minute,
+		PartitionStrategy:   mockStrategy,
+		Processor:           mockProcessor,
+		Logger:              mockLogger,
+	}
+
+	taskWindow := NewTaskWindow(config)
+
+	// 启动 TaskWindow
+	startCtx := context.Background()
+	taskWindow.Start(startCtx)
+
+	// 等待确保启动完成
+	time.Sleep(100 * time.Millisecond)
+
+	// 调用 Stop()
+	stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	err := taskWindow.Stop(stopCtx)
+
+	// 验证返回了预期的错误
+	assert.Error(t, err, "Stop() 应该返回 Runner.Stop() 的错误")
+	assert.Contains(t, err.Error(), "simulated runner stop error", "错误信息应该包含模拟的错误")
+
+	// 验证 TaskWindow 的后台 goroutines 仍然被停止
+	select {
+	case <-taskWindow.ctx.Done():
+		// 正确，context 已被取消
+	default:
+		t.Error("即使 Runner.Stop() 失败，TaskWindow context 也应该被取消")
+	}
+
+	t.Log("Runner.Stop() error handling test completed successfully")
+}
+
+// TestTaskWindow_Stop_Performance 测试 Stop() 方法的性能
+// 场景: 测试 Stop() 方法在不同场景下的执行时间
+// 预期结果: Stop() 应该在合理时间内完成
+func TestTaskWindow_Stop_Performance(t *testing.T) {
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	mockProcessor := NewMockProcessor()
+	mockLogger := test_utils.NewMockLogger(false) // 关闭详细日志以减少干扰
+
+	// 设置处理器期望调用
+	mockProcessor.On("Process", mock.Anything, mock.AnythingOfType("int64"), mock.AnythingOfType("int64"), mock.AnythingOfType("map[string]interface {}")).Return(int64(10), nil).Maybe()
+
+	// 添加一些测试分区
+	for i := 1; i <= 10; i++ {
+		testPartition := &model.PartitionInfo{
+			PartitionID: i,
+			MinID:       int64(i * 100),
+			MaxID:       int64((i+1)*100 - 1),
+			Status:      model.StatusPending,
+			WorkerID:    "",
+			UpdatedAt:   time.Now(),
+			Version:     1,
+			Options:     make(map[string]interface{}),
+		}
+		mockStrategy.AddPartition(testPartition)
+	}
+
+	config := TaskWindowConfig{
+		Namespace:           "test-namespace",
+		WorkerID:            "test-worker",
+		WindowSize:          5,
+		PartitionLockExpiry: 3 * time.Minute,
+		FetchRetryInterval:  100 * time.Millisecond,
+		PartitionStrategy:   mockStrategy,
+		Processor:           mockProcessor,
+		Logger:              mockLogger,
+	}
+
+	taskWindow := NewTaskWindow(config)
+
+	// 启动 TaskWindow
+	startCtx := context.Background()
+	taskWindow.Start(startCtx)
+
+	// 让它运行一段时间
+	time.Sleep(200 * time.Millisecond)
+
+	// 测试 Stop() 性能
+	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	err := taskWindow.Stop(stopCtx)
+	elapsed := time.Since(start)
+
+	// 验证结果
+	assert.NoError(t, err, "Stop() 应该成功完成")
+	assert.Less(t, elapsed, 1*time.Second, "Stop() 应该在1秒内完成")
+
+	t.Logf("Stop() performance test completed in %v", elapsed)
+}

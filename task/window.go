@@ -49,6 +49,10 @@ type TaskWindow struct {
 	taskQueue chan model.PartitionInfo // 任务队列
 	fetchDone chan struct{}            // 通知获取新任务的信号
 	runner    *Runner                  // 用于执行任务的Runner实例
+
+	// goroutine管理
+	ctx    context.Context    // 后台goroutine的context
+	cancel context.CancelFunc // 用于取消后台goroutine
 }
 
 // NewTaskWindow 创建一个新的任务窗口
@@ -105,11 +109,14 @@ func NewTaskWindow(config TaskWindowConfig) *TaskWindow {
 
 // Start 启动任务窗口
 func (tw *TaskWindow) Start(ctx context.Context) {
+	// 创建可取消的context来管理后台goroutine
+	tw.ctx, tw.cancel = context.WithCancel(ctx)
+
 	// 启动任务获取goroutine
-	go tw.fetchTasks(ctx)
+	go tw.fetchTasks(tw.ctx)
 
 	// 启动任务处理goroutine
-	go tw.processTasks(ctx)
+	go tw.processTasks(tw.ctx)
 
 	// 初始化时立即触发任务获取，填满窗口
 	tw.fetchDone <- struct{}{}
@@ -182,21 +189,65 @@ func (tw *TaskWindow) fillTaskQueue(ctx context.Context) {
 
 // processTasks 处理队列中的任务
 func (tw *TaskWindow) processTasks(ctx context.Context) {
-	for task := range tw.taskQueue {
-		// 处理分区任务
-		tw.logger.Infof("开始处理分区任务 %d", task.PartitionID)
-		err := tw.runner.processPartitionTask(ctx, task)
-		if err != nil {
-			tw.runner.handleTaskError(ctx, task, err)
-		}
-		tw.logger.Infof("分区任务 %d 处理完成", task.PartitionID)
-
-		// 处理完一个任务后，立即触发获取新任务
+	for {
 		select {
-		case tw.fetchDone <- struct{}{}:
-			// 成功发送获取任务信号
-		default:
-			// 信号通道已满（说明已经有一个获取信号在队列中），跳过
+		case <-ctx.Done():
+			tw.logger.Infof("任务处理循环停止 (上下文取消)")
+			return
+		case task, ok := <-tw.taskQueue:
+			if !ok {
+				tw.logger.Infof("任务处理循环停止 (队列已关闭)")
+				return
+			}
+
+			// 处理分区任务
+			tw.logger.Infof("开始处理分区任务 %d", task.PartitionID)
+			err := tw.runner.processPartitionTask(ctx, task)
+			if err != nil {
+				tw.runner.handleTaskError(ctx, task, err)
+			}
+			tw.logger.Infof("分区任务 %d 处理完成", task.PartitionID)
+
+			// 处理完一个任务后，立即触发获取新任务
+			select {
+			case tw.fetchDone <- struct{}{}:
+				// 成功发送获取任务信号
+			default:
+				// 信号通道已满（说明已经有一个获取信号在队列中），跳过
+			}
 		}
 	}
+}
+
+// Stop 停止任务窗口并清理相关资源
+//
+// 实现关注点分离原则，建立正确的调用链：TaskWindow -> Runner -> PartitionStrategy
+// 1. TaskWindow负责停止自己的后台goroutines并清理内部资源
+// 2. 调用Runner.Stop()进行后续清理，Runner会进一步调用PartitionStrategy.Stop()
+//
+// 参数:
+//   - ctx: 上下文，用于控制操作超时和取消
+//
+// 返回:
+//   - error: 如果清理过程中发生错误
+func (tw *TaskWindow) Stop(ctx context.Context) error {
+	tw.logger.Infof("TaskWindow stopping, cancelling background goroutines...")
+
+	// 取消后台goroutine的context，这会停止fetchTasks和processTasks
+	// fetchTasks goroutine会负责关闭taskQueue
+	if tw.cancel != nil {
+		tw.cancel()
+	}
+
+	tw.logger.Infof("TaskWindow background goroutines stopped, proceeding with resource cleanup...")
+
+	// 调用 Runner.Stop() 进行后续清理和资源释放
+	tw.logger.Infof("Calling Runner.Stop() for resource cleanup...")
+	if err := tw.runner.Stop(ctx); err != nil {
+		tw.logger.Errorf("Runner.Stop() failed: %v", err)
+		return err
+	}
+
+	tw.logger.Infof("TaskWindow stopped successfully")
+	return nil
 }

@@ -15,6 +15,7 @@ type MockPartitionStrategy struct {
 
 	// 可配置的行为函数，用于测试特殊场景
 	GetFilteredPartitionsFunc func(ctx context.Context, filters model.GetPartitionsFilters) ([]*model.PartitionInfo, error)
+	StopFunc                  func(ctx context.Context) error // 用于控制Stop方法的行为
 }
 
 // NewMockPartitionStrategy 创建一个新的模拟分区策略实例
@@ -410,6 +411,22 @@ func (m *MockPartitionStrategy) GetPartitionStats(ctx context.Context) (*model.P
 	}
 
 	return stats, nil
+}
+
+// Stop 停止分区策略（实现PartitionStrategy接口）
+func (m *MockPartitionStrategy) Stop(ctx context.Context) error {
+	// 如果设置了自定义的Stop行为，使用它
+	if m.StopFunc != nil {
+		return m.StopFunc(ctx)
+	}
+
+	// 默认行为：简单清空分区数据
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	// 可以在测试中通过设置特定的行为来模拟错误
+	m.Partitions = make(map[int]*model.PartitionInfo)
+	return nil
 }
 
 // SetPartitions 设置分区数据（用于测试设置）
