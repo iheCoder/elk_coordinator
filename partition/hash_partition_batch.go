@@ -39,7 +39,7 @@ func (s *HashPartitionStrategy) CreatePartitionsIfNotExist(ctx context.Context, 
 
 	s.logger.Infof("开始批量创建 %d 个分区", len(request.Partitions))
 
-	// 第一步：批量检查哪些分区已存在
+	// 第一步：批量检查哪些分区已存在，并验证数据范围一致性
 	var existingPartitions []*model.PartitionInfo
 	var newPartitionRequests []model.CreatePartitionRequest
 
@@ -56,8 +56,16 @@ func (s *HashPartitionStrategy) CreatePartitionsIfNotExist(ctx context.Context, 
 				return nil, fmt.Errorf("检查分区 %d 失败: %w", partitionDef.PartitionID, err)
 			}
 		} else {
-			// 分区已存在
-			s.logger.Debugf("分区 %d 已存在，跳过创建", partitionDef.PartitionID)
+			// 分区已存在，检查数据范围是否一致
+			if existingPartition.MinID != partitionDef.MinID || existingPartition.MaxID != partitionDef.MaxID {
+				s.logger.Errorf("分区 %d 已存在但数据范围不一致: 现有[%d-%d] vs 请求[%d-%d]",
+					partitionDef.PartitionID, existingPartition.MinID, existingPartition.MaxID,
+					partitionDef.MinID, partitionDef.MaxID)
+				return nil, fmt.Errorf("分区 %d 数据范围冲突: 现有[%d-%d] vs 请求[%d-%d]",
+					partitionDef.PartitionID, existingPartition.MinID, existingPartition.MaxID,
+					partitionDef.MinID, partitionDef.MaxID)
+			}
+			s.logger.Debugf("分区 %d 已存在且数据范围一致，跳过创建", partitionDef.PartitionID)
 			existingPartitions = append(existingPartitions, existingPartition)
 		}
 	}
@@ -66,6 +74,11 @@ func (s *HashPartitionStrategy) CreatePartitionsIfNotExist(ctx context.Context, 
 	var newPartitions []*model.PartitionInfo
 	if len(newPartitionRequests) > 0 {
 		s.logger.Infof("发现 %d 个新分区需要创建", len(newPartitionRequests))
+
+		// 按分区ID排序，确保创建顺序的一致性，避免中间失败导致的数据缺口
+		sort.Slice(newPartitionRequests, func(i, j int) bool {
+			return newPartitionRequests[i].PartitionID < newPartitionRequests[j].PartitionID
+		})
 
 		// 批量创建新分区 - 使用较小的批次避免单个事务过大
 		const batchSize = 50 // 每批最多50个分区，避免Redis事务过大
@@ -80,7 +93,14 @@ func (s *HashPartitionStrategy) CreatePartitionsIfNotExist(ctx context.Context, 
 			batchPartitions, err := s.createPartitionsBatch(ctx, batch)
 			if err != nil {
 				s.logger.Errorf("批量创建分区失败 (批次 %d-%d): %v", i, end-1, err)
-				return nil, fmt.Errorf("批量创建分区失败: %w", err)
+
+				// 由于分区按ID排序创建，失败批次之前的分区都是连续成功的
+				// 只需要记录失败位置，不需要回滚已成功的批次
+				s.logger.Warnf("分区创建在批次 %d-%d 处失败，已成功创建 %d 个分区",
+					i, end-1, len(newPartitions))
+
+				return nil, fmt.Errorf("批量创建分区失败 (分区ID %d-%d): %w",
+					batch[0].PartitionID, batch[len(batch)-1].PartitionID, err)
 			}
 
 			newPartitions = append(newPartitions, batchPartitions...)
