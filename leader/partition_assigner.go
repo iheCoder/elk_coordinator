@@ -5,6 +5,7 @@ import (
 	"elk_coordinator/model"
 	"elk_coordinator/partition"
 	"elk_coordinator/utils"
+	"sort"
 
 	"github.com/pkg/errors"
 )
@@ -111,9 +112,22 @@ func (pm *PartitionAssigner) AllocatePartitions(ctx context.Context, activeWorke
 		return err
 	}
 
-	// 如果没有新的数据要分配，直接返回
+	// 如果没有新的数据要分配，尝试检测并填补现有分区的缺口
 	if nextMaxID <= lastAllocatedID {
 		pm.logger.Debugf("没有新的数据需要分配，当前已分配的最大ID: %d", lastAllocatedID)
+
+		// 尝试检测现有分区中的缺口
+		gapPartitions, err := pm.DetectAndCreateGapPartitions(ctx, activeWorkers, maxPartitionID)
+		if err != nil {
+			return errors.Wrap(err, "检测分区缺口失败")
+		}
+
+		if len(gapPartitions) > 0 {
+			pm.logger.Infof("检测到 %d 个分区缺口，已创建对应分区", len(gapPartitions))
+		} else {
+			pm.logger.Debugf("未检测到分区缺口")
+		}
+
 		return nil
 	}
 
@@ -268,4 +282,181 @@ func (pm *PartitionAssigner) GetEffectivePartitionSize(ctx context.Context) (int
 	}
 
 	return suggestedSize, nil
+}
+
+// DataGap 表示数据范围中的缺口
+type DataGap struct {
+	StartID int64 // 缺口开始ID（包含）
+	EndID   int64 // 缺口结束ID（包含）
+}
+
+// createPartitionsForGap 为指定的缺口创建分区请求（简化版）
+func (pm *PartitionAssigner) createPartitionsForGap(ctx context.Context, gap DataGap, partitionSize int64, currentPartitionID *int) []model.CreatePartitionRequest {
+	var partitions []model.CreatePartitionRequest
+
+	gapSize := gap.EndID - gap.StartID + 1
+
+	// 如果缺口小于等于分区大小，验证后创建一个分区
+	if gapSize <= partitionSize {
+		// 验证这个范围内是否真的有数据
+		if pm.hasDataInRange(ctx, gap.StartID, gap.EndID) {
+			p := model.CreatePartitionRequest{
+				PartitionID: *currentPartitionID,
+				MinID:       gap.StartID,
+				MaxID:       gap.EndID,
+				Options:     make(map[string]interface{}),
+			}
+			partitions = append(partitions, p)
+			*currentPartitionID++
+		}
+		return partitions
+	}
+
+	// 将大缺口拆分成多个分区，每个分区都验证是否有数据
+	currentID := gap.StartID
+	for currentID <= gap.EndID {
+		maxID := min(currentID+partitionSize-1, gap.EndID)
+
+		// 只为有数据的范围创建分区
+		if pm.hasDataInRange(ctx, currentID, maxID) {
+			p := model.CreatePartitionRequest{
+				PartitionID: *currentPartitionID,
+				MinID:       currentID,
+				MaxID:       maxID,
+				Options:     make(map[string]interface{}),
+			}
+			partitions = append(partitions, p)
+			*currentPartitionID++
+		}
+
+		currentID = maxID + 1
+	}
+
+	return partitions
+}
+
+// DetectAndCreateGapPartitions 检测并创建分区缺口
+// 专注于检测现有分区之间是否有遗漏的数据范围
+func (pm *PartitionAssigner) DetectAndCreateGapPartitions(ctx context.Context, activeWorkers []string, maxPartitionID int) ([]model.CreatePartitionRequest, error) {
+	// 获取当前所有分区
+	allPartitions, err := pm.strategy.GetAllPartitions(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "获取所有分区失败")
+	}
+
+	if len(allPartitions) == 0 {
+		pm.logger.Debugf("没有现有分区，无法检测缺口")
+		return nil, nil
+	}
+
+	// 检测分区之间的数据缺口
+	realGaps := pm.detectGapsBetweenPartitions(ctx, allPartitions)
+	if len(realGaps) == 0 {
+		pm.logger.Debugf("未检测到数据缺口")
+		return nil, nil
+	}
+
+	// 获取分区大小，只调用一次
+	partitionSize, err := pm.GetEffectivePartitionSize(ctx)
+	if err != nil {
+		pm.logger.Warnf("获取分区大小失败: %v，使用默认值", err)
+		partitionSize = model.DefaultPartitionSize
+	}
+
+	// 为检测到的每个缺口创建分区请求
+	var gapPartitions []model.CreatePartitionRequest
+	currentPartitionID := maxPartitionID + 1
+
+	for _, gap := range realGaps {
+		partitionsForGap := pm.createPartitionsForGap(ctx, gap, partitionSize, &currentPartitionID)
+		gapPartitions = append(gapPartitions, partitionsForGap...)
+
+		pm.logger.Infof("检测到数据缺口 [%d, %d]，创建 %d 个分区来填补",
+			gap.StartID, gap.EndID, len(partitionsForGap))
+	}
+
+	// 批量创建缺口分区
+	if len(gapPartitions) > 0 {
+		_, err := pm.strategy.CreatePartitionsIfNotExist(ctx, model.CreatePartitionsRequest{Partitions: gapPartitions})
+		if err != nil {
+			return nil, errors.Wrap(err, "创建分区缺口失败")
+		}
+
+		pm.logger.Infof("成功创建 %d 个缺口分区", len(gapPartitions))
+	}
+
+	return gapPartitions, nil
+}
+
+// detectGapsBetweenPartitions 检测现有分区之间的数据缺口
+func (pm *PartitionAssigner) detectGapsBetweenPartitions(ctx context.Context, allPartitions []*model.PartitionInfo) []DataGap {
+	if len(allPartitions) < 2 {
+		return nil
+	}
+
+	// 简单排序分区（按MinID）
+	sortedPartitions := make([]*model.PartitionInfo, len(allPartitions))
+	copy(sortedPartitions, allPartitions)
+
+	// 使用标准库的sort进行排序，效率更高
+	sort.Slice(sortedPartitions, func(i, j int) bool {
+		return sortedPartitions[i].MinID < sortedPartitions[j].MinID
+	})
+
+	var gaps []DataGap
+
+	// 检查相邻分区之间的缺口
+	for i := 0; i < len(sortedPartitions)-1; i++ {
+		current := sortedPartitions[i]
+		next := sortedPartitions[i+1]
+
+		// 如果两个分区之间有空隙，验证是否有真实数据
+		if current.MaxID+1 < next.MinID {
+			gapStart := current.MaxID + 1
+			gapEnd := next.MinID - 1
+
+			// 验证这个缺口中是否真的有数据
+			if pm.hasDataInRange(ctx, gapStart, gapEnd) {
+				gap := DataGap{
+					StartID: gapStart,
+					EndID:   gapEnd,
+				}
+				gaps = append(gaps, gap)
+				pm.logger.Debugf("发现分区间数据缺口: [%d, %d]", gap.StartID, gap.EndID)
+			}
+		}
+	}
+
+	return gaps
+}
+
+// hasDataInRange 检查指定范围内是否存在真实数据
+func (pm *PartitionAssigner) hasDataInRange(ctx context.Context, startID, endID int64) bool {
+	if startID > endID {
+		return false
+	}
+
+	// 使用GetNextMaxID检查从startID开始是否有数据
+	// GetNextMaxID(startID, 1)会查询 id > startID limit 1，返回第一个 > startID 的数据ID
+	firstDataID, err := pm.planer.GetNextMaxID(ctx, startID, 1)
+	if err != nil {
+		pm.logger.Warnf("检查数据范围 [%d, %d] 失败: %v", startID, endID, err)
+		return false
+	}
+
+	// 如果返回的ID等于原始的startID，表示没有找到任何id > startID的数据
+	if firstDataID <= startID {
+		return false
+	}
+
+	// 如果找到的第一个数据ID在指定范围内，则存在数据
+	return firstDataID <= endID
+}
+
+// min 返回两个int64的最小值
+func min(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
 }

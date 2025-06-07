@@ -4,6 +4,7 @@ import (
 	"context"
 	"elk_coordinator/model"
 	"elk_coordinator/test_utils"
+	"elk_coordinator/utils"
 	"testing"
 	"time"
 )
@@ -19,10 +20,34 @@ func (m *mockPartitionPlaner) PartitionSize(ctx context.Context) (int64, error) 
 }
 
 func (m *mockPartitionPlaner) GetNextMaxID(ctx context.Context, lastID int64, rangeSize int64) (int64, error) {
-	if m.nextMaxID > 0 {
-		return m.nextMaxID, nil
+	// 正确实现GetNextMaxID语义：模拟 SELECT * FROM t WHERE id > lastID LIMIT rangeSize
+	// 返回第rangeSize条记录的ID值，如果记录不足则返回找到的最后一个ID
+
+	// 使用nextMaxID字段来控制最大可用数据ID
+	maxDataID := m.nextMaxID
+
+	// 如果没有设置nextMaxID或查询起点已超过最大数据ID，返回无数据
+	if maxDataID == 0 || lastID >= maxDataID {
+		return lastID, nil
 	}
-	return lastID + rangeSize, nil
+
+	// 找到第一个 > lastID 的数据ID
+	firstDataID := lastID + 1
+
+	// 如果第一个数据ID已经超出数据范围，没有数据
+	if firstDataID > maxDataID {
+		return lastID, nil
+	}
+
+	// 计算第rangeSize个数据ID（假设数据是连续的）
+	nthDataID := firstDataID + rangeSize - 1
+
+	// 如果超出数据范围，返回数据范围的最后一个ID
+	if nthDataID > maxDataID {
+		nthDataID = maxDataID
+	}
+
+	return nthDataID, nil
 }
 
 // TestGetExistingPartitions 测试获取现有分区功能
@@ -350,4 +375,393 @@ func TestGetEffectivePartitionSize(t *testing.T) {
 	if size != model.DefaultPartitionSize {
 		t.Errorf("分区大小不正确，期望默认值 %d，得到 %d", model.DefaultPartitionSize, size)
 	}
+}
+
+// TestCreatePartitionsForGap 测试为缺口创建分区
+func TestCreatePartitionsForGap(t *testing.T) {
+	config := PartitionAssignerConfig{
+		Namespace:               "test",
+		WorkerPartitionMultiple: 3,
+	}
+
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	mockPlaner := &mockPartitionPlaner{
+		suggestedPartitionSize: 1000,
+		nextMaxID:              4000, // 设置足够大的数据范围，确保测试范围内有数据
+	}
+	logger := utils.NewDefaultLogger()
+
+	partitionMgr := NewPartitionManager(config, mockStrategy, logger, mockPlaner)
+	ctx := context.Background()
+
+	// 测试场景1: 小缺口，创建单个分区
+	smallGap := DataGap{StartID: 1001, EndID: 1500}
+	partitionSize := int64(1000)
+	currentPartitionID := 10
+
+	partitions := partitionMgr.createPartitionsForGap(ctx, smallGap, partitionSize, &currentPartitionID)
+	if len(partitions) != 1 {
+		t.Errorf("小缺口应该创建1个分区，但创建了 %d 个分区", len(partitions))
+	}
+
+	if len(partitions) > 0 {
+		if partitions[0].MinID != 1001 || partitions[0].MaxID != 1500 {
+			t.Errorf("分区范围应该是 [1001, 1500]，但得到 [%d, %d]",
+				partitions[0].MinID, partitions[0].MaxID)
+		}
+
+		if partitions[0].PartitionID != 10 {
+			t.Errorf("分区ID应该是10，但得到 %d", partitions[0].PartitionID)
+		}
+	}
+
+	// 测试场景2: 大缺口，创建多个分区
+	largeGap := DataGap{StartID: 1001, EndID: 3500}
+	currentPartitionID = 20
+
+	partitions = partitionMgr.createPartitionsForGap(ctx, largeGap, partitionSize, &currentPartitionID)
+	expectedPartitionCount := 3 // (3500-1001+1)/1000 = 2.5，向上取整为3
+
+	if len(partitions) != expectedPartitionCount {
+		t.Errorf("大缺口应该创建%d个分区，但创建了 %d 个分区", expectedPartitionCount, len(partitions))
+	}
+
+	if len(partitions) > 0 {
+		// 验证第一个分区
+		if partitions[0].MinID != 1001 || partitions[0].MaxID != 2000 {
+			t.Errorf("第一个分区范围应该是 [1001, 2000]，但得到 [%d, %d]",
+				partitions[0].MinID, partitions[0].MaxID)
+		}
+
+		// 验证最后一个分区
+		lastPartition := partitions[len(partitions)-1]
+		if lastPartition.MaxID != 3500 {
+			t.Errorf("最后一个分区的MaxID应该是3500，但得到 %d", lastPartition.MaxID)
+		}
+	}
+
+	// 验证分区ID递增
+	if currentPartitionID != 23 {
+		t.Errorf("当前分区ID应该递增到23，但得到 %d", currentPartitionID)
+	}
+}
+
+// TestDetectAndCreateGapPartitions 测试简化的缺口检测和创建流程
+func TestDetectAndCreateGapPartitions(t *testing.T) {
+	config := PartitionAssignerConfig{
+		Namespace:               "test",
+		WorkerPartitionMultiple: 3,
+	}
+
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	mockPlaner := &mockPartitionPlaner{
+		suggestedPartitionSize: 1000,
+		nextMaxID:              2500, // 模拟在缺口范围内有数据
+	}
+	logger := utils.NewDefaultLogger()
+
+	partitionMgr := NewPartitionManager(config, mockStrategy, logger, mockPlaner)
+
+	ctx := context.Background()
+
+	// 设置有缺口的现有分区
+	existingPartitions := map[int]*model.PartitionInfo{
+		1: {PartitionID: 1, MinID: 1, MaxID: 1000},
+		2: {PartitionID: 2, MinID: 2001, MaxID: 3000}, // 缺口: 1001-2000
+	}
+	mockStrategy.SetPartitions(existingPartitions)
+
+	// 执行缺口检测和创建
+	activeWorkers := []string{"worker1", "worker2"}
+	maxPartitionID := 2
+
+	gapPartitions, err := partitionMgr.DetectAndCreateGapPartitions(ctx, activeWorkers, maxPartitionID)
+	if err != nil {
+		t.Errorf("检测和创建缺口分区失败: %v", err)
+	}
+
+	// 验证创建了缺口分区
+	if len(gapPartitions) == 0 {
+		t.Errorf("应该创建缺口分区，但没有创建")
+	}
+
+	// 验证缺口分区覆盖了正确的范围
+	foundGapPartition := false
+	for _, partition := range gapPartitions {
+		if partition.MinID >= 1001 && partition.MaxID <= 2000 {
+			foundGapPartition = true
+			break
+		}
+	}
+
+	if !foundGapPartition {
+		t.Errorf("缺口分区没有覆盖预期的范围 [1001, 2000]")
+	}
+}
+
+// TestDetectGapsBetweenPartitions 测试分区间缺口检测的核心逻辑
+func TestDetectGapsBetweenPartitions(t *testing.T) {
+	config := PartitionAssignerConfig{
+		Namespace:               "test",
+		WorkerPartitionMultiple: 2,
+	}
+
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	mockPlaner := &mockPartitionPlaner{
+		suggestedPartitionSize: 1000,
+		nextMaxID:              2500,
+	}
+	logger := test_utils.NewMockLogger(false)
+
+	partitionMgr := NewPartitionManager(config, mockStrategy, logger, mockPlaner)
+	ctx := context.Background()
+
+	// 测试场景1: 无分区，应该返回空
+	emptyPartitions := []*model.PartitionInfo{}
+	gaps := partitionMgr.detectGapsBetweenPartitions(ctx, emptyPartitions)
+	if len(gaps) != 0 {
+		t.Errorf("空分区列表应该返回0个缺口，但得到 %d 个", len(gaps))
+	}
+
+	// 测试场景2: 单个分区，应该返回空
+	singlePartition := []*model.PartitionInfo{
+		{PartitionID: 1, MinID: 1, MaxID: 1000},
+	}
+	gaps = partitionMgr.detectGapsBetweenPartitions(ctx, singlePartition)
+	if len(gaps) != 0 {
+		t.Errorf("单个分区应该返回0个缺口，但得到 %d 个", len(gaps))
+	}
+
+	// 测试场景3: 连续分区，应该返回空
+	continuousPartitions := []*model.PartitionInfo{
+		{PartitionID: 1, MinID: 1, MaxID: 1000},
+		{PartitionID: 2, MinID: 1001, MaxID: 2000},
+	}
+	gaps = partitionMgr.detectGapsBetweenPartitions(ctx, continuousPartitions)
+	if len(gaps) != 0 {
+		t.Errorf("连续分区应该返回0个缺口，但得到 %d 个", len(gaps))
+	}
+
+	// 测试场景4: 有缺口且缺口中有数据的分区
+	gapPartitions := []*model.PartitionInfo{
+		{PartitionID: 1, MinID: 1, MaxID: 1000},
+		{PartitionID: 2, MinID: 1501, MaxID: 2500}, // 缺口: 1001-1500
+	}
+	gaps = partitionMgr.detectGapsBetweenPartitions(ctx, gapPartitions)
+	if len(gaps) != 1 {
+		t.Errorf("有数据缺口的分区应该返回1个缺口，但得到 %d 个", len(gaps))
+	} else {
+		gap := gaps[0]
+		if gap.StartID != 1001 || gap.EndID != 1500 {
+			t.Errorf("缺口范围应该是 [1001, 1500]，但得到 [%d, %d]", gap.StartID, gap.EndID)
+		}
+	}
+}
+
+// TestHasDataInRange 测试数据存在性检查
+func TestHasDataInRange(t *testing.T) {
+	config := PartitionAssignerConfig{
+		Namespace:               "test",
+		WorkerPartitionMultiple: 2,
+	}
+
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	logger := test_utils.NewMockLogger(false)
+
+	ctx := context.Background()
+
+	// 测试场景1: 范围内有数据
+	mockPlanerWithData := &mockPartitionPlaner{
+		suggestedPartitionSize: 1000,
+		nextMaxID:              1500, // 模拟在1001-2000范围内有数据
+	}
+	partitionMgr1 := NewPartitionManager(config, mockStrategy, logger, mockPlanerWithData)
+
+	hasData := partitionMgr1.hasDataInRange(ctx, 1000, 2000)
+	if !hasData {
+		t.Errorf("范围 [1000, 2000] 内应该有数据，但检测为无数据")
+	}
+
+	// 测试场景2: 范围内无数据
+	mockPlanerNoData := &mockPartitionPlaner{
+		suggestedPartitionSize: 1000,
+		nextMaxID:              500, // 模拟在1001-2000范围内无数据
+	}
+	partitionMgr2 := NewPartitionManager(config, mockStrategy, logger, mockPlanerNoData)
+
+	hasData = partitionMgr2.hasDataInRange(ctx, 1000, 2000)
+	if hasData {
+		t.Errorf("范围 [1000, 2000] 内应该无数据，但检测为有数据")
+	}
+
+	// 测试场景3: 无效范围
+	hasData = partitionMgr1.hasDataInRange(ctx, 2000, 1000)
+	if hasData {
+		t.Errorf("无效范围应该返回false，但返回true")
+	}
+}
+
+// TestDetectAndCreateGapPartitions_DiscreteData 测试简化的gap detection处理不连续数据ID
+func TestDetectAndCreateGapPartitions_DiscreteData(t *testing.T) {
+	// 创建专门的模拟处理器，模拟不连续的数据ID
+	discreteDataPlaner := &discreteDataPartitionPlaner{
+		suggestedPartitionSize: 1000,
+		discreteDataRanges: []dataRange{
+			{start: 1, end: 500},     // 数据段1: 1-500
+			{start: 800, end: 1200},  // 数据段2: 800-1200 (缺口501-799)
+			{start: 1500, end: 2000}, // 数据段3: 1500-2000 (缺口1201-1499)
+			{start: 3000, end: 3500}, // 数据段4: 3000-3500 (缺口2001-2999)
+		},
+	}
+
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	logger := test_utils.NewMockLogger(false)
+
+	config := PartitionAssignerConfig{
+		Namespace:               "test",
+		WorkerPartitionMultiple: 2,
+	}
+
+	partitionMgr := NewPartitionManager(config, mockStrategy, logger, discreteDataPlaner)
+
+	// 设置现有分区（有缺口）
+	existingPartitions := map[int]*model.PartitionInfo{
+		1: {
+			PartitionID: 1,
+			MinID:       1,
+			MaxID:       500, // 完全覆盖数据段1
+			Status:      model.StatusCompleted,
+		},
+		2: {
+			PartitionID: 2,
+			MinID:       1000, // 只覆盖数据段2的一部分 (遗漏800-999)
+			MaxID:       1200,
+			Status:      model.StatusCompleted,
+		},
+		3: {
+			PartitionID: 3,
+			MinID:       2500, // 跨越空区域 (遗漏1500-2000)
+			MaxID:       3000,
+			Status:      model.StatusCompleted,
+		},
+	}
+
+	mockStrategy.SetPartitions(existingPartitions)
+
+	ctx := context.Background()
+	activeWorkers := []string{"worker1", "worker2"}
+
+	// 执行gap detection
+	gapPartitions, err := partitionMgr.DetectAndCreateGapPartitions(ctx, activeWorkers, 3)
+	if err != nil {
+		t.Fatalf("Gap detection失败: %v", err)
+	}
+
+	// 验证结果
+	t.Logf("检测到 %d 个gap分区", len(gapPartitions))
+
+	// 打印所有创建的分区
+	for i, gap := range gapPartitions {
+		t.Logf("分区 %d: [%d, %d]", i, gap.MinID, gap.MaxID)
+	}
+
+	// 应该检测到的真实缺口（简化版只检测分区间缺口）
+	expectedGaps := []struct {
+		name       string
+		minID      int64
+		maxID      int64
+		shouldFind bool
+	}{
+		{"缺口1: 501-999", 501, 999, true},     // 分区1和分区2之间的缺口
+		{"缺口2: 1201-2200", 1201, 2200, true}, // 分区2和分区3之间的缺口（有数据部分）
+	}
+
+	// 验证每个期望的缺口是否被正确检测
+	for _, expected := range expectedGaps {
+		found := false
+		for _, gap := range gapPartitions {
+			// 检查是否有分区覆盖了这个期望的缺口范围
+			if gap.MinID <= expected.minID && gap.MaxID >= expected.maxID {
+				found = true
+				t.Logf("✅ 正确检测到 %s: 分区[%d, %d]",
+					expected.name, gap.MinID, gap.MaxID)
+				break
+			}
+		}
+
+		if expected.shouldFind && !found {
+			t.Errorf("❌ 未检测到期望的缺口: %s", expected.name)
+		} else if !expected.shouldFind && found {
+			t.Errorf("❌ 误检测了不应存在的缺口: %s", expected.name)
+		}
+	}
+
+	// 确保创建的分区确实有数据
+	for _, gap := range gapPartitions {
+		// 验证每个创建的分区范围内确实有数据
+		hasData := false
+		for _, dataRange := range discreteDataPlaner.discreteDataRanges {
+			if !(gap.MaxID < dataRange.start || gap.MinID > dataRange.end) {
+				hasData = true
+				break
+			}
+		}
+
+		if !hasData {
+			t.Errorf("❌ 为无数据范围[%d, %d]创建了分区", gap.MinID, gap.MaxID)
+		}
+	}
+}
+
+// dataRange 表示数据范围
+type dataRange struct {
+	start int64
+	end   int64
+}
+
+// discreteDataPartitionPlaner 模拟处理不连续数据的分区规划器
+type discreteDataPartitionPlaner struct {
+	suggestedPartitionSize int64
+	discreteDataRanges     []dataRange
+}
+
+func (d *discreteDataPartitionPlaner) PartitionSize(ctx context.Context) (int64, error) {
+	return d.suggestedPartitionSize, nil
+}
+
+func (d *discreteDataPartitionPlaner) GetNextMaxID(ctx context.Context, lastID int64, rangeSize int64) (int64, error) {
+	// 正确实现GetNextMaxID语义：返回从lastID+1开始的第rangeSize个数据ID的值
+
+	// 收集从lastID+1开始的所有数据ID
+	var dataIDs []int64
+	startSearchID := lastID + 1
+
+	for _, dataRange := range d.discreteDataRanges {
+		// 找到与搜索起点有交集的数据范围
+		if dataRange.end >= startSearchID {
+			// 确定这个数据范围内需要包含的ID起点
+			rangeStart := dataRange.start
+			if rangeStart < startSearchID {
+				rangeStart = startSearchID
+			}
+
+			// 将这个范围内的所有ID添加到列表中
+			for id := rangeStart; id <= dataRange.end; id++ {
+				dataIDs = append(dataIDs, id)
+
+				// 如果已经收集够了rangeSize个数据，返回第rangeSize个
+				if int64(len(dataIDs)) >= rangeSize {
+					return dataIDs[rangeSize-1], nil
+				}
+			}
+		}
+	}
+
+	// 如果没有找到足够的数据，返回lastID（表示没有足够的数据）
+	if len(dataIDs) == 0 {
+		return lastID, nil
+	}
+
+	// 返回找到的最后一个数据ID（可能少于rangeSize个）
+	return dataIDs[len(dataIDs)-1], nil
 }
