@@ -3,7 +3,6 @@ package elk_coordinator
 import (
 	"context"
 	"elk_coordinator/model"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -12,18 +11,21 @@ import (
 	"time"
 )
 
-// Stop 停止管理器，快速释放资源
+// Stop 停止管理器，协调各组件的优雅关闭
 func (m *Mgr) Stop() {
 	m.Logger.Infof("正在停止管理器 %s", m.ID)
 
 	// 1. 立即标记节点为退出状态，便于其他节点感知
 	exitingKey := fmt.Sprintf(model.ExitingNodeFmt, m.Namespace, m.ID)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
 	_ = m.DataStore.SetKey(ctx, exitingKey, time.Now().Format(time.RFC3339), 30*time.Second)
 
-	// 2. 取消所有上下文，通知协程停止工作
+	// 2. 协调各组件进行资源清理（使用关注点分离原则）
+	m.stopComponents(ctx)
+
+	// 3. 然后取消所有上下文，通知协程停止工作
 	if m.cancelHeartbeat != nil {
 		m.cancelHeartbeat()
 	}
@@ -34,10 +36,7 @@ func (m *Mgr) Stop() {
 		m.cancelWork()
 	}
 
-	// 3. 快速释放所有持有的锁（Leader锁和分区锁）
-	go m.asyncReleaseAllLocks()
-
-	// 4. 删除心跳和节点注册（允许超时后被其他节点清理）
+	// 4. 最后删除心跳和节点注册（允许其他节点快速感知到节点离线）
 	heartbeatKey := fmt.Sprintf(model.HeartbeatFmtFmt, m.Namespace, m.ID)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -52,75 +51,49 @@ func (m *Mgr) Stop() {
 	m.Logger.Infof("管理器 %s 已通知停止", m.ID)
 }
 
-// asyncReleaseAllLocks 异步快速释放所有锁
-func (m *Mgr) asyncReleaseAllLocks() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+// stopComponents 协调各组件进行资源清理
+func (m *Mgr) stopComponents(ctx context.Context) {
+	m.Logger.Infof("开始协调组件停止...")
 
-	// 释放Leader锁
-	m.mu.RLock()
-	isLeader := m.isLeader
-	m.mu.RUnlock()
-
-	if isLeader {
-		leaderLockKey := fmt.Sprintf(model.LeaderLockKeyFmt, m.Namespace)
-		if err := m.DataStore.ReleaseLock(ctx, leaderLockKey, m.ID); err != nil {
-			m.Logger.Warnf("释放Leader锁失败: %v", err)
-		} else {
-			m.Logger.Infof("已释放Leader锁")
-		}
-	}
-
-	// 快速获取并释放所有分区锁
-	partitionInfoKey := fmt.Sprintf(model.PartitionInfoKeyFmt, m.Namespace)
-	partitionsData, err := m.DataStore.GetPartitions(ctx, partitionInfoKey)
-	if err != nil {
-		m.Logger.Warnf("获取分区信息失败: %v", err)
-		return
-	}
-
-	if partitionsData == "" {
-		m.Logger.Infof("无分区信息，无需释放分区锁")
-		return
-	}
-
-	var partitionMap map[int]model.PartitionInfo
-	if err := json.Unmarshal([]byte(partitionsData), &partitionMap); err != nil {
-		m.Logger.Warnf("解析分区信息失败: %v", err)
-		return
-	}
-
-	// 找出当前节点持有的分区
-	var myPartitionsCount int
-	for _, p := range partitionMap {
-		if p.WorkerID == m.ID {
-			myPartitionsCount++
-		}
-	}
-
-	if myPartitionsCount == 0 {
-		m.Logger.Infof("没有持有的分区锁需要释放")
-		return
-	}
-
-	m.Logger.Infof("开始释放 %d 个分区锁", myPartitionsCount)
-
-	// 并行释放所有分区锁
+	// 使用WaitGroup来并行停止组件，提高停止效率
 	var wg sync.WaitGroup
-	for id, p := range partitionMap {
-		if p.WorkerID == m.ID {
-			wg.Add(1)
-			go func(partitionID int) {
-				defer wg.Done()
-				lockKey := fmt.Sprintf(model.PartitionLockFmtFmt, m.Namespace, partitionID)
-				if err := m.DataStore.ReleaseLock(ctx, lockKey, m.ID); err != nil {
-					m.Logger.Warnf("释放分区 %d 锁失败: %v", partitionID, err)
-				}
-			}(id)
-		}
-	}
 
-	// 等待所有锁释放完成，但设置一个较短的超时时间
+	// 停止TaskWindow组件（如果存在）
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		m.mu.Lock()
+		taskWindow := m.taskWindow
+		m.mu.Unlock()
+
+		if taskWindow != nil {
+			if err := taskWindow.Stop(ctx); err != nil {
+				m.Logger.Warnf("TaskWindow停止失败: %v", err)
+			} else {
+				m.Logger.Infof("TaskWindow已停止")
+			}
+		}
+	}()
+
+	// 停止LeaderManager组件（如果存在）
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		m.mu.Lock()
+		leaderManager := m.leaderManager
+		m.mu.Unlock()
+
+		if leaderManager != nil {
+			leaderManager.Stop()
+			m.Logger.Infof("LeaderManager已停止")
+		}
+	}()
+
+	// 注意：不直接停止PartitionStrategy
+	// TaskWindow会在其Stop()方法中通过Runner调用PartitionStrategy.Stop()
+	// 这确保了正在处理的任务完成后再停止策略
+
+	// 等待所有组件停止完成，但设置超时时间避免无限等待
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -129,9 +102,9 @@ func (m *Mgr) asyncReleaseAllLocks() {
 
 	select {
 	case <-done:
-		m.Logger.Infof("所有分区锁释放完成")
-	case <-time.After(3 * time.Second):
-		m.Logger.Warnf("部分分区锁释放超时")
+		m.Logger.Infof("所有组件停止完成")
+	case <-ctx.Done():
+		m.Logger.Warnf("组件停止超时，但继续关闭流程")
 	}
 }
 

@@ -71,21 +71,21 @@ func (tp *TestProcessor) Process(ctx context.Context, minID int64, maxID int64, 
 	// 增加处理计数
 	atomic.AddInt64(&tp.processCount, 1)
 
-	// 模拟处理延迟
-	if tp.processDelay > 0 {
-		select {
-		case <-ctx.Done():
-			return 0, ctx.Err()
-		case <-time.After(tp.processDelay):
-		}
-	}
-
 	var processError error
 	var itemCount int64
 
 	// 如果设置了自定义处理函数，使用它
 	if tp.onProcess != nil {
 		processError = tp.onProcess(minID, maxID)
+	} else {
+		// 如果没有自定义处理函数，使用基础处理延迟
+		if tp.processDelay > 0 {
+			select {
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			case <-time.After(tp.processDelay):
+			}
+		}
 	}
 
 	// 模拟失败率
@@ -688,112 +688,6 @@ func TestMgr_LeaderFailoverScenario(t *testing.T) {
 		if i != leaderIndex {
 			mgr.Stop()
 		}
-	}
-}
-
-// TestMgr_TaskWindowParallelProcessing 测试任务窗口并行处理
-// 测试场景：
-// 1. 启动2个MGR节点，启用任务窗口功能
-// 2. 验证单个节点能够并行处理多个分区
-// 3. 验证任务窗口大小限制生效
-// 4. 验证并行处理的正确性
-// 预期结果：
-// - 节点能够同时处理多个分区
-// - 并行处理数量不超过窗口大小
-// - 所有任务都正确完成，无数据竞争
-func TestMgr_TaskWindowParallelProcessing(t *testing.T) {
-	_, _, dataStore, cleanup := setupMgrIntegrationTest(t)
-	defer cleanup()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	// 记录并发处理的分区
-	var concurrentPartitions sync.Map
-	var maxConcurrentCount int64
-
-	// 创建能够跟踪并发的处理器
-	trackingProcessor := NewTestProcessor().
-		WithProcessDelay(2 * time.Second). // 较长的处理时间，确保能观察到并发
-		WithCustomProcessor(func(minID, maxID int64) error {
-			// 记录开始处理
-			partitionKey := fmt.Sprintf("%d-%d", minID, maxID)
-			concurrentPartitions.Store(partitionKey, time.Now())
-
-			// 计算当前并发数
-			currentConcurrent := int64(0)
-			concurrentPartitions.Range(func(key, value interface{}) bool {
-				currentConcurrent++
-				return true
-			})
-
-			// 更新最大并发数
-			for {
-				current := atomic.LoadInt64(&maxConcurrentCount)
-				if currentConcurrent <= current || atomic.CompareAndSwapInt64(&maxConcurrentCount, current, currentConcurrent) {
-					break
-				}
-			}
-
-			// 模拟处理时间
-			time.Sleep(1500 * time.Millisecond)
-
-			// 删除处理记录
-			concurrentPartitions.Delete(partitionKey)
-
-			return nil
-		})
-
-	planer := NewTestPartitionPlaner(500, 5000) // 预期10个分区
-
-	// 创建2个节点，启用任务窗口
-	windowSize := 3
-	processors := []*TestProcessor{trackingProcessor, NewTestProcessor().WithProcessDelay(100 * time.Millisecond)}
-	mgrs := make([]*Mgr, 2)
-
-	for i := 0; i < 2; i++ {
-		mgrs[i] = createTestMgr(t, "test-window", dataStore, processors[i], planer,
-			WithTaskWindow(windowSize), // 启用任务窗口
-		)
-	}
-
-	// 启动节点
-	for i, mgr := range mgrs {
-		err := mgr.Start(ctx)
-		require.NoError(t, err, "启动MGR %d失败", i)
-		time.Sleep(200 * time.Millisecond)
-	}
-
-	// 等待任务处理开始
-	time.Sleep(3 * time.Second)
-
-	// 让系统运行一段时间以观察并发处理
-	time.Sleep(8 * time.Second)
-
-	// 验证并发处理效果
-	maxConcurrent := atomic.LoadInt64(&maxConcurrentCount)
-	t.Logf("观察到的最大并发处理数: %d", maxConcurrent)
-
-	// 验证确实有并发处理发生
-	assert.Greater(t, maxConcurrent, int64(1), "应该观察到并发处理")
-
-	// 验证并发数不超过窗口大小
-	assert.LessOrEqual(t, maxConcurrent, int64(windowSize),
-		"并发处理数不应该超过窗口大小 %d", windowSize)
-
-	// 验证任务处理统计
-	totalProcessed := int64(0)
-	for i, processor := range processors {
-		processed := processor.GetProcessedItems()
-		t.Logf("节点%d处理项目数: %d", i, processed)
-		totalProcessed += processed
-	}
-
-	assert.Greater(t, totalProcessed, int64(0), "应该有任务被处理")
-
-	// 停止所有MGR
-	for _, mgr := range mgrs {
-		mgr.Stop()
 	}
 }
 

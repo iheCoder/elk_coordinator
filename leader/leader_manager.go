@@ -3,8 +3,10 @@ package leader
 import (
 	"context"
 	"elk_coordinator/data"
+	"elk_coordinator/model"
 	"elk_coordinator/partition"
 	"elk_coordinator/utils"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -180,8 +182,23 @@ func (lm *LeaderManager) doLeaderWork(ctx context.Context) error {
 // relinquishLeadership 放弃领导权
 func (lm *LeaderManager) relinquishLeadership() {
 	lm.mu.Lock()
+	wasLeader := lm.isLeader
 	lm.isLeader = false
 	lm.mu.Unlock()
+
+	// 只有当前确实是Leader时才需要释放锁
+	if wasLeader {
+		// 显式释放Leader锁，确保其他节点能快速获取
+		leaderLockKey := fmt.Sprintf(model.LeaderLockKeyFmt, lm.election.config.Namespace)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		if err := lm.election.config.DataStore.ReleaseLock(ctx, leaderLockKey, lm.election.config.NodeID); err != nil {
+			lm.election.config.Logger.Warnf("放弃领导权时释放Leader锁失败: %v", err)
+		} else {
+			lm.election.config.Logger.Infof("放弃领导权，成功释放Leader锁")
+		}
+	}
 
 	if lm.cancelLeader != nil {
 		lm.cancelLeader()

@@ -46,6 +46,10 @@ type Mgr struct {
 	// 任务处理器和执行器
 	taskRunner *task.Runner
 
+	// 组件实例 - 用于协调停止过程
+	leaderManager *leader.LeaderManager
+	taskWindow    *task.TaskWindow
+
 	// 内部状态
 	isLeader        bool
 	heartbeatCtx    context.Context
@@ -200,9 +204,13 @@ func (m *Mgr) Lead(ctx context.Context) error {
 		Strategy:                m.PartitionStrategy,
 	}
 
-	// 创建并启动LeaderManager
-	leaderManager := leader.NewLeaderManager(leaderConfig)
-	return leaderManager.Start(ctx)
+	// 创建并存储LeaderManager实例
+	m.mu.Lock()
+	m.leaderManager = leader.NewLeaderManager(leaderConfig)
+	m.mu.Unlock()
+
+	// 启动LeaderManager
+	return m.leaderManager.Start(ctx)
 }
 
 // Handle 处理分区任务的主循环
@@ -222,11 +230,13 @@ func (m *Mgr) Handle(ctx context.Context) error {
 		// TaskWindow会内部创建Runner并具备熔断器功能
 	}
 
-	// 创建任务窗口
-	taskWindow := task.NewTaskWindow(windowConfig)
+	// 创建并存储TaskWindow实例
+	m.mu.Lock()
+	m.taskWindow = task.NewTaskWindow(windowConfig)
+	m.mu.Unlock()
 
 	// 启动任务窗口处理
-	taskWindow.Start(m.workCtx)
+	m.taskWindow.Start(m.workCtx)
 
 	// Handle不返回错误，除非上下文取消
 	<-m.workCtx.Done()
