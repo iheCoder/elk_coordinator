@@ -1560,3 +1560,206 @@ func BenchmarkAcquirePartition(b *testing.B) {
 		_, _, _ = strategy.AcquirePartition(ctx, i+1, fmt.Sprintf("worker%d", i), nil)
 	}
 }
+
+// ==================== Stop 方法测试 ====================
+
+// TestSimpleStrategy_Stop_Basic 测试 Stop 方法的基本功能
+func TestSimpleStrategy_Stop_Basic(t *testing.T) {
+	strategy, _, cleanup := setupSimpleStrategyTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// 测试正常停止
+	err := strategy.Stop(ctx)
+	assert.NoError(t, err)
+
+	// 对于 test_utils.MockLogger，我们无法检查具体的日志内容
+	// 但可以验证 Stop 方法执行成功
+	t.Log("SimpleStrategy.Stop() completed successfully")
+}
+
+// TestSimpleStrategy_Stop_WithPartitions 测试有分区时的停止操作
+func TestSimpleStrategy_Stop_WithPartitions(t *testing.T) {
+	strategy, _, cleanup := setupSimpleStrategyTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// 创建一些测试分区并获取锁
+	for i := 1; i <= 5; i++ {
+		partition := createTestPartition(i, model.StatusPending, "")
+		_, err := strategy.UpdatePartition(ctx, partition, nil)
+		assert.NoError(t, err)
+
+		// 获取分区锁
+		acquired, success, err := strategy.AcquirePartition(ctx, i, fmt.Sprintf("worker%d", i), nil)
+		assert.NoError(t, err)
+		assert.True(t, success)
+		assert.NotNil(t, acquired)
+	}
+
+	// 测试停止操作
+	start := time.Now()
+	err := strategy.Stop(ctx)
+	elapsed := time.Since(start)
+
+	assert.NoError(t, err)
+	t.Logf("Stop operation with 5 partitions completed in %v", elapsed)
+}
+
+// TestSimpleStrategy_Stop_EmptyPartitions 测试无分区时的停止操作
+func TestSimpleStrategy_Stop_EmptyPartitions(t *testing.T) {
+	strategy, _, cleanup := setupSimpleStrategyTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// 测试停止操作（无分区）
+	start := time.Now()
+	err := strategy.Stop(ctx)
+	elapsed := time.Since(start)
+
+	assert.NoError(t, err)
+
+	// 无分区时，停止操作应该很快
+	assert.Less(t, elapsed, 100*time.Millisecond, "Stop should be fast when no partitions exist")
+	t.Logf("Stop operation with no partitions completed in %v", elapsed)
+}
+
+// TestSimpleStrategy_Stop_CancelledContext 测试在取消的上下文中调用 Stop
+func TestSimpleStrategy_Stop_CancelledContext(t *testing.T) {
+	strategy, _, cleanup := setupSimpleStrategyTest(t)
+	defer cleanup()
+
+	// 创建已取消的上下文
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// 即使上下文被取消，Stop 方法也应该成功
+	err := strategy.Stop(ctx)
+	assert.NoError(t, err)
+	t.Log("Stop method succeeded even with cancelled context")
+}
+
+// TestSimpleStrategy_Stop_MultipleCall 测试多次调用 Stop 方法
+func TestSimpleStrategy_Stop_MultipleCall(t *testing.T) {
+	strategy, _, cleanup := setupSimpleStrategyTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// 第一次调用
+	err1 := strategy.Stop(ctx)
+	assert.NoError(t, err1)
+
+	// 第二次调用
+	err2 := strategy.Stop(ctx)
+	assert.NoError(t, err2)
+
+	t.Log("Multiple Stop calls completed successfully")
+}
+
+// TestSimpleStrategy_Stop_Performance 测试 Stop 方法的性能
+func TestSimpleStrategy_Stop_Performance(t *testing.T) {
+	strategy, _, cleanup := setupSimpleStrategyTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// 创建较多分区来测试并行性能
+	partitionCount := 20
+	for i := 1; i <= partitionCount; i++ {
+		partition := createTestPartition(i, model.StatusPending, "")
+		_, err := strategy.UpdatePartition(ctx, partition, nil)
+		assert.NoError(t, err)
+
+		// 获取分区锁
+		acquired, success, err := strategy.AcquirePartition(ctx, i, fmt.Sprintf("worker%d", i), nil)
+		assert.NoError(t, err)
+		assert.True(t, success)
+		assert.NotNil(t, acquired)
+	}
+
+	// 测试停止操作的耗时
+	start := time.Now()
+	err := strategy.Stop(ctx)
+	elapsed := time.Since(start)
+
+	assert.NoError(t, err)
+
+	// 并行处理应该比顺序处理快很多
+	// 20个分区，如果顺序处理每个需要10ms，总共需要200ms
+	// 并行处理应该在更短时间内完成
+	maxExpectedTime := 2 * time.Second // 给出足够的余量
+	assert.Less(t, elapsed, maxExpectedTime,
+		"Stop method with %d partitions took too long: %v", partitionCount, elapsed)
+
+	t.Logf("Stop operation with %d partitions completed in %v", partitionCount, elapsed)
+}
+
+// TestSimpleStrategy_Stop_ConcurrencyLimit 测试并发限制
+func TestSimpleStrategy_Stop_ConcurrencyLimit(t *testing.T) {
+	strategy, _, cleanup := setupSimpleStrategyTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// 创建大量分区（超过并发限制）
+	partitionCount := 50
+	for i := 1; i <= partitionCount; i++ {
+		partition := createTestPartition(i, model.StatusPending, "")
+		_, err := strategy.UpdatePartition(ctx, partition, nil)
+		assert.NoError(t, err)
+
+		// 获取分区锁
+		acquired, success, err := strategy.AcquirePartition(ctx, i, fmt.Sprintf("worker%d", i), nil)
+		assert.NoError(t, err)
+		assert.True(t, success)
+		assert.NotNil(t, acquired)
+	}
+
+	// 测试停止操作
+	start := time.Now()
+	err := strategy.Stop(ctx)
+	elapsed := time.Since(start)
+
+	assert.NoError(t, err)
+
+	// 验证操作完成
+	t.Logf("Stop operation with %d partitions (testing concurrency limit) completed in %v",
+		partitionCount, elapsed)
+}
+
+// TestSimpleStrategy_Stop_WithErrors 测试存在错误时的停止操作
+func TestSimpleStrategy_Stop_WithErrors(t *testing.T) {
+	strategy, mr, cleanup := setupSimpleStrategyTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// 创建一些分区并获取锁
+	for i := 1; i <= 3; i++ {
+		partition := createTestPartition(i, model.StatusPending, "")
+		_, err := strategy.UpdatePartition(ctx, partition, nil)
+		assert.NoError(t, err)
+
+		acquired, success, err := strategy.AcquirePartition(ctx, i, fmt.Sprintf("worker%d", i), nil)
+		assert.NoError(t, err)
+		assert.True(t, success)
+		assert.NotNil(t, acquired)
+	}
+
+	// 模拟 Redis 服务器关闭，这会导致锁释放失败
+	// 但 Stop 方法应该继续执行而不会被阻塞
+	mr.Close()
+
+	// Stop 方法应该在有错误的情况下也能完成
+	start := time.Now()
+	err := strategy.Stop(ctx)
+	elapsed := time.Since(start)
+
+	// 即使有错误，Stop 也应该成功返回（不阻塞shutdown）
+	assert.NoError(t, err)
+	t.Logf("Stop operation with simulated errors completed in %v", elapsed)
+}

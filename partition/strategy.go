@@ -85,4 +85,14 @@ type PartitionStrategy interface {
 
 	// GetPartitionStats 获取分区状态统计信息
 	GetPartitionStats(ctx context.Context) (*model.PartitionStats, error)
+
+	// ==================== 生命周期管理 ====================
+
+	// Stop 停止策略并清理相关资源
+	// 实现应该：
+	// 1. 释放该策略管理的所有分区锁
+	// 2. 停止相关的后台任务（如心跳维护）
+	// 3. 清理内部状态
+	// 此方法遵循关注点分离原则，让策略组件负责自己的资源清理
+	Stop(ctx context.Context) error
 }

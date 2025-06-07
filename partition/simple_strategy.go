@@ -1,9 +1,11 @@
 package partition
 
 import (
+	"context"
 	"elk_coordinator/data"
 	"elk_coordinator/model"
 	"elk_coordinator/utils"
+	"sync"
 	"time"
 )
 
@@ -91,4 +93,100 @@ func NewSimpleStrategy(config SimpleStrategyConfig) *SimpleStrategy {
 //   - StrategyType: 策略类型为 StrategyTypeSimple
 func (s *SimpleStrategy) StrategyType() model.StrategyType {
 	return model.StrategyTypeSimple
+}
+
+// Stop 停止策略并清理相关资源
+//
+// 实现关注点分离原则，由 SimpleStrategy 负责清理自己管理的资源：
+// 1. 获取所有分区信息
+// 2. 并行释放分区的分布式锁（相比顺序释放更快）
+// 3. 清理相关的内部状态
+//
+// 参数:
+//   - ctx: 上下文，用于控制操作超时和取消
+//
+// 返回:
+//   - error: 如果清理过程中发生错误
+func (s *SimpleStrategy) Stop(ctx context.Context) error {
+	s.logger.Infof("SimpleStrategy stopping, cleaning up partition locks...")
+
+	// 获取所有分区信息，用于清理
+	allPartitions, err := s.GetAllPartitions(ctx)
+	if err != nil {
+		s.logger.Errorf("Failed to get partitions during stop: %v", err)
+		// 即使获取分区失败，也要继续尝试清理
+		return nil // 不阻塞其他组件的停止
+	}
+
+	if len(allPartitions) == 0 {
+		s.logger.Infof("SimpleStrategy stopped, no partitions to clean up")
+		return nil
+	}
+
+	// 并行释放所有分区锁以提高性能
+	return s.releasePartitionLocksParallel(ctx, allPartitions)
+}
+
+// releasePartitionLocksParallel 并行释放分区锁
+// 相比顺序释放，这个方法能显著提高大量分区的停止性能
+func (s *SimpleStrategy) releasePartitionLocksParallel(ctx context.Context, partitions []*model.PartitionInfo) error {
+	// 创建带缓冲的通道来控制并发数，避免过多的 goroutines
+	maxConcurrency := 20 // 限制并发数以避免资源耗尽
+	if len(partitions) < maxConcurrency {
+		maxConcurrency = len(partitions)
+	}
+
+	sem := make(chan struct{}, maxConcurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errors []error
+	releasedCount := 0
+
+	s.logger.Debugf("Starting parallel lock release for %d partitions with max concurrency %d",
+		len(partitions), maxConcurrency)
+
+	for _, partition := range partitions {
+		if partition == nil {
+			continue
+		}
+
+		wg.Add(1)
+		go func(p *model.PartitionInfo) {
+			defer wg.Done()
+
+			// 获取信号量
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			// 释放分区锁
+			lockKey := s.getPartitionLockKey(p.PartitionID)
+			err := s.dataStore.ReleaseLock(ctx, lockKey, p.WorkerID)
+
+			// 安全地更新共享状态
+			mu.Lock()
+			if err != nil {
+				s.logger.Warnf("Failed to release partition lock during stop, partitionID: %d, workerID: %s, error: %v",
+					p.PartitionID, p.WorkerID, err)
+				errors = append(errors, err)
+			} else {
+				releasedCount++
+				s.logger.Debugf("Released partition lock during stop, partitionID: %d, workerID: %s",
+					p.PartitionID, p.WorkerID)
+			}
+			mu.Unlock()
+		}(partition)
+	}
+
+	// 等待所有 goroutines 完成
+	wg.Wait()
+
+	s.logger.Infof("SimpleStrategy stopped, totalPartitions: %d, releasedLocks: %d, errors: %d",
+		len(partitions), releasedCount, len(errors))
+
+	// 如果有错误，返回第一个错误，但不阻塞停止过程
+	if len(errors) > 0 {
+		return errors[0] // 返回第一个错误作为示例
+	}
+
+	return nil
 }

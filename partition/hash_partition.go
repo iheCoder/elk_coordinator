@@ -1,6 +1,7 @@
 package partition
 
 import (
+	"context"
 	"elk_coordinator/model"
 	"time"
 
@@ -80,12 +81,24 @@ func (s *HashPartitionStrategy) StrategyType() model.StrategyType {
 	return model.StrategyTypeHash
 }
 
-// ==================== PartitionStrategy 接口实现 ====================
+// Stop 停止策略并清理相关资源
+//
+// 实现关注点分离原则，由 HashPartitionStrategy 负责清理自己管理的资源：
+// - Hash 策略使用心跳超时机制，不管理分布式锁，因此不需要主动释放资源
+// - 只需要停止内部状态和清理轻量级资源
+//
+// 参数:
+//   - ctx: 上下文，用于控制操作超时和取消
+//
+// 返回:
+//   - error: 如果清理过程中发生错误
+func (s *HashPartitionStrategy) Stop(ctx context.Context) error {
+	s.logger.Infof("HashPartitionStrategy stopping...")
 
-// 所有的PartitionStrategy接口方法实现都已移动到对应的专门文件中：
-// - CRUD 操作在 hash_partition_crud.go
-// - 版本控制在 hash_partition_version.go
-// - 心跳管理在 hash_partition_heartbeat.go
-// - 批量操作在 hash_partition_batch.go
-// - 状态管理在 hash_partition_status.go
-// - 统计功能在 hash_partition_stats.go
+	// Hash 策略使用心跳超时机制，不需要释放分布式锁
+	// 分区会通过心跳超时自然释放，无需手动清理
+	// 这是一个快速、轻量级的停止操作
+
+	s.logger.Infof("HashPartitionStrategy stopped successfully")
+	return nil
+}
