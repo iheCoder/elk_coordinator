@@ -26,6 +26,9 @@ type Runner struct {
 
 	// 熔断器
 	circuitBreaker *CircuitBreaker
+
+	// 一致性hash（可选）
+	consistentHash *TaskConsistentHash
 }
 
 // RunnerConfig 用于配置任务执行器
@@ -44,6 +47,10 @@ type RunnerConfig struct {
 	// 熔断器配置（可选）
 	CircuitBreaker       *CircuitBreaker       // 可以直接提供熔断器实例
 	CircuitBreakerConfig *CircuitBreakerConfig // 或者提供熔断器配置，会自动创建熔断器实例
+
+	// 一致性hash配置（可选）
+	ConsistentHash       *TaskConsistentHash       // 可以直接提供一致性hash实例
+	ConsistentHashConfig *TaskConsistentHashConfig // 或者提供一致性hash配置，会自动创建实例
 }
 
 // NewRunner 创建新的任务执行器
@@ -74,6 +81,11 @@ func NewRunner(config RunnerConfig) *Runner {
 		}
 	}
 
+	// 初始化一致性hash（可选）
+	if config.ConsistentHash == nil && config.ConsistentHashConfig != nil {
+		config.ConsistentHash = NewTaskConsistentHash(*config.ConsistentHashConfig)
+	}
+
 	return &Runner{
 		// 标识和配置
 		namespace:           config.Namespace,
@@ -88,6 +100,9 @@ func NewRunner(config RunnerConfig) *Runner {
 
 		// 熔断器
 		circuitBreaker: config.CircuitBreaker,
+
+		// 一致性hash
+		consistentHash: config.ConsistentHash,
 	}
 }
 
