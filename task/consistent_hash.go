@@ -9,7 +9,6 @@ import (
 	"elk_coordinator/utils"
 	"fmt"
 	"math"
-	"math/rand"
 	"sort"
 	"strconv"
 	"sync"
@@ -346,39 +345,6 @@ type ConsistentHashDistributionAnalysis struct {
 	WorkerDistribution   map[string]int `json:"worker_distribution"`   // 每个工作节点分配的分区数
 	DistributionVariance float64        `json:"distribution_variance"` // 分布方差
 	QualityScore         float64        `json:"quality_score"`         // 分布质量评分 (0-100)
-}
-
-// GetRandomPartitions 获取随机分区列表作为备选方案
-// 当一致性hash不可用时使用
-func (tch *TaskConsistentHash) GetRandomPartitions(allPartitions []*model.PartitionInfo, maxCount int) []*model.PartitionInfo {
-	var pendingPartitions []*model.PartitionInfo
-
-	// 收集所有pending状态的分区
-	for _, partition := range allPartitions {
-		if partition.Status == model.StatusPending && partition.WorkerID == "" {
-			pendingPartitions = append(pendingPartitions, partition)
-		}
-	}
-
-	// 如果分区数量小于等于maxCount，直接返回
-	if len(pendingPartitions) <= maxCount {
-		return pendingPartitions
-	}
-
-	// 随机选择maxCount个分区
-	rand.Seed(time.Now().UnixNano())
-	selected := make([]*model.PartitionInfo, maxCount)
-	for i := 0; i < maxCount; i++ {
-		// 从剩余分区中随机选择一个
-		randomIndex := rand.Intn(len(pendingPartitions))
-		selected[i] = pendingPartitions[randomIndex]
-
-		// 将选中的分区从列表中移除，避免重复选择
-		pendingPartitions[randomIndex] = pendingPartitions[len(pendingPartitions)-1]
-		pendingPartitions = pendingPartitions[:len(pendingPartitions)-1]
-	}
-
-	return selected
 }
 
 // rebuildHashRing 完全重建hash环（仅用于首次初始化）

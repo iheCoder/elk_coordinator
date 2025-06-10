@@ -437,51 +437,6 @@ func TestTaskConsistentHash_EmptyWorkers(t *testing.T) {
 	assert.Equal(t, 10, analysis.PendingPartitions, "应该有10个待处理分区")
 }
 
-// TestTaskConsistentHash_GetRandomPartitions 测试随机分区获取功能
-func TestTaskConsistentHash_GetRandomPartitions(t *testing.T) {
-	mockStore := test_utils.NewMockDataStore()
-	logger := test_utils.NewMockLogger(false)
-
-	config := TaskConsistentHashConfig{
-		Namespace:              "test",
-		WorkerID:               "worker1",
-		Logger:                 logger,
-		DataStore:              mockStore,
-		ValidHeartbeatDuration: 60 * time.Second,
-		UpdateTTL:              5 * time.Second,
-		VirtualNodes:           10,
-	}
-
-	tch := NewTaskConsistentHash(config)
-
-	// 创建测试分区，包括不同状态的分区
-	allPartitions := []*model.PartitionInfo{
-		{PartitionID: 1, Status: model.StatusPending, WorkerID: ""},
-		{PartitionID: 2, Status: model.StatusPending, WorkerID: ""},
-		{PartitionID: 3, Status: model.StatusPending, WorkerID: ""},
-		{PartitionID: 4, Status: model.StatusClaimed, WorkerID: "worker2"},
-		{PartitionID: 5, Status: model.StatusRunning, WorkerID: "worker3"},
-		{PartitionID: 6, Status: model.StatusPending, WorkerID: ""},
-		{PartitionID: 7, Status: model.StatusCompleted, WorkerID: "worker1"},
-	}
-
-	// 测试获取随机分区
-	randomPartitions := tch.GetRandomPartitions(allPartitions, 2)
-
-	// 验证结果
-	assert.Equal(t, 2, len(randomPartitions), "应该返回2个随机分区")
-
-	// 验证所有返回的分区都是pending状态
-	for _, partition := range randomPartitions {
-		assert.Equal(t, model.StatusPending, partition.Status)
-		assert.Equal(t, "", partition.WorkerID)
-	}
-
-	// 测试请求的数量大于可用分区数量的情况
-	randomPartitions2 := tch.GetRandomPartitions(allPartitions, 10)
-	assert.Equal(t, 4, len(randomPartitions2), "应该返回所有可用的pending分区")
-}
-
 // TestTaskConsistentHash_QualityScore 测试分布质量评分
 func TestTaskConsistentHash_QualityScore(t *testing.T) {
 	ctx := context.Background()
