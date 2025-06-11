@@ -10,10 +10,12 @@ import (
 // MockDataStore 实现data.DataStore接口，用于测试
 // 注意：与leader/mock_test.go中的mockDataStore不同，这个可以被其他包使用
 type MockDataStore struct {
-	Locks         map[string]string
-	Heartbeats    map[string]string
-	PartitionData map[string]string
-	LockMutex     sync.RWMutex
+	Locks          map[string]string
+	Heartbeats     map[string]string
+	PartitionData  map[string]string
+	LockMutex      sync.RWMutex
+	HeartbeatMutex sync.RWMutex // 保护心跳数据的并发访问
+	PartitionMutex sync.RWMutex // 保护分区数据的并发访问
 }
 
 // NewMockDataStore 创建一个新的模拟数据存储实例
@@ -81,12 +83,16 @@ func (m *MockDataStore) ReleaseLock(ctx context.Context, key string, value strin
 
 // 实现SetHeartbeat方法
 func (m *MockDataStore) SetHeartbeat(ctx context.Context, key string, value string) error {
+	m.HeartbeatMutex.Lock()
+	defer m.HeartbeatMutex.Unlock()
 	m.Heartbeats[key] = value
 	return nil
 }
 
 // 实现GetHeartbeat方法
 func (m *MockDataStore) GetHeartbeat(ctx context.Context, key string) (string, error) {
+	m.HeartbeatMutex.RLock()
+	defer m.HeartbeatMutex.RUnlock()
 	value, exists := m.Heartbeats[key]
 	if !exists {
 		return "", fmt.Errorf("heartbeat not found")
@@ -100,6 +106,9 @@ func (m *MockDataStore) GetKeys(ctx context.Context, pattern string) ([]string, 
 	var keys []string
 	prefix := pattern[:len(pattern)-1] // 去掉末尾的 '*'
 
+	m.HeartbeatMutex.RLock()
+	defer m.HeartbeatMutex.RUnlock()
+
 	for key := range m.Heartbeats {
 		if len(key) >= len(prefix) && key[:len(prefix)] == prefix {
 			keys = append(keys, key)
@@ -110,12 +119,16 @@ func (m *MockDataStore) GetKeys(ctx context.Context, pattern string) ([]string, 
 
 // 实现SetPartitions方法
 func (m *MockDataStore) SetPartitions(ctx context.Context, key string, value string) error {
+	m.PartitionMutex.Lock()
+	defer m.PartitionMutex.Unlock()
 	m.PartitionData[key] = value
 	return nil
 }
 
 // 实现GetPartitions方法
 func (m *MockDataStore) GetPartitions(ctx context.Context, key string) (string, error) {
+	m.PartitionMutex.RLock()
+	defer m.PartitionMutex.RUnlock()
 	value, exists := m.PartitionData[key]
 	if !exists {
 		return "", nil
@@ -125,6 +138,8 @@ func (m *MockDataStore) GetPartitions(ctx context.Context, key string) (string, 
 
 // 实现DeleteKey方法
 func (m *MockDataStore) DeleteKey(ctx context.Context, key string) error {
+	m.HeartbeatMutex.Lock()
+	defer m.HeartbeatMutex.Unlock()
 	delete(m.Heartbeats, key)
 	return nil
 }
@@ -163,11 +178,15 @@ func (m *MockDataStore) CheckLock(ctx context.Context, key string, expectedValue
 	return value == expectedValue, nil
 }
 
-// 同步状态数据
+// 同步状态数据 - 使用线程安全的访问
 var syncStatusData = make(map[string]string)
+var syncStatusMutex sync.RWMutex
 
 // 实现GetSyncStatus方法
 func (m *MockDataStore) GetSyncStatus(ctx context.Context, key string) (string, error) {
+	syncStatusMutex.RLock()
+	defer syncStatusMutex.RUnlock()
+
 	value, exists := syncStatusData[key]
 	if !exists {
 		return "", fmt.Errorf("sync status not found for key: %s", key)
@@ -178,12 +197,15 @@ func (m *MockDataStore) GetSyncStatus(ctx context.Context, key string) (string, 
 
 // 实现SetSyncStatus方法
 func (m *MockDataStore) SetSyncStatus(ctx context.Context, key string, value string) error {
+	syncStatusMutex.Lock()
+	defer syncStatusMutex.Unlock()
 	syncStatusData[key] = value
 	return nil
 }
 
-// 工作节点数据
+// 工作节点数据 - 使用线程安全的访问
 var workersData = make(map[string]map[string]bool) // 存储 workersKey -> {workerID: true} 的映射
+var workersDataMutex sync.RWMutex
 
 // 实现RegisterWorker方法
 func (m *MockDataStore) RegisterWorker(ctx context.Context, workersKey, workerID string, heartbeatKey string, heartbeatValue string) error {
@@ -195,7 +217,9 @@ func (m *MockDataStore) RegisterWorker(ctx context.Context, workersKey, workerID
 	// 注册工作节点
 	workersData[workersKey][workerID] = true
 
-	// 设置心跳
+	// 设置心跳（使用线程安全方式）
+	m.HeartbeatMutex.Lock()
+	defer m.HeartbeatMutex.Unlock()
 	m.Heartbeats[heartbeatKey] = heartbeatValue
 
 	return nil
@@ -208,7 +232,9 @@ func (m *MockDataStore) UnregisterWorker(ctx context.Context, workersKey, worker
 		delete(workers, workerID)
 	}
 
-	// 删除心跳
+	// 删除心跳（使用线程安全方式）
+	m.HeartbeatMutex.Lock()
+	defer m.HeartbeatMutex.Unlock()
 	delete(m.Heartbeats, heartbeatKey)
 
 	return nil
@@ -232,6 +258,8 @@ func (m *MockDataStore) GetActiveWorkers(ctx context.Context, workersKey string)
 
 // 实现IsWorkerActive方法
 func (m *MockDataStore) IsWorkerActive(ctx context.Context, heartbeatKey string) (bool, error) {
+	m.HeartbeatMutex.RLock()
+	defer m.HeartbeatMutex.RUnlock()
 	_, exists := m.Heartbeats[heartbeatKey]
 	return exists, nil
 }

@@ -231,7 +231,6 @@ func (s *HashPartitionStrategy) AcquirePartition(ctx context.Context, partitionI
 
 	// 在并发环境下，对于pending分区的获取可能需要重试几次以处理乐观锁冲突
 	const maxRetries = 3
-	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		// 获取当前分区状态
@@ -295,8 +294,5 @@ func (s *HashPartitionStrategy) AcquirePartition(ctx context.Context, partitionI
 	}
 
 	// 如果所有重试都失败了，返回最后的错误
-	if lastErr != nil {
-		return nil, false, lastErr
-	}
 	return nil, false, fmt.Errorf("获取分区 %d 失败：超过最大重试次数", partitionID)
 }
