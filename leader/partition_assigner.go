@@ -495,24 +495,21 @@ func (pm *PartitionAssigner) detectGapsAroundNewPartitions(ctx context.Context, 
 		if prevRange != nil && prevRange.MaxID+1 < newPartition.MinID {
 			gapStart := prevRange.MaxID + 1
 			gapEnd := newPartition.MinID - 1
-			if pm.hasDataInRange(ctx, gapStart, gapEnd) {
-				gap := DataGap{StartID: gapStart, EndID: gapEnd}
-				gaps = append(gaps, gap)
-				pm.logger.Debugf("发现新分区 %d 前面的缺口: [%d, %d]",
-					newPartition.PartitionID, gapStart, gapEnd)
-			}
+			gap := DataGap{StartID: gapStart, EndID: gapEnd}
+			gaps = append(gaps, gap)
+			pm.logger.Debugf("发现新分区 %d 前面的缺口: [%d, %d]",
+				newPartition.PartitionID, gapStart, gapEnd)
+
 		}
 
 		// 检查后面的缺口
 		if nextRange != nil && newPartition.MaxID+1 < nextRange.MinID {
 			gapStart := newPartition.MaxID + 1
 			gapEnd := nextRange.MinID - 1
-			if pm.hasDataInRange(ctx, gapStart, gapEnd) {
-				gap := DataGap{StartID: gapStart, EndID: gapEnd}
-				gaps = append(gaps, gap)
-				pm.logger.Debugf("发现新分区 %d 后面的缺口: [%d, %d]",
-					newPartition.PartitionID, gapStart, gapEnd)
-			}
+			gap := DataGap{StartID: gapStart, EndID: gapEnd}
+			gaps = append(gaps, gap)
+			pm.logger.Debugf("发现新分区 %d 后面的缺口: [%d, %d]",
+				newPartition.PartitionID, gapStart, gapEnd)
 		}
 	}
 
@@ -625,20 +622,17 @@ func (pm *PartitionAssigner) detectGapsBetweenPartitions(ctx context.Context, al
 		current := sortedPartitions[i]
 		next := sortedPartitions[i+1]
 
-		// 如果两个分区之间有空隙，验证是否有真实数据
+		// 如果两个分区之间有空隙，构建缺口
 		if current.MaxID+1 < next.MinID {
 			gapStart := current.MaxID + 1
 			gapEnd := next.MinID - 1
 
-			// 验证这个缺口中是否真的有数据
-			if pm.hasDataInRange(ctx, gapStart, gapEnd) {
-				gap := DataGap{
-					StartID: gapStart,
-					EndID:   gapEnd,
-				}
-				gaps = append(gaps, gap)
-				pm.logger.Debugf("发现分区间数据缺口: [%d, %d]", gap.StartID, gap.EndID)
+			gap := DataGap{
+				StartID: gapStart,
+				EndID:   gapEnd,
 			}
+			gaps = append(gaps, gap)
+			pm.logger.Debugf("发现分区间数据缺口: [%d, %d]", gap.StartID, gap.EndID)
 		}
 	}
 
