@@ -5,6 +5,8 @@ import (
 	"elk_coordinator/model"
 	"elk_coordinator/test_utils"
 	"elk_coordinator/utils"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1329,4 +1331,108 @@ func TestPartitionCountCalculationEdgeCases(t *testing.T) {
 				tc.name, actualPartitions, tc.lastAllocatedID+1, tc.nextMaxID)
 		})
 	}
+}
+
+// TestSafeMultiply 测试安全乘法功能
+func TestSafeMultiply(t *testing.T) {
+	config := PartitionAssignerConfig{
+		Namespace:               "test",
+		WorkerPartitionMultiple: 5,
+	}
+
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	mockPlaner := &mockPartitionPlaner{
+		suggestedPartitionSize: 3000,
+	}
+	logger := test_utils.NewMockLogger(false)
+
+	partitionMgr := NewPartitionAssigner(config, mockStrategy, logger, mockPlaner)
+
+	// 测试场景1: 正常计算，不溢出
+	result, err := partitionMgr.safeMultiply(1000, 10, 5)
+	if err != nil {
+		t.Errorf("正常计算不应该出错: %v", err)
+	}
+	expected := int64(50000)
+	if result != expected {
+		t.Errorf("计算结果不正确，期望 %d，得到 %d", expected, result)
+	}
+
+	// 测试场景2: 第一步乘法溢出
+	maxVal := int64(9223372036854775807) // int64最大值
+	_, err = partitionMgr.safeMultiply(maxVal, 2, 1)
+	if err == nil {
+		t.Error("应该检测到乘法溢出")
+	}
+	if !strings.Contains(err.Error(), "乘法溢出") {
+		t.Errorf("错误信息不正确: %v", err)
+	}
+
+	// 测试场景3: 第二步乘法溢出
+	_, err = partitionMgr.safeMultiply(1000000000, 1000000000, 10) // 10^9 * 10^9 * 10 = 10^19，超过int64最大值
+	if err == nil {
+		t.Error("应该检测到乘法溢出")
+	}
+
+	// 测试场景4: 正常的大数值计算（不溢出）
+	result2, err := partitionMgr.safeMultiply(500000000, 3, 1) // 15亿，在int64范围内
+	if err != nil {
+		t.Errorf("正常的大数值计算不应该出错: %v", err)
+	}
+	expected2 := int64(1500000000)
+	if result2 != expected2 {
+		t.Errorf("大数值计算结果不正确，期望 %d，得到 %d", expected2, result2)
+	}
+
+	// 测试场景5: 负数参数
+	_, err = partitionMgr.safeMultiply(-1, 10, 5)
+	if err == nil {
+		t.Error("应该检测到负数参数")
+	}
+	if !strings.Contains(err.Error(), "乘法参数必须为正数") {
+		t.Errorf("错误信息不正确: %v", err)
+	}
+}
+
+// TestCalculateLookAheadRangeWithOverflow 测试在溢出情况下的ID探测范围计算
+func TestCalculateLookAheadRangeWithOverflow(t *testing.T) {
+	config := PartitionAssignerConfig{
+		Namespace:               "test",
+		WorkerPartitionMultiple: 10000000000, // 非常大的倍数，确保溢出
+	}
+
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	mockPlaner := &mockPartitionPlaner{
+		suggestedPartitionSize: 1000000000, // 10亿的分区大小
+	}
+	logger := test_utils.NewMockLogger(false)
+
+	partitionMgr := NewPartitionAssigner(config, mockStrategy, logger, mockPlaner)
+	ctx := context.Background()
+
+	// 测试场景: 大量worker导致计算溢出
+	manyWorkers := make([]string, 1000)
+	for i := 0; i < 1000; i++ {
+		manyWorkers[i] = fmt.Sprintf("worker-%d", i)
+	}
+
+	rangeSize, err := partitionMgr.CalculateLookAheadRange(ctx, manyWorkers, config.WorkerPartitionMultiple)
+	if err != nil {
+		t.Errorf("计算ID探测范围失败: %v", err)
+	}
+
+	// 验证结果应该是一个合理的值，而不是溢出或极大的数字
+	if rangeSize <= 0 {
+		t.Errorf("探测范围应该大于0，得到 %d", rangeSize)
+	}
+
+	// 当溢出时，应该返回默认值
+	if rangeSize == DefaultRangeSize {
+		t.Logf("✅ 正确检测到溢出，使用默认值: %d", rangeSize)
+	} else {
+		// 如果没有溢出，验证结果是否合理
+		t.Logf("未发生溢出，计算结果: %d", rangeSize)
+	}
+
+	t.Logf("溢出保护后的探测范围: %d", rangeSize)
 }

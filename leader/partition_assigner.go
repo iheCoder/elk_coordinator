@@ -10,6 +10,10 @@ import (
 	"github.com/pkg/errors"
 )
 
+const (
+	DefaultRangeSize = 1000_000
+)
+
 // PartitionRange 表示分区的数据范围
 type PartitionRange struct {
 	PartitionID int   // 分区ID
@@ -273,13 +277,31 @@ func (pm *PartitionAssigner) CalculateLookAheadRange(ctx context.Context, active
 		workerCount = model.DefaultMinWorkerCount
 	}
 
-	// 基于分区大小、节点数量和配置的分区倍数计算合理的探测范围
-	rangeSize := partitionSize * int64(workerCount) * workerPartitionMultiple
+	// 安全的乘法计算，防止溢出
+	rangeSize, err := pm.safeMultiply(partitionSize, int64(workerCount), workerPartitionMultiple)
+	if err != nil {
+		pm.logger.Warnf("计算ID探测范围时检测到溢出风险: %v，使用安全的备选计算", err)
+		rangeSize = DefaultRangeSize
+	}
 
 	pm.logger.Debugf("ID探测范围计算: partitionSize=%d, activeWorkers=%d, effectiveWorkerCount=%d, workerPartitionMultiple=%d, rangeSize=%d",
 		partitionSize, len(activeWorkers), workerCount, workerPartitionMultiple, rangeSize)
 
 	return rangeSize, nil
+}
+
+// safeMultiply 安全的三个int64乘法，检查溢出
+func (pm *PartitionAssigner) safeMultiply(a, b, c int64) (int64, error) {
+	if a <= 0 || b <= 0 || c <= 0 {
+		return 0, errors.New("乘法参数必须为正数")
+	}
+
+	result := a * b * c
+	if result < 0 {
+		return 0, errors.New("乘法溢出")
+	}
+
+	return result, nil
 }
 
 // GetEffectivePartitionSize 获取有效的分区大小（从处理器建议或默认值）
