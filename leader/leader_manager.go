@@ -50,7 +50,7 @@ func NewLeaderManager(config LeaderConfig) *LeaderManager {
 	})
 
 	// 创建并配置分区管理器
-	partitionMgr := NewPartitionManager(PartitionAssignerConfig{
+	partitionMgr := NewPartitionAssigner(PartitionAssignerConfig{
 		Namespace:               config.Namespace,
 		WorkerPartitionMultiple: config.WorkerPartitionMultiple,
 	}, config.Strategy, config.Logger, config.Planer)

@@ -88,7 +88,7 @@ func TestTryAllocatePartitions(t *testing.T) {
 	})
 
 	mockStrategy := test_utils.NewMockPartitionStrategy()
-	partitionMgr := NewPartitionManager(PartitionAssignerConfig{Namespace: "test"}, mockStrategy, test_utils.NewMockLogger(false), mockPlaner)
+	partitionMgr := NewPartitionAssigner(PartitionAssignerConfig{Namespace: "test"}, mockStrategy, test_utils.NewMockLogger(false), mockPlaner)
 
 	ctx := context.Background()
 
@@ -144,7 +144,7 @@ func TestRunPartitionAllocationLoop(t *testing.T) {
 	})
 
 	mockStrategy := test_utils.NewMockPartitionStrategy()
-	partitionMgr := NewPartitionManager(PartitionAssignerConfig{Namespace: "test"}, mockStrategy, test_utils.NewMockLogger(false), mockPlaner)
+	partitionMgr := NewPartitionAssigner(PartitionAssignerConfig{Namespace: "test"}, mockStrategy, test_utils.NewMockLogger(false), mockPlaner)
 
 	// 设置一个有效的心跳
 	now := time.Now()

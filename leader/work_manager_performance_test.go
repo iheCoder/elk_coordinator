@@ -30,7 +30,7 @@ func TestPartitionAssignerScalingPerformance(t *testing.T) {
 		ValidHeartbeatDuration: 30 * time.Second,
 	})
 
-	partitionMgr := NewPartitionManager(
+	partitionMgr := NewPartitionAssigner(
 		PartitionAssignerConfig{
 			Namespace:               "perf-test",
 			WorkerPartitionMultiple: 2,
@@ -192,7 +192,7 @@ func TestWorkManagerMemoryLeak(t *testing.T) {
 		AllocationInterval:     50 * time.Millisecond,           // 快速循环
 	})
 
-	partitionMgr := NewPartitionManager(
+	partitionMgr := NewPartitionAssigner(
 		PartitionAssignerConfig{
 			Namespace:               "memory-test",
 			WorkerPartitionMultiple: 1,

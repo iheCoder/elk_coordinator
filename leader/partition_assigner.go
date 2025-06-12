@@ -36,9 +36,9 @@ type PartitionAssigner struct {
 	knownPartitionRanges []PartitionRange // 已知的分区范围缓存
 }
 
-// NewPartitionManager 创建新的分区管理器
+// NewPartitionAssigner 创建新的分区管理器
 // 将依赖作为构造函数参数，配置作为单独的结构体
-func NewPartitionManager(
+func NewPartitionAssigner(
 	config PartitionAssignerConfig,
 	strategy partition.PartitionStrategy,
 	logger utils.Logger,
@@ -72,8 +72,8 @@ func WithPlaner(planer PartitionPlaner) PartitionAssignerOption {
 	}
 }
 
-// NewPartitionManagerWithOptions 使用选项模式创建分区管理器
-func NewPartitionManagerWithOptions(
+// NewPartitionAssignerWithOptions 使用选项模式创建分区管理器
+func NewPartitionAssignerWithOptions(
 	config PartitionAssignerConfig,
 	strategy partition.PartitionStrategy, // 必须依赖
 	opts ...PartitionAssignerOption,
@@ -222,8 +222,10 @@ func (pm *PartitionAssigner) CreatePartitionsRequestWithBounds(ctx context.Conte
 	}
 
 	// 根据分区大小计算分区数量
+	// 修复：计算实际需要处理的ID数量，并使用向上取整避免余数丢失
 	totalIds := nextMaxID - lastAllocatedID
-	partitionCount := int(totalIds / partitionSize)
+	// 使用向上取整，确保所有ID都被分区覆盖
+	partitionCount := int((totalIds + partitionSize - 1) / partitionSize)
 	if partitionCount == 0 {
 		partitionCount = 1 // 至少创建一个分区
 	}

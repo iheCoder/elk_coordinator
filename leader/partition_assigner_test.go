@@ -190,7 +190,7 @@ func TestGetLastAllocatedID(t *testing.T) {
 
 // TestShouldAllocateNewPartitions 测试分区分配决策逻辑
 func TestShouldAllocateNewPartitions(t *testing.T) {
-	partitionMgr := NewPartitionManager(PartitionAssignerConfig{Namespace: "test"}, test_utils.NewMockPartitionStrategy(), test_utils.NewMockLogger(false), &mockPartitionPlaner{})
+	partitionMgr := NewPartitionAssigner(PartitionAssignerConfig{Namespace: "test"}, test_utils.NewMockPartitionStrategy(), test_utils.NewMockLogger(false), &mockPartitionPlaner{})
 
 	// 测试场景1: 空分区应该分配
 	stats1 := model.PartitionStats{
@@ -236,7 +236,7 @@ func TestCreatePartitionsRequest(t *testing.T) {
 		suggestedPartitionSize: 500, // 建议的分区大小
 	}
 
-	partitionMgr := NewPartitionManager(PartitionAssignerConfig{Namespace: "test"}, test_utils.NewMockPartitionStrategy(), test_utils.NewMockLogger(false), planer)
+	partitionMgr := NewPartitionAssigner(PartitionAssignerConfig{Namespace: "test"}, test_utils.NewMockPartitionStrategy(), test_utils.NewMockLogger(false), planer)
 
 	ctx := context.Background()
 
@@ -291,7 +291,7 @@ func TestCalculateLookAheadRange(t *testing.T) {
 		suggestedPartitionSize: 1000, // 建议的分区大小
 	}
 
-	partitionMgr := NewPartitionManager(PartitionAssignerConfig{Namespace: "test"}, test_utils.NewMockPartitionStrategy(), test_utils.NewMockLogger(false), planer)
+	partitionMgr := NewPartitionAssigner(PartitionAssignerConfig{Namespace: "test"}, test_utils.NewMockPartitionStrategy(), test_utils.NewMockLogger(false), planer)
 
 	ctx := context.Background()
 
@@ -349,7 +349,7 @@ func TestGetEffectivePartitionSize(t *testing.T) {
 		suggestedPartitionSize: 2000,
 	}
 
-	partitionMgr1 := NewPartitionManager(PartitionAssignerConfig{Namespace: "test"}, test_utils.NewMockPartitionStrategy(), test_utils.NewMockLogger(false), planer1)
+	partitionMgr1 := NewPartitionAssigner(PartitionAssignerConfig{Namespace: "test"}, test_utils.NewMockPartitionStrategy(), test_utils.NewMockLogger(false), planer1)
 
 	size, err := partitionMgr1.GetEffectivePartitionSize(ctx)
 	if err != nil {
@@ -365,7 +365,7 @@ func TestGetEffectivePartitionSize(t *testing.T) {
 		suggestedPartitionSize: 0, // 返回0表示未建议
 	}
 
-	partitionMgr2 := NewPartitionManager(PartitionAssignerConfig{Namespace: "test"}, test_utils.NewMockPartitionStrategy(), test_utils.NewMockLogger(false), planer2)
+	partitionMgr2 := NewPartitionAssigner(PartitionAssignerConfig{Namespace: "test"}, test_utils.NewMockPartitionStrategy(), test_utils.NewMockLogger(false), planer2)
 
 	size, err = partitionMgr2.GetEffectivePartitionSize(ctx)
 	if err != nil {
@@ -391,7 +391,7 @@ func TestCreatePartitionsForGap(t *testing.T) {
 	}
 	logger := utils.NewDefaultLogger()
 
-	partitionMgr := NewPartitionManager(config, mockStrategy, logger, mockPlaner)
+	partitionMgr := NewPartitionAssigner(config, mockStrategy, logger, mockPlaner)
 	ctx := context.Background()
 
 	// 测试场景1: 小缺口，创建单个分区
@@ -460,7 +460,7 @@ func TestDetectAndCreateGapPartitions(t *testing.T) {
 	}
 	logger := utils.NewDefaultLogger()
 
-	partitionMgr := NewPartitionManager(config, mockStrategy, logger, mockPlaner)
+	partitionMgr := NewPartitionAssigner(config, mockStrategy, logger, mockPlaner)
 
 	ctx := context.Background()
 
@@ -513,7 +513,7 @@ func TestDetectGapsBetweenPartitions(t *testing.T) {
 	}
 	logger := test_utils.NewMockLogger(false)
 
-	partitionMgr := NewPartitionManager(config, mockStrategy, logger, mockPlaner)
+	partitionMgr := NewPartitionAssigner(config, mockStrategy, logger, mockPlaner)
 	ctx := context.Background()
 
 	// 测试场景1: 无分区，应该返回空
@@ -575,7 +575,7 @@ func TestHasDataInRange(t *testing.T) {
 		suggestedPartitionSize: 1000,
 		nextMaxID:              1500, // 模拟在1001-2000范围内有数据
 	}
-	partitionMgr1 := NewPartitionManager(config, mockStrategy, logger, mockPlanerWithData)
+	partitionMgr1 := NewPartitionAssigner(config, mockStrategy, logger, mockPlanerWithData)
 
 	hasData := partitionMgr1.hasDataInRange(ctx, 1000, 2000)
 	if !hasData {
@@ -587,7 +587,7 @@ func TestHasDataInRange(t *testing.T) {
 		suggestedPartitionSize: 1000,
 		nextMaxID:              500, // 模拟在1001-2000范围内无数据
 	}
-	partitionMgr2 := NewPartitionManager(config, mockStrategy, logger, mockPlanerNoData)
+	partitionMgr2 := NewPartitionAssigner(config, mockStrategy, logger, mockPlanerNoData)
 
 	hasData = partitionMgr2.hasDataInRange(ctx, 1000, 2000)
 	if hasData {
@@ -622,7 +622,7 @@ func TestDetectAndCreateGapPartitions_DiscreteData(t *testing.T) {
 		WorkerPartitionMultiple: 2,
 	}
 
-	partitionMgr := NewPartitionManager(config, mockStrategy, logger, discreteDataPlaner)
+	partitionMgr := NewPartitionAssigner(config, mockStrategy, logger, discreteDataPlaner)
 
 	// 设置现有分区（有缺口）
 	existingPartitions := map[int]*model.PartitionInfo{
@@ -727,7 +727,7 @@ func TestDetectAndCreateGapPartitions_Incremental(t *testing.T) {
 	}
 	logger := test_utils.NewMockLogger(false)
 
-	partitionMgr := NewPartitionManager(config, mockStrategy, logger, mockPlaner)
+	partitionMgr := NewPartitionAssigner(config, mockStrategy, logger, mockPlaner)
 	ctx := context.Background()
 
 	// 阶段1: 设置初始分区
@@ -865,7 +865,7 @@ func TestIncrementalGapDetection_PerformanceComparison(t *testing.T) {
 	}
 	logger := test_utils.NewMockLogger(false)
 
-	partitionMgr := NewPartitionManager(config, mockStrategy, logger, mockPlaner)
+	partitionMgr := NewPartitionAssigner(config, mockStrategy, logger, mockPlaner)
 	ctx := context.Background()
 
 	// 创建大量分区以测试性能差异
@@ -943,8 +943,8 @@ func TestIncrementalGapDetection_PerformanceComparison(t *testing.T) {
 	t.Log("=== 验证结果一致性 ===")
 
 	// 重新设置相同的测试环境
-	partitionMgr1 := NewPartitionManager(config, test_utils.NewMockPartitionStrategy(), logger, mockPlaner)
-	partitionMgr2 := NewPartitionManager(config, test_utils.NewMockPartitionStrategy(), logger, mockPlaner)
+	partitionMgr1 := NewPartitionAssigner(config, test_utils.NewMockPartitionStrategy(), logger, mockPlaner)
+	partitionMgr2 := NewPartitionAssigner(config, test_utils.NewMockPartitionStrategy(), logger, mockPlaner)
 
 	// 为两个管理器设置相同的分区状态
 	testPartitions := map[int]*model.PartitionInfo{
@@ -1062,7 +1062,7 @@ func TestIncrementalGapDetection_EdgeCases(t *testing.T) {
 		emptyStrategy := test_utils.NewMockPartitionStrategy()
 		emptyStrategy.SetPartitions(map[int]*model.PartitionInfo{})
 
-		tempMgr := NewPartitionManager(config, emptyStrategy, logger, mockPlaner)
+		tempMgr := NewPartitionAssigner(config, emptyStrategy, logger, mockPlaner)
 
 		// 对空分区执行增量检测
 		gapPartitions, err := tempMgr.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, 0)
@@ -1085,7 +1085,7 @@ func TestIncrementalGapDetection_EdgeCases(t *testing.T) {
 		}
 		singleStrategy.SetPartitions(singlePartitions)
 
-		tempMgr := NewPartitionManager(config, singleStrategy, logger, mockPlaner)
+		tempMgr := NewPartitionAssigner(config, singleStrategy, logger, mockPlaner)
 
 		gapPartitions, err := tempMgr.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, 1)
 		if err != nil {
@@ -1111,7 +1111,7 @@ func TestIncrementalGapDetection_EdgeCases(t *testing.T) {
 		}
 		consecutiveStrategy.SetPartitions(consecutivePartitions)
 
-		tempMgr := NewPartitionManager(config, consecutiveStrategy, logger, mockPlaner)
+		tempMgr := NewPartitionAssigner(config, consecutiveStrategy, logger, mockPlaner)
 
 		start := time.Now()
 		gapPartitions, err := tempMgr.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, 100)
@@ -1139,7 +1139,7 @@ func TestIncrementalGapDetection_EdgeCases(t *testing.T) {
 		}
 		nonConsecutiveStrategy.SetPartitions(nonConsecutivePartitions)
 
-		tempMgr := NewPartitionManager(config, nonConsecutiveStrategy, logger, mockPlaner)
+		tempMgr := NewPartitionAssigner(config, nonConsecutiveStrategy, logger, mockPlaner)
 
 		gapPartitions, err := tempMgr.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, 10)
 		if err != nil {
@@ -1159,7 +1159,7 @@ func TestIncrementalGapDetection_EdgeCases(t *testing.T) {
 		}
 		overlappingStrategy.SetPartitions(overlappingPartitions)
 
-		tempMgr := NewPartitionManager(config, overlappingStrategy, logger, mockPlaner)
+		tempMgr := NewPartitionAssigner(config, overlappingStrategy, logger, mockPlaner)
 
 		gapPartitions, err := tempMgr.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, 3)
 		if err != nil {
@@ -1191,7 +1191,7 @@ func TestIncrementalGapDetection_EdgeCases(t *testing.T) {
 		}
 		jumpStrategy.SetPartitions(initialPartitions)
 
-		tempMgr := NewPartitionManager(config, jumpStrategy, logger, mockPlaner)
+		tempMgr := NewPartitionAssigner(config, jumpStrategy, logger, mockPlaner)
 
 		// 建立初始缓存
 		_, err := tempMgr.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, 1)
@@ -1223,4 +1223,110 @@ func TestIncrementalGapDetection_EdgeCases(t *testing.T) {
 	})
 
 	t.Log("✅ 所有边界情况测试完成")
+}
+
+// TestPartitionCountCalculationEdgeCases 测试分区数量计算的边界情况，确保不会丢失数据
+func TestPartitionCountCalculationEdgeCases(t *testing.T) {
+	planer := &mockPartitionPlaner{
+		suggestedPartitionSize: 1000, // 分区大小为1000
+	}
+
+	partitionMgr := NewPartitionAssigner(PartitionAssignerConfig{Namespace: "test"}, test_utils.NewMockPartitionStrategy(), test_utils.NewMockLogger(false), planer)
+
+	ctx := context.Background()
+
+	testCases := []struct {
+		name               string
+		lastAllocatedID    int64
+		nextMaxID          int64
+		expectedPartitions int
+		description        string
+	}{
+		{
+			name:               "整除情况",
+			lastAllocatedID:    0,
+			nextMaxID:          2000,
+			expectedPartitions: 2,
+			description:        "2000 ID，分区大小1000，应该创建2个分区",
+		},
+		{
+			name:               "有余数情况1",
+			lastAllocatedID:    0,
+			nextMaxID:          2500,
+			expectedPartitions: 3,
+			description:        "2500 ID，分区大小1000，应该创建3个分区(2个完整+1个500)",
+		},
+		{
+			name:               "有余数情况2",
+			lastAllocatedID:    100,
+			nextMaxID:          1101,
+			expectedPartitions: 2,
+			description:        "1001 ID (101-1101)，分区大小1000，应该创建2个分区(1个1000+1个1)",
+		},
+		{
+			name:               "小于一个分区大小",
+			lastAllocatedID:    0,
+			nextMaxID:          500,
+			expectedPartitions: 1,
+			description:        "500 ID，分区大小1000，应该创建1个分区",
+		},
+		{
+			name:               "刚好一个分区大小",
+			lastAllocatedID:    0,
+			nextMaxID:          1000,
+			expectedPartitions: 1,
+			description:        "1000 ID，分区大小1000，应该创建1个分区",
+		},
+		{
+			name:               "边界情况-1个多余ID",
+			lastAllocatedID:    999,
+			nextMaxID:          2000,
+			expectedPartitions: 2,
+			description:        "1001 ID (1000-2000)，分区大小1000，应该创建2个分区",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			request, err := partitionMgr.CreatePartitionsRequestWithBounds(ctx, tc.lastAllocatedID, tc.nextMaxID, 0)
+			if err != nil {
+				t.Fatalf("创建分区请求失败: %v", err)
+			}
+
+			actualPartitions := len(request.Partitions)
+			if actualPartitions != tc.expectedPartitions {
+				t.Errorf("%s: 期望创建 %d 个分区，但实际创建了 %d 个分区。总ID数=%d",
+					tc.description, tc.expectedPartitions, actualPartitions, tc.nextMaxID-tc.lastAllocatedID)
+			}
+
+			// 验证分区覆盖的ID范围是否完整
+			if len(request.Partitions) > 0 {
+				firstPartition := request.Partitions[0]
+				lastPartition := request.Partitions[len(request.Partitions)-1]
+
+				expectedFirstMinID := tc.lastAllocatedID + 1
+				expectedLastMaxID := tc.nextMaxID
+
+				if firstPartition.MinID != expectedFirstMinID {
+					t.Errorf("第一个分区的MinID应该是 %d，但得到 %d", expectedFirstMinID, firstPartition.MinID)
+				}
+
+				if lastPartition.MaxID != expectedLastMaxID {
+					t.Errorf("最后一个分区的MaxID应该是 %d，但得到 %d", expectedLastMaxID, lastPartition.MaxID)
+				}
+
+				// 验证分区之间没有空隙
+				for i := 1; i < len(request.Partitions); i++ {
+					prevMaxID := request.Partitions[i-1].MaxID
+					currentMinID := request.Partitions[i].MinID
+					if prevMaxID+1 != currentMinID {
+						t.Errorf("分区 %d 和 %d 之间有空隙: %d -> %d", i-1, i, prevMaxID, currentMinID)
+					}
+				}
+			}
+
+			t.Logf("✅ %s: 创建了 %d 个分区，覆盖ID范围 [%d, %d]",
+				tc.name, actualPartitions, tc.lastAllocatedID+1, tc.nextMaxID)
+		})
+	}
 }
