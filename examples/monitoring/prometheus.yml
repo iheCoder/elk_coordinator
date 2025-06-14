@@ -1,6 +1,6 @@
 global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
+  scrape_interval: 3s    # 缩短到3秒，适合演示观察
+  evaluation_interval: 3s
 
 rule_files:
   # - "first_rules.yml"
@@ -8,8 +8,8 @@ rule_files:
 
 scrape_configs:
   - job_name: 'elk-coordinator'
-    scrape_interval: 15s
+    scrape_interval: 3s    # 缩短到3秒，便于观察指标变化
     static_configs:
       - targets: ['host.docker.internal:8080']
     metrics_path: '/metrics'
-    scrape_timeout: 10s
+    scrape_timeout: 2s      # 超时时间必须小于抓取间隔

@@ -146,17 +146,17 @@ func (r *Runner) processPartitionTask(ctx context.Context, task model.PartitionI
 			"error": err.Error(),
 		}
 		// 记录任务错误指标
-		metrics.DefaultMetricsManager.IncTasksErrors(r.workerID, "processing_failed")
+		metrics.IncTasksErrors(r.workerID, "processing_failed")
 	} else {
 		// 记录成功处理的任务和项目数
-		metrics.DefaultMetricsManager.IncTasksProcessed(r.workerID)
+		metrics.IncTasksProcessed(r.workerID)
 		if processCount > 0 {
-			metrics.DefaultMetricsManager.AddTasksProcessedItems(r.workerID, float64(processCount))
+			metrics.AddTasksProcessedItems(r.workerID, float64(processCount))
 		}
 	}
 
 	// 记录任务处理耗时
-	metrics.DefaultMetricsManager.ObserveTaskProcessingDuration(r.workerID, time.Since(start))
+	metrics.ObserveTaskProcessingDuration(r.workerID, time.Since(start))
 
 	// 更新任务状态并释放锁
 	if updateErr := r.updateTaskStatusWithMetadata(ctx, task, newStatus, metadata); updateErr != nil {
@@ -209,7 +209,7 @@ func (r *Runner) executeProcessorTask(ctx context.Context, task model.PartitionI
 		count, err := r.processor.Process(execCtx, task.MinID, task.MaxID, options)
 
 		// 记录处理器执行耗时
-		metrics.DefaultMetricsManager.ObserveTaskProcessorDuration(r.workerID, time.Since(processorStart))
+		metrics.ObserveTaskProcessorDuration(r.workerID, time.Since(processorStart))
 
 		select {
 		case <-execCtx.Done():

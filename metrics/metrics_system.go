@@ -469,3 +469,8 @@ func IncTasksErrors(workerID string, errorType string) {
 func ObserveTaskProcessingDuration(workerID string, duration time.Duration) {
 	DefaultMetricsManager.ObserveTaskProcessingDuration(workerID, duration)
 }
+
+// IncCircuitBreakerTripped 增加熔断器触发计数（全局方法）
+func IncCircuitBreakerTripped(workerID, breakerName string) {
+	DefaultMetricsManager.IncCircuitBreakerTripped(workerID, breakerName)
+}

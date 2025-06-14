@@ -151,7 +151,7 @@ func (tw *TaskWindow) fillTaskQueue(ctx context.Context) {
 	currentQueueSize := len(tw.taskQueue)
 
 	// 记录当前任务队列活跃任务数指标
-	metrics.DefaultMetricsManager.SetTaskQueueActiveTasks(tw.workerID, float64(currentQueueSize))
+	metrics.SetTaskQueueActiveTasks(tw.workerID, float64(currentQueueSize))
 
 	tasksToFetch := tw.windowSize - currentQueueSize
 
@@ -184,7 +184,7 @@ func (tw *TaskWindow) fillTaskQueue(ctx context.Context) {
 		case tw.taskQueue <- task:
 			tw.logger.Debugf("成功获取分区任务 %d 并加入队列", task.PartitionID)
 			// 更新队列任务数指标
-			metrics.DefaultMetricsManager.SetTaskQueueActiveTasks(tw.workerID, float64(len(tw.taskQueue)))
+			metrics.SetTaskQueueActiveTasks(tw.workerID, float64(len(tw.taskQueue)))
 		default:
 			// 队列已满（在极少数情况下可能发生），释放任务
 			tw.logger.Warnf("任务队列已满，无法添加分区任务 %d", task.PartitionID)

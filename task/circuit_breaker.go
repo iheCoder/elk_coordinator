@@ -117,7 +117,7 @@ func (cb *CircuitBreaker) RecordFailure(partitionID int, err error) {
 			cb.state = CBStateOpen
 			cb.lastStateChange = time.Now()
 			// 记录熔断器触发指标
-			metrics.DefaultMetricsManager.IncCircuitBreakerTripped(cb.workerID, ProcessorBreaker)
+			metrics.IncCircuitBreakerTripped(cb.workerID, ProcessorBreaker)
 		}
 	}
 }
