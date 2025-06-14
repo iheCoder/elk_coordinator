@@ -3,6 +3,7 @@ package leader
 import (
 	"context"
 	"elk_coordinator/data"
+	"elk_coordinator/metrics"
 	"elk_coordinator/model"
 	"elk_coordinator/partition"
 	"elk_coordinator/utils"
@@ -157,6 +158,9 @@ func (lm *LeaderManager) becomeLeader() {
 	lm.mu.Lock()
 	lm.isLeader = true
 	lm.mu.Unlock()
+
+	// 记录Leader状态指标
+	metrics.SetLeaderStatus(lm.election.config.NodeID, true)
 }
 
 // startLeaderWork 启动Leader工作
@@ -188,6 +192,9 @@ func (lm *LeaderManager) relinquishLeadership() {
 
 	// 只有当前确实是Leader时才需要释放锁
 	if wasLeader {
+		// 记录Leader状态指标
+		metrics.SetLeaderStatus(lm.election.config.NodeID, false)
+
 		// 显式释放Leader锁，确保其他节点能快速获取
 		leaderLockKey := fmt.Sprintf(model.LeaderLockKeyFmt, lm.election.config.Namespace)
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

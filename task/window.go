@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"elk_coordinator/metrics"
 	"elk_coordinator/model"
 	"elk_coordinator/partition"
 	"elk_coordinator/utils"
@@ -148,6 +149,10 @@ func (tw *TaskWindow) fetchTasks(ctx context.Context) {
 func (tw *TaskWindow) fillTaskQueue(ctx context.Context) {
 	// 计算需要获取的任务数量
 	currentQueueSize := len(tw.taskQueue)
+
+	// 记录当前任务队列活跃任务数指标
+	metrics.DefaultMetricsManager.SetTaskQueueActiveTasks(tw.workerID, float64(currentQueueSize))
+
 	tasksToFetch := tw.windowSize - currentQueueSize
 
 	if tasksToFetch <= 0 {
@@ -178,6 +183,8 @@ func (tw *TaskWindow) fillTaskQueue(ctx context.Context) {
 		select {
 		case tw.taskQueue <- task:
 			tw.logger.Debugf("成功获取分区任务 %d 并加入队列", task.PartitionID)
+			// 更新队列任务数指标
+			metrics.DefaultMetricsManager.SetTaskQueueActiveTasks(tw.workerID, float64(len(tw.taskQueue)))
 		default:
 			// 队列已满（在极少数情况下可能发生），释放任务
 			tw.logger.Warnf("任务队列已满，无法添加分区任务 %d", task.PartitionID)

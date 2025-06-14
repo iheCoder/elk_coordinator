@@ -392,11 +392,52 @@ var (
 	DefaultMetricsManager = NewMetricsManager()
 )
 
+// SetDefaultMetricsManager 设置默认的指标管理器实例
+// 这允许应用程序使用自定义配置的MetricsManager作为全局默认实例
+func SetDefaultMetricsManager(manager *MetricsManager) {
+	DefaultMetricsManager = manager
+}
+
 // 全局便捷方法，使用默认指标管理器
 
 // SetLeaderStatus 设置 Leader 状态（全局方法）
 func SetLeaderStatus(nodeID string, isLeader bool) {
 	DefaultMetricsManager.SetLeaderStatus(nodeID, isLeader)
+}
+
+// SetPartitionsTotal 设置分区总数（全局方法）
+func SetPartitionsTotal(count float64) {
+	DefaultMetricsManager.SetPartitionsTotal(count)
+}
+
+// IncPartitionsAssigned 增加分区分配次数（全局方法）
+func IncPartitionsAssigned() {
+	DefaultMetricsManager.IncPartitionsAssigned()
+}
+
+// ObservePartitionAssignmentDuration 记录分区分配耗时（全局方法）
+func ObservePartitionAssignmentDuration(duration time.Duration) {
+	DefaultMetricsManager.ObservePartitionAssignmentDuration(duration)
+}
+
+// SetActiveWorkersCount 设置活跃工作节点数（全局方法）
+func SetActiveWorkersCount(count float64) {
+	DefaultMetricsManager.SetActiveWorkersCount(count)
+}
+
+// SetTaskQueueActiveTasks 设置任务队列活跃任务数（全局方法）
+func SetTaskQueueActiveTasks(workerID string, count float64) {
+	DefaultMetricsManager.SetTaskQueueActiveTasks(workerID, count)
+}
+
+// AddTasksProcessedItems 增加已处理任务项计数（全局方法）
+func AddTasksProcessedItems(workerID string, count float64) {
+	DefaultMetricsManager.AddTasksProcessedItems(workerID, count)
+}
+
+// ObserveTaskProcessorDuration 记录任务处理器执行耗时（全局方法）
+func ObserveTaskProcessorDuration(workerID string, duration time.Duration) {
+	DefaultMetricsManager.ObserveTaskProcessorDuration(workerID, duration)
 }
 
 // UpdateHeartbeatTimestamp 更新心跳时间戳（全局方法）

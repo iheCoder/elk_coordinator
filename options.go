@@ -93,3 +93,20 @@ func WithAllowPreemption(allowPreemption bool) MgrOption {
 		m.AllowPreemption = allowPreemption
 	}
 }
+
+// WithMetricsEnabled 设置是否启用监控系统
+func WithMetricsEnabled(enabled bool) MgrOption {
+	return func(m *Mgr) {
+		m.MetricsEnabled = enabled
+		if m.MetricsManager != nil {
+			m.MetricsManager.SetEnabled(enabled)
+		}
+	}
+}
+
+// WithMetricsAddr 设置监控服务地址
+func WithMetricsAddr(addr string) MgrOption {
+	return func(m *Mgr) {
+		m.MetricsAddr = addr
+	}
+}

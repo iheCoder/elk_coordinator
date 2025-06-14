@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"elk_coordinator/metrics"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,6 +22,8 @@ const (
 	CBStateClosed   = "closed"   // 正常
 	CBStateOpen     = "open"     // 熔断
 	CBStateHalfOpen = "halfopen" // 半开
+
+	ProcessorBreaker = "process_breaker"
 )
 
 // PartitionFailure 分区失败记录
@@ -51,10 +54,13 @@ type CircuitBreaker struct {
 	lastStateChange     time.Time
 	halfOpenRequests    int32 // 正在进行的探测请求数
 	mu                  sync.Mutex
+
+	// 监控相关字段
+	workerID string
 }
 
 // NewCircuitBreaker 创建熔断器实例
-func NewCircuitBreaker(cfg CircuitBreakerConfig) *CircuitBreaker {
+func NewCircuitBreaker(cfg CircuitBreakerConfig, workerID string) *CircuitBreaker {
 	// 设置默认值
 	if cfg.MaxHalfOpenRequests <= 0 {
 		cfg.MaxHalfOpenRequests = 1
@@ -68,6 +74,7 @@ func NewCircuitBreaker(cfg CircuitBreakerConfig) *CircuitBreaker {
 		state:            CBStateClosed,
 		failedPartitions: make(map[int]PartitionFailure),
 		lastStateChange:  time.Now(),
+		workerID:         workerID,
 	}
 }
 
@@ -109,6 +116,8 @@ func (cb *CircuitBreaker) RecordFailure(partitionID int, err error) {
 			cb.totalFailures >= cb.config.TotalFailureThreshold {
 			cb.state = CBStateOpen
 			cb.lastStateChange = time.Now()
+			// 记录熔断器触发指标
+			metrics.DefaultMetricsManager.IncCircuitBreakerTripped(cb.workerID, ProcessorBreaker)
 		}
 	}
 }

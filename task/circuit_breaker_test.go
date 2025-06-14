@@ -35,7 +35,7 @@ func assertStats(t *testing.T, cb *CircuitBreaker, expectedState string, expecte
 // Expected Result: Correct initial state and configuration values.
 func TestNewCircuitBreaker(t *testing.T) {
 	// Default config
-	cbDefault := NewCircuitBreaker(CircuitBreakerConfig{})
+	cbDefault := NewCircuitBreaker(CircuitBreakerConfig{}, "test-worker")
 	if cbDefault.state != CBStateClosed {
 		t.Errorf("Default CB: Expected state %s, got %s", CBStateClosed, cbDefault.state)
 	}
@@ -54,7 +54,7 @@ func TestNewCircuitBreaker(t *testing.T) {
 		MaxHalfOpenRequests:         3,
 		FailureTimeWindow:           1 * time.Minute,
 	}
-	cbCustom := NewCircuitBreaker(cfg)
+	cbCustom := NewCircuitBreaker(cfg, "test-worker")
 	if cbCustom.state != CBStateClosed {
 		t.Errorf("Custom CB: Expected state %s, got %s", CBStateClosed, cbCustom.state)
 	}
@@ -69,7 +69,7 @@ func TestNewCircuitBreaker(t *testing.T) {
 // Expected Result: State becomes CBStateOpen.
 func TestRecordFailure_TransitionsToOpen_ConsecutiveThreshold(t *testing.T) {
 	cfg := CircuitBreakerConfig{ConsecutiveFailureThreshold: 2, TotalFailureThreshold: 5, OpenTimeout: 1 * time.Minute}
-	cb := NewCircuitBreaker(cfg)
+	cb := NewCircuitBreaker(cfg, "test-worker")
 
 	cb.RecordFailure(1, errTest)
 	assertStats(t, cb, CBStateClosed, 1, 1, 1, 0)
@@ -89,7 +89,7 @@ func TestRecordFailure_TransitionsToOpen_ConsecutiveThreshold(t *testing.T) {
 // Expected Result: State becomes CBStateOpen.
 func TestRecordFailure_TransitionsToOpen_TotalThreshold(t *testing.T) {
 	cfg := CircuitBreakerConfig{ConsecutiveFailureThreshold: 5, TotalFailureThreshold: 2, OpenTimeout: 1 * time.Minute}
-	cb := NewCircuitBreaker(cfg)
+	cb := NewCircuitBreaker(cfg, "test-worker")
 
 	cb.RecordFailure(1, errTest)
 	// Reset consecutive to ensure total threshold is the trigger
@@ -107,7 +107,7 @@ func TestRecordFailure_TransitionsToOpen_TotalThreshold(t *testing.T) {
 // Expected Result: consecutiveFailures resets, specific partition failure removed, totalFailures decremented.
 func TestRecordSuccess_ResetsCounters_And_PartitionFailures_InClosedState(t *testing.T) {
 	cfg := CircuitBreakerConfig{ConsecutiveFailureThreshold: 3, TotalFailureThreshold: 5}
-	cb := NewCircuitBreaker(cfg)
+	cb := NewCircuitBreaker(cfg, "test-worker")
 
 	cb.RecordFailure(1, errTest)
 	cb.RecordFailure(2, errTest)
@@ -129,7 +129,7 @@ func TestRecordSuccess_ResetsCounters_And_PartitionFailures_InClosedState(t *tes
 func TestAllowRequest_OpenToHalfOpen_AfterTimeout(t *testing.T) {
 	openTimeout := 50 * time.Millisecond
 	cfg := CircuitBreakerConfig{ConsecutiveFailureThreshold: 1, OpenTimeout: openTimeout, MaxHalfOpenRequests: 1}
-	cb := NewCircuitBreaker(cfg)
+	cb := NewCircuitBreaker(cfg, "test-worker")
 
 	cb.RecordFailure(1, errTest) // Trip to Open
 	assertStats(t, cb, CBStateOpen, 1, 1, 1, 0)
@@ -150,7 +150,7 @@ func TestAllowRequest_OpenToHalfOpen_AfterTimeout(t *testing.T) {
 // Expected Result: State becomes CBStateClosed, counters reset, failedPartitions cleared.
 func TestHalfOpen_Success_TransitionsToClosed(t *testing.T) {
 	cfg := CircuitBreakerConfig{ConsecutiveFailureThreshold: 1, OpenTimeout: 50 * time.Millisecond, MaxHalfOpenRequests: 1}
-	cb := NewCircuitBreaker(cfg)
+	cb := NewCircuitBreaker(cfg, "test-worker")
 
 	cb.RecordFailure(1, errTest)                      // Open
 	time.Sleep(cfg.OpenTimeout + 10*time.Millisecond) // Wait for timeout
@@ -166,7 +166,7 @@ func TestHalfOpen_Success_TransitionsToClosed(t *testing.T) {
 // Expected Result: State becomes CBStateOpen, halfOpenRequests becomes 0.
 func TestHalfOpen_Failure_TransitionsToOpen(t *testing.T) {
 	cfg := CircuitBreakerConfig{ConsecutiveFailureThreshold: 1, OpenTimeout: 50 * time.Millisecond, MaxHalfOpenRequests: 1}
-	cb := NewCircuitBreaker(cfg)
+	cb := NewCircuitBreaker(cfg, "test-worker")
 
 	cb.RecordFailure(1, errTest)                      // Open
 	time.Sleep(cfg.OpenTimeout + 10*time.Millisecond) // Wait for timeout
@@ -183,7 +183,7 @@ func TestHalfOpen_Failure_TransitionsToOpen(t *testing.T) {
 func TestHalfOpen_RespectsMaxHalfOpenRequests(t *testing.T) {
 	maxHalfOpen := int32(2)
 	cfg := CircuitBreakerConfig{ConsecutiveFailureThreshold: 1, OpenTimeout: 50 * time.Millisecond, MaxHalfOpenRequests: maxHalfOpen}
-	cb := NewCircuitBreaker(cfg)
+	cb := NewCircuitBreaker(cfg, "test-worker")
 
 	cb.RecordFailure(1, errTest)                      // Open
 	time.Sleep(cfg.OpenTimeout + 10*time.Millisecond) // Wait for timeout
@@ -209,7 +209,7 @@ func TestHalfOpen_RespectsMaxHalfOpenRequests(t *testing.T) {
 // Expected Result: State becomes CBStateClosed, counters and failures cleared.
 func TestReset_ResetsToClosedState(t *testing.T) {
 	cfg := CircuitBreakerConfig{ConsecutiveFailureThreshold: 1}
-	cb := NewCircuitBreaker(cfg)
+	cb := NewCircuitBreaker(cfg, "test-worker")
 
 	cb.RecordFailure(1, errTest) // Open
 	assertStats(t, cb, CBStateOpen, 1, 1, 1, 0)
@@ -231,7 +231,7 @@ func TestCleanExpiredFailures(t *testing.T) {
 		TotalFailureThreshold:       10, // High threshold to avoid tripping
 		ConsecutiveFailureThreshold: 2,
 	}
-	cb := NewCircuitBreaker(cfg)
+	cb := NewCircuitBreaker(cfg, "test-worker")
 
 	cb.RecordFailure(1, errTest) // Timestamp A
 	cb.RecordFailure(2, errTest) // Timestamp B
@@ -247,7 +247,7 @@ func TestCleanExpiredFailures(t *testing.T) {
 // Expected Result: Correct map of non-expired failed partitions.
 func TestFailedPartitions_ReturnsCorrectFailures(t *testing.T) {
 	cfg := CircuitBreakerConfig{FailureTimeWindow: 1 * time.Minute}
-	cb := NewCircuitBreaker(cfg)
+	cb := NewCircuitBreaker(cfg, "test-worker")
 	err2 := errors.New("another error")
 
 	cb.RecordFailure(1, errTest)
@@ -270,7 +270,7 @@ func TestFailedPartitions_ReturnsCorrectFailures(t *testing.T) {
 // Expected Result: Accurate CircuitBreakerStats.
 func TestGetStats_ReturnsCorrectStats(t *testing.T) {
 	cfg := CircuitBreakerConfig{ConsecutiveFailureThreshold: 1, OpenTimeout: 50 * time.Millisecond}
-	cb := NewCircuitBreaker(cfg)
+	cb := NewCircuitBreaker(cfg, "test-worker")
 	initialTime := cb.lastStateChange
 
 	cb.RecordFailure(1, errTest) // Open
@@ -305,7 +305,7 @@ func TestGetStats_ReturnsCorrectStats(t *testing.T) {
 // Expected Result: consecutiveFailures increments only for the first failure of that partition.
 func TestRecordFailure_ConsecutiveFailures_SamePartition(t *testing.T) {
 	cfg := CircuitBreakerConfig{ConsecutiveFailureThreshold: 1, TotalFailureThreshold: 5}
-	cb := NewCircuitBreaker(cfg)
+	cb := NewCircuitBreaker(cfg, "test-worker")
 
 	cb.RecordFailure(1, errTest) // First failure for partition 1
 	// State should be Open because ConsecutiveFailureThreshold is 1 and this is the first distinct failure
@@ -332,7 +332,7 @@ func TestRecordFailure_ConsecutiveFailures_SamePartition(t *testing.T) {
 // Expected Result: consecutiveFailures increments for the first, not for the second.
 func TestRecordFailure_DoesNotIncrementConsecutive_IfNotNew(t *testing.T) {
 	cfg := CircuitBreakerConfig{ConsecutiveFailureThreshold: 3, TotalFailureThreshold: 5}
-	cb := NewCircuitBreaker(cfg)
+	cb := NewCircuitBreaker(cfg, "test-worker")
 
 	cb.RecordFailure(1, errTest) // Partition A, first failure
 	assertStats(t, cb, CBStateClosed, 1, 1, 1, 0)
@@ -354,7 +354,7 @@ func TestRecordSuccess_InHalfOpen_ClearsAllFailuresOnTransitionToClosed(t *testi
 		OpenTimeout:                 50 * time.Millisecond,
 		MaxHalfOpenRequests:         1,
 	}
-	cb := NewCircuitBreaker(cfg)
+	cb := NewCircuitBreaker(cfg, "test-worker")
 
 	cb.RecordFailure(1, errTest) // Failure 1, trips to Open
 	// Manually add another failure to simulate it happened before tripping, or during open state (though not typical for this CB)
@@ -387,7 +387,7 @@ func TestRecordSuccess_InHalfOpen_ClearsAllFailuresOnTransitionToClosed(t *testi
 // Expected Result: State() returns the current internal state.
 func TestState_ReturnsCurrentState(t *testing.T) {
 	cfg := CircuitBreakerConfig{ConsecutiveFailureThreshold: 1, OpenTimeout: 50 * time.Millisecond}
-	cb := NewCircuitBreaker(cfg)
+	cb := NewCircuitBreaker(cfg, "test-worker")
 
 	if cb.State() != CBStateClosed {
 		t.Errorf("Expected state %s, got %s", CBStateClosed, cb.State())
@@ -414,7 +414,7 @@ func TestState_ReturnsCurrentState(t *testing.T) {
 // Scenario: Breaker is closed, no failures. Record a success.
 // Expected Result: State remains closed, counts remain zero.
 func TestRecordSuccess_WhenAlreadyClosed(t *testing.T) {
-	cb := NewCircuitBreaker(CircuitBreakerConfig{})
+	cb := NewCircuitBreaker(CircuitBreakerConfig{}, "test-worker")
 	assertStats(t, cb, CBStateClosed, 0, 0, 0, 0)
 
 	cb.RecordSuccess(1) // Success on a partition that wasn't marked as failed
@@ -428,7 +428,7 @@ func TestRecordSuccess_WhenAlreadyClosed(t *testing.T) {
 func TestAllowRequest_OpenState_StaysOpenBeforeTimeout(t *testing.T) {
 	openTimeout := 100 * time.Millisecond
 	cfg := CircuitBreakerConfig{ConsecutiveFailureThreshold: 1, OpenTimeout: openTimeout}
-	cb := NewCircuitBreaker(cfg)
+	cb := NewCircuitBreaker(cfg, "test-worker")
 
 	cb.RecordFailure(1, errTest) // Trip to Open
 	assertStats(t, cb, CBStateOpen, 1, 1, 1, 0)
@@ -447,7 +447,7 @@ func TestAllowRequest_OpenState_StaysOpenBeforeTimeout(t *testing.T) {
 // Expected Result: State transitions to Open.
 func TestRecordFailure_InHalfOpen_WithDifferentPartition(t *testing.T) {
 	cfg := CircuitBreakerConfig{ConsecutiveFailureThreshold: 1, OpenTimeout: 50 * time.Millisecond, MaxHalfOpenRequests: 1}
-	cb := NewCircuitBreaker(cfg)
+	cb := NewCircuitBreaker(cfg, "test-worker")
 
 	cb.RecordFailure(1, errTest) // Partition 1 fails, trips to Open
 	time.Sleep(cfg.OpenTimeout + 10*time.Millisecond)

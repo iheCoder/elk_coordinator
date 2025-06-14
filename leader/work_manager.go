@@ -3,6 +3,7 @@ package leader
 import (
 	"context"
 	"elk_coordinator/data"
+	"elk_coordinator/metrics"
 	"elk_coordinator/model"
 	"elk_coordinator/utils"
 	"fmt"
@@ -76,6 +77,9 @@ func (wm *WorkManager) tryAllocatePartitions(ctx context.Context, pm *PartitionA
 	}
 
 	wm.config.Logger.Debugf("获取到的活跃工作节点: %v (数量: %d)", activeWorkers, len(activeWorkers))
+
+	// 记录活跃工作节点数量指标
+	metrics.DefaultMetricsManager.SetActiveWorkersCount(float64(len(activeWorkers)))
 
 	if len(activeWorkers) == 0 {
 		wm.config.Logger.Debugf("没有活跃工作节点，跳过分区分配")

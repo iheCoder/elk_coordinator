@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"elk_coordinator/metrics"
 	"elk_coordinator/model"
 	"elk_coordinator/partition"
 	"elk_coordinator/utils"
@@ -68,7 +69,7 @@ func NewRunner(config RunnerConfig) *Runner {
 	if config.CircuitBreaker == nil {
 		// 优先使用用户提供的熔断器配置
 		if config.CircuitBreakerConfig != nil {
-			config.CircuitBreaker = NewCircuitBreaker(*config.CircuitBreakerConfig)
+			config.CircuitBreaker = NewCircuitBreaker(*config.CircuitBreakerConfig, config.WorkerID)
 		} else {
 			// 使用默认熔断器配置
 			config.CircuitBreaker = NewCircuitBreaker(CircuitBreakerConfig{
@@ -77,7 +78,7 @@ func NewRunner(config RunnerConfig) *Runner {
 				OpenTimeout:                 30 * time.Second, // 熔断开启30秒后尝试恢复
 				MaxHalfOpenRequests:         2,                // 半开状态下允许2个请求尝试
 				FailureTimeWindow:           5 * time.Minute,  // 失败统计时间窗口
-			})
+			}, config.WorkerID)
 		}
 	}
 
@@ -108,6 +109,7 @@ func NewRunner(config RunnerConfig) *Runner {
 
 // processPartitionTask 处理一个分区任务
 func (r *Runner) processPartitionTask(ctx context.Context, task model.PartitionInfo) error {
+	start := time.Now() // 记录处理开始时间
 	r.logger.Infof("开始处理分区 %d (ID范围: %d-%d)", task.PartitionID, task.MinID, task.MaxID)
 
 	// 更新分区状态为运行中
@@ -143,7 +145,18 @@ func (r *Runner) processPartitionTask(ctx context.Context, task model.PartitionI
 		metadata = map[string]interface{}{
 			"error": err.Error(),
 		}
+		// 记录任务错误指标
+		metrics.DefaultMetricsManager.IncTasksErrors(r.workerID, "processing_failed")
+	} else {
+		// 记录成功处理的任务和项目数
+		metrics.DefaultMetricsManager.IncTasksProcessed(r.workerID)
+		if processCount > 0 {
+			metrics.DefaultMetricsManager.AddTasksProcessedItems(r.workerID, float64(processCount))
+		}
 	}
+
+	// 记录任务处理耗时
+	metrics.DefaultMetricsManager.ObserveTaskProcessingDuration(r.workerID, time.Since(start))
 
 	// 更新任务状态并释放锁
 	if updateErr := r.updateTaskStatusWithMetadata(ctx, task, newStatus, metadata); updateErr != nil {
@@ -192,7 +205,12 @@ func (r *Runner) executeProcessorTask(ctx context.Context, task model.PartitionI
 	})
 
 	go func() {
+		processorStart := time.Now() // 记录处理器开始时间
 		count, err := r.processor.Process(execCtx, task.MinID, task.MaxID, options)
+
+		// 记录处理器执行耗时
+		metrics.DefaultMetricsManager.ObserveTaskProcessorDuration(r.workerID, time.Since(processorStart))
+
 		select {
 		case <-execCtx.Done():
 			// 上下文已结束，无需发送结果

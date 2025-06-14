@@ -4,6 +4,7 @@ import (
 	"context"
 	"elk_coordinator/data"
 	"elk_coordinator/leader"
+	"elk_coordinator/metrics"
 	"elk_coordinator/model"
 	"elk_coordinator/partition"
 	"elk_coordinator/task"
@@ -42,6 +43,11 @@ type Mgr struct {
 
 	// 任务窗口配置
 	TaskWindowSize int // 任务窗口大小（同时处理的最大分区数）
+
+	// 监控配置
+	MetricsEnabled bool                    // 是否启用监控系统
+	MetricsAddr    string                  // 监控服务地址
+	MetricsManager *metrics.MetricsManager // 监控管理器
 
 	// 任务处理器和执行器
 	taskRunner *task.Runner
@@ -88,6 +94,11 @@ func NewMgr(namespace string, dataStore data.DataStore, processor task.Processor
 
 		// 任务窗口默认配置
 		TaskWindowSize: model.DefaultTaskWindowSize,
+
+		// 监控默认配置
+		MetricsEnabled: true,                        // 默认启用监控
+		MetricsAddr:    ":8080",                     // 默认监控端口
+		MetricsManager: metrics.NewMetricsManager(), // 创建监控管理器
 	}
 
 	// 应用所有选项
@@ -122,6 +133,21 @@ func (m *Mgr) Start(ctx context.Context) error {
 	err := m.registerNode(ctx)
 	if err != nil {
 		return err
+	}
+
+	// 设置全局默认的MetricsManager，确保所有组件使用同一个实例
+	if m.MetricsEnabled && m.MetricsManager != nil {
+		metrics.SetDefaultMetricsManager(m.MetricsManager)
+	}
+
+	// 启动监控HTTP服务器
+	if m.MetricsEnabled && m.MetricsManager != nil {
+		go func() {
+			m.Logger.Infof("启动监控服务器，地址: %s", m.MetricsAddr)
+			if err := m.MetricsManager.StartMetricsServer(m.MetricsAddr); err != nil {
+				m.Logger.Errorf("监控服务器启动失败: %v", err)
+			}
+		}()
 	}
 
 	// 启动心跳维护goroutine
@@ -160,6 +186,15 @@ func (m *Mgr) heartbeatKeeper(ctx context.Context) {
 			err := m.DataStore.SetHeartbeat(ctx, heartbeatKey, time.Now().Format(time.RFC3339))
 			if err != nil {
 				m.Logger.Warnf("发送心跳失败: %v", err)
+				// 记录心跳错误指标
+				if m.MetricsEnabled && m.MetricsManager != nil {
+					m.MetricsManager.IncHeartbeatErrors(m.ID)
+				}
+			} else {
+				// 记录心跳成功指标
+				if m.MetricsEnabled && m.MetricsManager != nil {
+					m.MetricsManager.UpdateHeartbeatTimestamp(m.ID)
+				}
 			}
 		}
 	}

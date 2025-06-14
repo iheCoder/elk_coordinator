@@ -2,10 +2,12 @@ package leader
 
 import (
 	"context"
+	"elk_coordinator/metrics"
 	"elk_coordinator/model"
 	"elk_coordinator/partition"
 	"elk_coordinator/utils"
 	"sort"
+	"time"
 
 	"github.com/pkg/errors"
 )
@@ -97,6 +99,8 @@ func NewPartitionAssignerWithOptions(
 
 // AllocatePartitions 分配工作分区
 func (pm *PartitionAssigner) AllocatePartitions(ctx context.Context, activeWorkers []string) error {
+	start := time.Now() // 记录开始时间
+
 	// 获取分区统计信息，判断是否需要分配新分区
 	// 统计信息现在包含了 MaxPartitionID 和 LastAllocatedID，避免了额外的查询
 	stats, err := pm.strategy.GetPartitionStats(ctx)
@@ -109,9 +113,13 @@ func (pm *PartitionAssigner) AllocatePartitions(ctx context.Context, activeWorke
 		return errors.New("分区统计信息为空")
 	}
 
+	// 更新分区总数指标
+	metrics.SetPartitionsTotal(float64(stats.Total))
+
 	// 检查是否需要分配新的分区
 	if !pm.ShouldAllocateNewPartitions(*stats) {
 		pm.logger.Debugf("现有分区依然存在很多未处理，暂不分配新分区。完成率: %.2f%%", stats.CompletionRate*100)
+		// 不记录分配耗时，因为没有实际分配
 		return nil
 	}
 
@@ -137,8 +145,12 @@ func (pm *PartitionAssigner) AllocatePartitions(ctx context.Context, activeWorke
 
 		if len(gapPartitions) > 0 {
 			pm.logger.Infof("检测到 %d 个分区缺口，已创建对应分区", len(gapPartitions))
+			// 记录分区分配次数和耗时（只有在实际创建分区时）
+			metrics.IncPartitionsAssigned()
+			metrics.ObservePartitionAssignmentDuration(time.Since(start))
 		} else {
 			pm.logger.Debugf("未检测到分区缺口")
+			// 不记录分配耗时，因为没有实际分配
 		}
 
 		return nil
@@ -157,6 +169,12 @@ func (pm *PartitionAssigner) AllocatePartitions(ctx context.Context, activeWorke
 	}
 
 	pm.logger.Infof("成功创建 %d 个新分区，ID范围 [%d, %d]", len(createdPartitions), lastAllocatedID+1, nextMaxID)
+
+	// 记录分区分配次数和耗时
+	if len(createdPartitions) > 0 {
+		metrics.IncPartitionsAssigned()
+	}
+	metrics.ObservePartitionAssignmentDuration(time.Since(start))
 
 	return nil
 }
