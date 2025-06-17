@@ -117,6 +117,20 @@ type QueueOperations interface {
 	GetQueueLength(ctx context.Context, queueKey string) (int64, error)
 }
 
+// CommandOperations 定义命令操作的接口
+type CommandOperations interface {
+	// 提交命令
+	SubmitCommand(ctx context.Context, namespace string, command interface{}) error
+	// 获取待处理的命令列表
+	GetPendingCommands(ctx context.Context, namespace string, limit int) ([]string, error)
+	// 获取命令详情
+	GetCommand(ctx context.Context, namespace, commandID string) (string, error)
+	// 更新命令状态
+	UpdateCommandStatus(ctx context.Context, namespace, commandID string, command interface{}) error
+	// 删除命令
+	DeleteCommand(ctx context.Context, namespace, commandID string) error
+}
+
 // DataStore 通过组合各个功能接口定义完整的分布式协调存储接口
 type DataStore interface {
 	LockOperations
@@ -129,4 +143,5 @@ type DataStore interface {
 	CounterOperations
 	AdvancedOperations
 	QueueOperations
+	CommandOperations
 }

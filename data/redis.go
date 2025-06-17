@@ -2,10 +2,12 @@ package data
 
 import (
 	"context"
-	"github.com/pkg/errors"
-	"github.com/redis/go-redis/v9"
+	"encoding/json"
 	"strconv"
 	"time"
+
+	"github.com/pkg/errors"
+	"github.com/redis/go-redis/v9"
 )
 
 // RedisDataStore implements the DataStore interface with Redis
@@ -513,4 +515,67 @@ func (d *RedisDataStore) HSetPartitionsInTx(ctx context.Context, key string, par
 // HDeletePartition 删除Redis Hash中的特定分区字段
 func (d *RedisDataStore) HDeletePartition(ctx context.Context, key string, field string) error {
 	return d.rds.HDel(ctx, d.prefixKey(key), field).Err()
+}
+
+// CommandOperations implementation
+
+// SubmitCommand 提交命令到Redis
+func (d *RedisDataStore) SubmitCommand(ctx context.Context, namespace string, command interface{}) error {
+	// 使用JSON序列化命令
+	cmdBytes, err := json.Marshal(command)
+	if err != nil {
+		return errors.Wrap(err, "命令序列化失败")
+	}
+
+	// 命令存储在有序集合中，按提交时间排序
+	key := d.prefixKey("commands:" + namespace)
+	score := float64(time.Now().UnixNano())
+
+	return d.rds.ZAdd(ctx, key, redis.Z{
+		Score:  score,
+		Member: string(cmdBytes),
+	}).Err()
+}
+
+// GetPendingCommands 获取待处理的命令列表
+func (d *RedisDataStore) GetPendingCommands(ctx context.Context, namespace string, limit int) ([]string, error) {
+	key := d.prefixKey("commands:" + namespace)
+
+	// 获取最早的命令（按时间排序）
+	results, err := d.rds.ZRange(ctx, key, 0, int64(limit-1)).Result()
+	if err != nil {
+		return nil, errors.Wrap(err, "获取待处理命令失败")
+	}
+
+	return results, nil
+}
+
+// GetCommand 获取命令详情（这里直接返回命令本身，因为已经包含在JSON中）
+func (d *RedisDataStore) GetCommand(ctx context.Context, namespace, commandID string) (string, error) {
+	// 在当前设计中，commandID就是命令的JSON字符串
+	return commandID, nil
+}
+
+// UpdateCommandStatus 更新命令状态（删除旧命令，如果需要可以添加新状态）
+func (d *RedisDataStore) UpdateCommandStatus(ctx context.Context, namespace, commandID string, command interface{}) error {
+	key := d.prefixKey("commands:" + namespace)
+
+	// 先删除原命令
+	err := d.rds.ZRem(ctx, key, commandID).Err()
+	if err != nil {
+		return errors.Wrap(err, "删除原命令失败")
+	}
+
+	// 如果新命令不为nil，则添加新状态
+	if command != nil {
+		return d.SubmitCommand(ctx, namespace, command)
+	}
+
+	return nil
+}
+
+// DeleteCommand 删除命令
+func (d *RedisDataStore) DeleteCommand(ctx context.Context, namespace, commandID string) error {
+	key := d.prefixKey("commands:" + namespace)
+	return d.rds.ZRem(ctx, key, commandID).Err()
 }

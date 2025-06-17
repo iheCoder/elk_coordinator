@@ -15,13 +15,14 @@ import (
 // LeaderManager 管理选举过程和领导者行为
 type LeaderManager struct {
 	// 核心依赖
-	election     *Election          // 选举管理组件
-	workManager  *WorkManager       // 工作管理组件
-	partitionMgr *PartitionAssigner // 分区管理组件
-	isLeader     bool
-	leaderCtx    context.Context
-	cancelLeader context.CancelFunc
-	mu           sync.RWMutex
+	election         *Election          // 选举管理组件
+	workManager      *WorkManager       // 工作管理组件
+	partitionMgr     *PartitionAssigner // 分区管理组件
+	commandProcessor *CommandProcessor  // 命令处理组件
+	isLeader         bool
+	leaderCtx        context.Context
+	cancelLeader     context.CancelFunc
+	mu               sync.RWMutex
 
 	// 用于整个 LeaderManager 生命周期控制
 	stopOnce sync.Once
@@ -56,11 +57,15 @@ func NewLeaderManager(config LeaderConfig) *LeaderManager {
 		WorkerPartitionMultiple: config.WorkerPartitionMultiple,
 	}, config.Strategy, config.Logger, config.Planer)
 
+	// 创建并配置命令处理器
+	commandProcessor := NewCommandProcessor(config.Namespace, config.DataStore, config.Strategy, config.Logger)
+
 	return &LeaderManager{
-		election:     election,
-		workManager:  workManager,
-		partitionMgr: partitionMgr,
-		stopped:      make(chan struct{}),
+		election:         election,
+		workManager:      workManager,
+		partitionMgr:     partitionMgr,
+		commandProcessor: commandProcessor,
+		stopped:          make(chan struct{}),
 	}
 }
 
@@ -73,6 +78,7 @@ type LeaderConfig struct {
 		data.KeyOperations
 		data.HeartbeatOperations
 		data.SimplePartitionOperations
+		data.CommandOperations
 	}
 	Logger                  utils.Logger
 	Planer                  PartitionPlaner
@@ -179,8 +185,31 @@ func (lm *LeaderManager) doLeaderWork(ctx context.Context) error {
 		lm.relinquishLeadership()
 	})
 
-	// 2. 持续性分配分区
+	// 2. 启动命令处理循环
+	go lm.runCommandProcessingLoop(ctx)
+
+	// 3. 持续性分配分区
 	return lm.workManager.RunPartitionAllocationLoop(ctx, lm.leaderCtx, lm.partitionMgr)
+}
+
+// runCommandProcessingLoop 运行命令处理循环
+func (lm *LeaderManager) runCommandProcessingLoop(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second) // 每5秒检查一次命令
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-lm.leaderCtx.Done():
+			return
+		case <-ticker.C:
+			if err := lm.commandProcessor.ProcessCommands(ctx); err != nil {
+				// 命令处理错误不应该中断领导者工作，只记录错误
+				// 可以在这里添加适当的错误处理和重试逻辑
+			}
+		}
+	}
 }
 
 // relinquishLeadership 放弃领导权

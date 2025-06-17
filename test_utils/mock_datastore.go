@@ -13,9 +13,11 @@ type MockDataStore struct {
 	Locks          map[string]string
 	Heartbeats     map[string]string
 	PartitionData  map[string]string
+	Commands       map[string]string // 命令存储，独立于分区数据
 	LockMutex      sync.RWMutex
 	HeartbeatMutex sync.RWMutex // 保护心跳数据的并发访问
 	PartitionMutex sync.RWMutex // 保护分区数据的并发访问
+	CommandMutex   sync.RWMutex // 保护命令数据的并发访问
 }
 
 // NewMockDataStore 创建一个新的模拟数据存储实例
@@ -24,6 +26,7 @@ func NewMockDataStore() *MockDataStore {
 		Locks:         make(map[string]string),
 		Heartbeats:    make(map[string]string),
 		PartitionData: make(map[string]string),
+		Commands:      make(map[string]string),
 	}
 }
 
@@ -625,5 +628,77 @@ func (m *MockDataStore) HSetPartitionsInTx(ctx context.Context, key string, part
 		}
 	}
 
+	return nil
+}
+
+// CommandOperations implementation for MockDataStore
+
+// SubmitCommand 提交命令到模拟存储
+func (m *MockDataStore) SubmitCommand(ctx context.Context, namespace string, command interface{}) error {
+	m.CommandMutex.Lock()
+	defer m.CommandMutex.Unlock()
+
+	// 使用独立的Commands存储而不是PartitionData
+	commandKey := fmt.Sprintf("commands:%s", namespace)
+	if m.Commands[commandKey] == "" {
+		m.Commands[commandKey] = fmt.Sprintf("%v", command)
+	} else {
+		m.Commands[commandKey] += "|" + fmt.Sprintf("%v", command)
+	}
+	return nil
+}
+
+// GetPendingCommands 获取待处理的命令列表
+func (m *MockDataStore) GetPendingCommands(ctx context.Context, namespace string, limit int) ([]string, error) {
+	m.CommandMutex.RLock()
+	defer m.CommandMutex.RUnlock()
+
+	commandKey := fmt.Sprintf("commands:%s", namespace)
+	commandsStr := m.Commands[commandKey]
+	if commandsStr == "" {
+		return []string{}, nil
+	}
+
+	// 简化实现：按|分割命令
+	commands := []string{}
+	if commandsStr != "" {
+		for _, cmd := range []string{commandsStr} {
+			if cmd != "" {
+				commands = append(commands, cmd)
+				if len(commands) >= limit {
+					break
+				}
+			}
+		}
+	}
+	return commands, nil
+}
+
+// GetCommand 获取命令详情
+func (m *MockDataStore) GetCommand(ctx context.Context, namespace, commandID string) (string, error) {
+	// 在MockDataStore中，commandID就是命令本身
+	return commandID, nil
+}
+
+// UpdateCommandStatus 更新命令状态
+func (m *MockDataStore) UpdateCommandStatus(ctx context.Context, namespace, commandID string, command interface{}) error {
+	// 简化实现：先删除再添加
+	if err := m.DeleteCommand(ctx, namespace, commandID); err != nil {
+		return err
+	}
+	if command != nil {
+		return m.SubmitCommand(ctx, namespace, command)
+	}
+	return nil
+}
+
+// DeleteCommand 删除命令
+func (m *MockDataStore) DeleteCommand(ctx context.Context, namespace, commandID string) error {
+	m.CommandMutex.Lock()
+	defer m.CommandMutex.Unlock()
+
+	commandKey := fmt.Sprintf("commands:%s", namespace)
+	// 简化实现：清空命令
+	m.Commands[commandKey] = ""
 	return nil
 }
