@@ -674,24 +674,6 @@ func (m *MockDataStore) GetPendingCommands(ctx context.Context, namespace string
 	return commands, nil
 }
 
-// GetCommand 获取命令详情
-func (m *MockDataStore) GetCommand(ctx context.Context, namespace, commandID string) (string, error) {
-	// 在MockDataStore中，commandID就是命令本身
-	return commandID, nil
-}
-
-// UpdateCommandStatus 更新命令状态
-func (m *MockDataStore) UpdateCommandStatus(ctx context.Context, namespace, commandID string, command interface{}) error {
-	// 简化实现：先删除再添加
-	if err := m.DeleteCommand(ctx, namespace, commandID); err != nil {
-		return err
-	}
-	if command != nil {
-		return m.SubmitCommand(ctx, namespace, command)
-	}
-	return nil
-}
-
 // DeleteCommand 删除命令
 func (m *MockDataStore) DeleteCommand(ctx context.Context, namespace, commandID string) error {
 	m.CommandMutex.Lock()

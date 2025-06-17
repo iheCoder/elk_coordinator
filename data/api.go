@@ -123,10 +123,6 @@ type CommandOperations interface {
 	SubmitCommand(ctx context.Context, namespace string, command interface{}) error
 	// 获取待处理的命令列表
 	GetPendingCommands(ctx context.Context, namespace string, limit int) ([]string, error)
-	// 获取命令详情
-	GetCommand(ctx context.Context, namespace, commandID string) (string, error)
-	// 更新命令状态
-	UpdateCommandStatus(ctx context.Context, namespace, commandID string, command interface{}) error
 	// 删除命令
 	DeleteCommand(ctx context.Context, namespace, commandID string) error
 }

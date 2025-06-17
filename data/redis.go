@@ -541,6 +541,11 @@ func (d *RedisDataStore) SubmitCommand(ctx context.Context, namespace string, co
 func (d *RedisDataStore) GetPendingCommands(ctx context.Context, namespace string, limit int) ([]string, error) {
 	key := d.prefixKey("commands:" + namespace)
 
+	// 如果limit <= 0，直接返回空结果
+	if limit <= 0 {
+		return []string{}, nil
+	}
+
 	// 获取最早的命令（按时间排序）
 	results, err := d.rds.ZRange(ctx, key, 0, int64(limit-1)).Result()
 	if err != nil {
@@ -548,30 +553,6 @@ func (d *RedisDataStore) GetPendingCommands(ctx context.Context, namespace strin
 	}
 
 	return results, nil
-}
-
-// GetCommand 获取命令详情（这里直接返回命令本身，因为已经包含在JSON中）
-func (d *RedisDataStore) GetCommand(ctx context.Context, namespace, commandID string) (string, error) {
-	// 在当前设计中，commandID就是命令的JSON字符串
-	return commandID, nil
-}
-
-// UpdateCommandStatus 更新命令状态（删除旧命令，如果需要可以添加新状态）
-func (d *RedisDataStore) UpdateCommandStatus(ctx context.Context, namespace, commandID string, command interface{}) error {
-	key := d.prefixKey("commands:" + namespace)
-
-	// 先删除原命令
-	err := d.rds.ZRem(ctx, key, commandID).Err()
-	if err != nil {
-		return errors.Wrap(err, "删除原命令失败")
-	}
-
-	// 如果新命令不为nil，则添加新状态
-	if command != nil {
-		return d.SubmitCommand(ctx, namespace, command)
-	}
-
-	return nil
 }
 
 // DeleteCommand 删除命令

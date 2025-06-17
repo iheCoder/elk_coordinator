@@ -1452,3 +1452,465 @@ func TestHUpdatePartitionWithVersion_VersionSequence(t *testing.T) {
 	assert.Contains(t, finalPartition, `"version":3`, "Final partition should have version 3")
 	assert.Contains(t, finalPartition, `"worker":"worker-3"`, "Final partition should be owned by worker-3")
 }
+
+// TestCommandOperations 测试命令操作
+func TestCommandOperations(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	namespace := "test_namespace"
+
+	// 定义测试命令结构
+	type TestCommand struct {
+		ID     string      `json:"id"`
+		Type   string      `json:"type"`
+		Params interface{} `json:"params"`
+	}
+
+	// 测试提交命令
+	t.Run("SubmitCommand", func(t *testing.T) {
+		cmd1 := TestCommand{
+			ID:   "cmd1",
+			Type: "retry_failed_partitions",
+			Params: map[string]interface{}{
+				"partition_ids": []int{1, 2, 3},
+			},
+		}
+
+		err := store.SubmitCommand(ctx, namespace, cmd1)
+		assert.NoError(t, err)
+
+		cmd2 := TestCommand{
+			ID:   "cmd2",
+			Type: "scale_workers",
+			Params: map[string]interface{}{
+				"target_count": 5,
+			},
+		}
+
+		err = store.SubmitCommand(ctx, namespace, cmd2)
+		assert.NoError(t, err)
+	})
+
+	// 测试获取待处理命令
+	t.Run("GetPendingCommands", func(t *testing.T) {
+		// 获取所有待处理命令
+		commands, err := store.GetPendingCommands(ctx, namespace, 10)
+		assert.NoError(t, err)
+		assert.Equal(t, 2, len(commands))
+
+		// 验证命令是JSON格式
+		for _, cmdStr := range commands {
+			var cmd TestCommand
+			err := json.Unmarshal([]byte(cmdStr), &cmd)
+			assert.NoError(t, err)
+			assert.NotEmpty(t, cmd.ID)
+			assert.NotEmpty(t, cmd.Type)
+		}
+
+		// 测试限制数量
+		limitedCommands, err := store.GetPendingCommands(ctx, namespace, 1)
+		assert.NoError(t, err)
+		assert.Equal(t, 1, len(limitedCommands))
+	})
+
+	// 测试删除命令
+	t.Run("DeleteCommand", func(t *testing.T) {
+		// 获取第一个命令
+		commands, err := store.GetPendingCommands(ctx, namespace, 1)
+		assert.NoError(t, err)
+		assert.Equal(t, 1, len(commands))
+
+		firstCommand := commands[0]
+
+		// 删除第一个命令
+		err = store.DeleteCommand(ctx, namespace, firstCommand)
+		assert.NoError(t, err)
+
+		// 验证命令已删除
+		remainingCommands, err := store.GetPendingCommands(ctx, namespace, 10)
+		assert.NoError(t, err)
+		assert.Equal(t, 1, len(remainingCommands))
+		assert.NotContains(t, remainingCommands, firstCommand)
+	})
+
+	// 测试空命名空间
+	t.Run("EmptyNamespace", func(t *testing.T) {
+		emptyNamespace := "empty_namespace"
+
+		// 空命名空间应该没有命令
+		commands, err := store.GetPendingCommands(ctx, emptyNamespace, 10)
+		assert.NoError(t, err)
+		assert.Equal(t, 0, len(commands))
+
+		// 删除不存在的命令应该不报错
+		err = store.DeleteCommand(ctx, emptyNamespace, "non_existent_command")
+		assert.NoError(t, err)
+	})
+}
+
+// TestCommandOperations_OrderedRetrieval 测试命令按顺序检索
+func TestCommandOperations_OrderedRetrieval(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	namespace := "ordered_test"
+
+	type TimestampedCommand struct {
+		ID        string `json:"id"`
+		Timestamp int64  `json:"timestamp"`
+	}
+
+	// 按时间顺序提交多个命令
+	commands := []TimestampedCommand{
+		{ID: "cmd1", Timestamp: time.Now().UnixNano()},
+		{ID: "cmd2", Timestamp: time.Now().UnixNano() + 1000000}, // 1ms后
+		{ID: "cmd3", Timestamp: time.Now().UnixNano() + 2000000}, // 2ms后
+	}
+
+	// 提交命令
+	for _, cmd := range commands {
+		// 添加小延迟确保时间戳不同
+		time.Sleep(time.Millisecond)
+		err := store.SubmitCommand(ctx, namespace, cmd)
+		assert.NoError(t, err)
+	}
+
+	// 获取命令并验证顺序
+	retrievedCommands, err := store.GetPendingCommands(ctx, namespace, 10)
+	assert.NoError(t, err)
+	assert.Equal(t, 3, len(retrievedCommands))
+
+	// 解析并验证时间顺序
+	var parsedCommands []TimestampedCommand
+	for _, cmdStr := range retrievedCommands {
+		var cmd TimestampedCommand
+		err := json.Unmarshal([]byte(cmdStr), &cmd)
+		assert.NoError(t, err)
+		parsedCommands = append(parsedCommands, cmd)
+	}
+
+	// 验证命令按提交时间顺序返回（最早的优先）
+	assert.Equal(t, "cmd1", parsedCommands[0].ID)
+	assert.Equal(t, "cmd2", parsedCommands[1].ID)
+	assert.Equal(t, "cmd3", parsedCommands[2].ID)
+}
+
+// TestCommandOperations_ConcurrentAccess 测试并发访问
+func TestCommandOperations_ConcurrentAccess(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	namespace := "concurrent_test"
+	numWorkers := 10
+	commandsPerWorker := 5
+
+	type ConcurrentCommand struct {
+		ID       string `json:"id"`
+		WorkerID int    `json:"worker_id"`
+		SeqNum   int    `json:"seq_num"`
+	}
+
+	// 并发提交命令
+	t.Run("ConcurrentSubmit", func(t *testing.T) {
+		var wg sync.WaitGroup
+		errChan := make(chan error, numWorkers*commandsPerWorker)
+
+		for workerID := 0; workerID < numWorkers; workerID++ {
+			wg.Add(1)
+			go func(wID int) {
+				defer wg.Done()
+
+				for seqNum := 0; seqNum < commandsPerWorker; seqNum++ {
+					cmd := ConcurrentCommand{
+						ID:       fmt.Sprintf("worker_%d_cmd_%d", wID, seqNum),
+						WorkerID: wID,
+						SeqNum:   seqNum,
+					}
+
+					err := store.SubmitCommand(ctx, namespace, cmd)
+					if err != nil {
+						errChan <- fmt.Errorf("worker %d 提交命令 %d 失败: %v", wID, seqNum, err)
+					}
+				}
+			}(workerID)
+		}
+
+		wg.Wait()
+		close(errChan)
+
+		// 检查错误
+		for err := range errChan {
+			t.Error(err)
+		}
+
+		// 验证所有命令都已提交
+		commands, err := store.GetPendingCommands(ctx, namespace, numWorkers*commandsPerWorker)
+		assert.NoError(t, err)
+		assert.Equal(t, numWorkers*commandsPerWorker, len(commands))
+	})
+
+	// 并发获取和删除命令
+	t.Run("ConcurrentGetAndDelete", func(t *testing.T) {
+		var wg sync.WaitGroup
+		processedCommands := sync.Map{}
+		errChan := make(chan error, numWorkers)
+
+		for workerID := 0; workerID < numWorkers; workerID++ {
+			wg.Add(1)
+			go func(wID int) {
+				defer wg.Done()
+
+				for {
+					// 获取一个命令
+					commands, err := store.GetPendingCommands(ctx, namespace, 1)
+					if err != nil {
+						errChan <- fmt.Errorf("worker %d 获取命令失败: %v", wID, err)
+						return
+					}
+
+					if len(commands) == 0 {
+						// 没有更多命令
+						return
+					}
+
+					commandStr := commands[0]
+
+					// 尝试删除命令
+					err = store.DeleteCommand(ctx, namespace, commandStr)
+					if err != nil {
+						errChan <- fmt.Errorf("worker %d 删除命令失败: %v", wID, err)
+						return
+					}
+
+					// 记录已处理的命令
+					var cmd ConcurrentCommand
+					if err := json.Unmarshal([]byte(commandStr), &cmd); err == nil {
+						processedCommands.Store(cmd.ID, wID)
+					}
+				}
+			}(workerID)
+		}
+
+		wg.Wait()
+		close(errChan)
+
+		// 检查错误
+		for err := range errChan {
+			t.Error(err)
+		}
+
+		// 验证所有命令都被处理
+		processedCount := 0
+		processedCommands.Range(func(key, value interface{}) bool {
+			processedCount++
+			return true
+		})
+
+		// 验证没有剩余命令
+		remainingCommands, err := store.GetPendingCommands(ctx, namespace, 100)
+		assert.NoError(t, err)
+		assert.Equal(t, 0, len(remainingCommands))
+
+		t.Logf("处理了 %d 个命令", processedCount)
+	})
+}
+
+// TestCommandOperations_InvalidInput 测试无效输入处理
+func TestCommandOperations_InvalidInput(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	namespace := "invalid_test"
+
+	// 测试提交无法序列化的命令
+	t.Run("UnserializableCommand", func(t *testing.T) {
+		// 创建一个包含循环引用的结构，无法JSON序列化
+		type CircularRef struct {
+			Name string
+			Ref  *CircularRef
+		}
+
+		circular := &CircularRef{Name: "test"}
+		circular.Ref = circular
+
+		err := store.SubmitCommand(ctx, namespace, circular)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "命令序列化失败")
+	})
+
+	// 测试删除不存在的命令
+	t.Run("DeleteNonExistentCommand", func(t *testing.T) {
+		err := store.DeleteCommand(ctx, namespace, "non_existent_command")
+		assert.NoError(t, err) // Redis的ZREM操作对不存在的成员不报错
+	})
+
+	// 测试获取命令时使用不同的limit值
+	t.Run("DifferentLimits", func(t *testing.T) {
+		// 提交一些测试命令
+		for i := 0; i < 5; i++ {
+			cmd := map[string]interface{}{
+				"id":    fmt.Sprintf("test_cmd_%d", i),
+				"index": i,
+			}
+			err := store.SubmitCommand(ctx, namespace, cmd)
+			assert.NoError(t, err)
+		}
+
+		// 测试limit = 0
+		commands, err := store.GetPendingCommands(ctx, namespace, 0)
+		assert.NoError(t, err)
+		assert.Equal(t, 0, len(commands))
+
+		// 测试limit = 负数
+		commands, err = store.GetPendingCommands(ctx, namespace, -1)
+		assert.NoError(t, err)
+		assert.Equal(t, 0, len(commands))
+
+		// 测试limit超过实际命令数量
+		commands, err = store.GetPendingCommands(ctx, namespace, 100)
+		assert.NoError(t, err)
+		assert.Equal(t, 5, len(commands))
+	})
+}
+
+// TestCommandOperations_MultipleNamespaces 测试多命名空间隔离
+func TestCommandOperations_MultipleNamespaces(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	namespace1 := "ns1"
+	namespace2 := "ns2"
+
+	type NamespacedCommand struct {
+		ID        string `json:"id"`
+		Namespace string `json:"namespace"`
+		Data      string `json:"data"`
+	}
+
+	// 在不同命名空间提交命令
+	cmd1 := NamespacedCommand{ID: "cmd1", Namespace: namespace1, Data: "data1"}
+	cmd2 := NamespacedCommand{ID: "cmd2", Namespace: namespace2, Data: "data2"}
+	cmd3 := NamespacedCommand{ID: "cmd3", Namespace: namespace1, Data: "data3"}
+
+	err := store.SubmitCommand(ctx, namespace1, cmd1)
+	assert.NoError(t, err)
+
+	err = store.SubmitCommand(ctx, namespace2, cmd2)
+	assert.NoError(t, err)
+
+	err = store.SubmitCommand(ctx, namespace1, cmd3)
+	assert.NoError(t, err)
+
+	// 验证命名空间隔离
+	ns1Commands, err := store.GetPendingCommands(ctx, namespace1, 10)
+	assert.NoError(t, err)
+	assert.Equal(t, 2, len(ns1Commands))
+
+	ns2Commands, err := store.GetPendingCommands(ctx, namespace2, 10)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(ns2Commands))
+
+	// 验证命令内容
+	var ns1Cmd1, ns1Cmd3 NamespacedCommand
+	err = json.Unmarshal([]byte(ns1Commands[0]), &ns1Cmd1)
+	assert.NoError(t, err)
+	err = json.Unmarshal([]byte(ns1Commands[1]), &ns1Cmd3)
+	assert.NoError(t, err)
+
+	var ns2Cmd NamespacedCommand
+	err = json.Unmarshal([]byte(ns2Commands[0]), &ns2Cmd)
+	assert.NoError(t, err)
+
+	assert.Equal(t, "cmd1", ns1Cmd1.ID)
+	assert.Equal(t, "cmd3", ns1Cmd3.ID)
+	assert.Equal(t, "cmd2", ns2Cmd.ID)
+
+	// 测试跨命名空间删除不会影响其他命名空间
+	err = store.DeleteCommand(ctx, namespace1, ns1Commands[0])
+	assert.NoError(t, err)
+
+	// 验证ns1减少了一个命令，ns2不受影响
+	ns1CommandsAfter, err := store.GetPendingCommands(ctx, namespace1, 10)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(ns1CommandsAfter))
+
+	ns2CommandsAfter, err := store.GetPendingCommands(ctx, namespace2, 10)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(ns2CommandsAfter))
+}
+
+// TestCommandOperations_LargeCommands 测试大命令处理
+func TestCommandOperations_LargeCommands(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	namespace := "large_test"
+
+	// 创建一个较大的命令
+	type LargeCommand struct {
+		ID           string            `json:"id"`
+		Type         string            `json:"type"`
+		LargeData    string            `json:"large_data"`
+		Metadata     map[string]string `json:"metadata"`
+		PartitionIDs []int             `json:"partition_ids"`
+	}
+
+	// 生成大量数据
+	largeData := make([]byte, 10*1024) // 10KB
+	for i := range largeData {
+		largeData[i] = byte('A' + (i % 26))
+	}
+
+	metadata := make(map[string]string)
+	for i := 0; i < 100; i++ {
+		metadata[fmt.Sprintf("key_%d", i)] = fmt.Sprintf("value_%d_with_some_long_data", i)
+	}
+
+	partitionIDs := make([]int, 1000)
+	for i := range partitionIDs {
+		partitionIDs[i] = i
+	}
+
+	largeCmd := LargeCommand{
+		ID:           "large_cmd_1",
+		Type:         "bulk_operation",
+		LargeData:    string(largeData),
+		Metadata:     metadata,
+		PartitionIDs: partitionIDs,
+	}
+
+	// 提交大命令
+	err := store.SubmitCommand(ctx, namespace, largeCmd)
+	assert.NoError(t, err)
+
+	// 获取并验证大命令
+	commands, err := store.GetPendingCommands(ctx, namespace, 1)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(commands))
+
+	var retrievedCmd LargeCommand
+	err = json.Unmarshal([]byte(commands[0]), &retrievedCmd)
+	assert.NoError(t, err)
+
+	assert.Equal(t, largeCmd.ID, retrievedCmd.ID)
+	assert.Equal(t, largeCmd.Type, retrievedCmd.Type)
+	assert.Equal(t, largeCmd.LargeData, retrievedCmd.LargeData)
+	assert.Equal(t, len(largeCmd.Metadata), len(retrievedCmd.Metadata))
+	assert.Equal(t, len(largeCmd.PartitionIDs), len(retrievedCmd.PartitionIDs))
+
+	// 删除大命令
+	err = store.DeleteCommand(ctx, namespace, commands[0])
+	assert.NoError(t, err)
+
+	// 验证删除成功
+	remainingCommands, err := store.GetPendingCommands(ctx, namespace, 10)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(remainingCommands))
+}
