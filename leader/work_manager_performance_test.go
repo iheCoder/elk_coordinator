@@ -11,6 +11,230 @@ import (
 	"time"
 )
 
+// slowPartitionStrategy 模拟真实Redis操作的网络和序列化延迟
+// 用于准确测试增量检测相对于完整扫描的性能优势
+type slowPartitionStrategy struct {
+	*test_utils.MockPartitionStrategy
+	networkLatency       time.Duration // 网络往返延迟
+	serializationBase    time.Duration // 序列化基础开销
+	serializationPerItem time.Duration // 每个分区的序列化开销
+}
+
+// newSlowPartitionStrategy 创建模拟真实Redis延迟的分区策略
+func newSlowPartitionStrategy(networkLatency, serializationBase, serializationPerItem time.Duration) *slowPartitionStrategy {
+	return &slowPartitionStrategy{
+		MockPartitionStrategy: test_utils.NewMockPartitionStrategy(),
+		networkLatency:        networkLatency,
+		serializationBase:     serializationBase,
+		serializationPerItem:  serializationPerItem,
+	}
+}
+
+// GetAllPartitions 模拟Redis的SCAN/KEYS操作 - 延迟随分区数量线性增长
+func (s *slowPartitionStrategy) GetAllPartitions(ctx context.Context) ([]*model.PartitionInfo, error) {
+	// 网络往返延迟（TCP连接 + Redis命令传输）
+	time.Sleep(s.networkLatency)
+
+	// 获取分区数据以计算序列化延迟
+	partitions, err := s.MockPartitionStrategy.GetAllPartitions(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	partitionCount := len(partitions)
+	if partitionCount > 0 {
+		// 序列化基础开销（Redis内部处理）
+		time.Sleep(s.serializationBase)
+
+		// 每个分区的序列化和网络传输延迟
+		// 这反映了Redis需要序列化每个分区数据并通过网络发送的真实成本
+		totalSerializationDelay := time.Duration(partitionCount) * s.serializationPerItem
+		time.Sleep(totalSerializationDelay)
+	}
+
+	return partitions, nil
+}
+
+// GetPartition 模拟Redis的GET操作 - 固定延迟，不随总分区数增长
+func (s *slowPartitionStrategy) GetPartition(ctx context.Context, partitionID int) (*model.PartitionInfo, error) {
+	// 单个分区查询：只有网络往返延迟 + 最小序列化开销
+	// 这是增量检测的核心优势：不需要传输大量无关数据
+	time.Sleep(s.networkLatency + s.serializationBase)
+	return s.MockPartitionStrategy.GetPartition(ctx, partitionID)
+}
+
+// AcquirePartition 模拟分区获取操作
+func (s *slowPartitionStrategy) AcquirePartition(ctx context.Context, partitionID int, workerID string, options *model.AcquirePartitionOptions) (*model.PartitionInfo, bool, error) {
+	// 分区获取操作：网络延迟 + 基础序列化开销
+	time.Sleep(s.networkLatency + s.serializationBase)
+	return s.MockPartitionStrategy.AcquirePartition(ctx, partitionID, workerID, options)
+}
+
+// SetPartitions 设置分区数据（用于测试）
+func (s *slowPartitionStrategy) SetPartitions(partitions map[int]*model.PartitionInfo) {
+	s.MockPartitionStrategy.SetPartitions(partitions)
+}
+
+// TestIncrementalGapDetection_PerformanceComparison 测试增量检测的性能优势
+func TestIncrementalGapDetection_PerformanceComparison(t *testing.T) {
+	if testing.Short() {
+		t.Skip("跳过性能测试（使用 -short 标志）")
+	}
+
+	config := PartitionAssignerConfig{
+		Namespace:               "test",
+		WorkerPartitionMultiple: 2,
+	}
+
+	// 使用更真实的Redis延迟模拟
+	// 网络延迟: 1ms (局域网内Redis的典型往返时间)
+	// 序列化基础开销: 100µs (Redis内部处理和基础序列化)
+	// 每分区序列化开销: 5µs (每个分区对象的序列化和传输成本)
+	slowStrategy := newSlowPartitionStrategy(
+		1*time.Millisecond,   // networkLatency
+		100*time.Microsecond, // serializationBase
+		5*time.Microsecond,   // serializationPerItem
+	)
+
+	mockPlaner := &mockPartitionPlaner{
+		suggestedPartitionSize: 1000,
+		nextMaxID:              50000,
+	}
+	logger := test_utils.NewMockLogger(false)
+
+	partitionMgr := NewPartitionAssigner(config, slowStrategy, logger, mockPlaner)
+	ctx := context.Background()
+
+	// 创建大量分区以测试性能差异 - 增加到5000个让效果更明显
+	const numPartitions = 5000
+	partitions := make(map[int]*model.PartitionInfo)
+
+	for i := 1; i <= numPartitions; i++ {
+		partitions[i] = &model.PartitionInfo{
+			PartitionID: i,
+			MinID:       int64((i-1)*1000 + 1),
+			MaxID:       int64(i * 1000),
+			Status:      model.StatusCompleted,
+		}
+	}
+	slowStrategy.SetPartitions(partitions)
+
+	// 第一次检测：完整检测，建立缓存
+	t.Log("=== 建立初始缓存（完整检测） ===")
+	start := time.Now()
+	_, err := partitionMgr.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, numPartitions)
+	fullDetectionTime := time.Since(start)
+	if err != nil {
+		t.Fatalf("初始完整检测失败: %v", err)
+	}
+	t.Logf("完整检测（%d个分区）耗时: %v", numPartitions, fullDetectionTime)
+
+	// 添加一个新分区，触发增量检测
+	newPartitionID := numPartitions + 1
+	partitions[newPartitionID] = &model.PartitionInfo{
+		PartitionID: newPartitionID,
+		MinID:       int64(newPartitionID-1)*1000 + 1,
+		MaxID:       int64(newPartitionID * 1000),
+		Status:      model.StatusCompleted,
+	}
+	slowStrategy.SetPartitions(partitions)
+
+	// 增量检测
+	t.Log("=== 增量检测（添加1个新分区） ===")
+	start = time.Now()
+	_, err = partitionMgr.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, newPartitionID)
+	incrementalDetectionTime := time.Since(start)
+	if err != nil {
+		t.Fatalf("增量检测失败: %v", err)
+	}
+	t.Logf("增量检测（添加1个新分区）耗时: %v", incrementalDetectionTime)
+
+	// 性能对比验证
+	performanceImprovement := float64(fullDetectionTime) / float64(incrementalDetectionTime)
+	t.Logf("性能提升: %.2fx", performanceImprovement)
+
+	// 验证增量检测应该比完整检测快很多（至少2倍）
+	// 在有延迟的模拟环境中，5000个分区的完整检测应该明显比单个分区的增量检测慢
+	minExpectedImprovement := 2.0
+	if performanceImprovement < minExpectedImprovement {
+		t.Errorf("增量检测性能提升不足: 实际%.2fx < 期望%.2fx (完整检测=%v, 增量检测=%v)",
+			performanceImprovement, minExpectedImprovement, fullDetectionTime, incrementalDetectionTime)
+	}
+
+	// 清除缓存，强制完整检测进行对比
+	t.Log("=== 清除缓存后的完整检测 ===")
+	partitionMgr.knownPartitionRanges = nil // 清除缓存
+	start = time.Now()
+	_, err = partitionMgr.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, newPartitionID)
+	fullDetectionTime2 := time.Since(start)
+	if err != nil {
+		t.Fatalf("清除缓存后的完整检测失败: %v", err)
+	}
+	t.Logf("清除缓存后完整检测（%d个分区）耗时: %v", newPartitionID, fullDetectionTime2)
+
+	// 验证缓存失效后性能回到完整检测水平
+	// 第二次完整检测应该和第一次时间相近（因为分区数量只多了1个）
+	timeDifference := float64(fullDetectionTime2) / float64(fullDetectionTime)
+	t.Logf("两次完整检测时间比较: %.2fx", timeDifference)
+
+	// 第二次完整检测应该明显比增量检测慢
+	improvement2 := float64(fullDetectionTime2) / float64(incrementalDetectionTime)
+	if improvement2 < minExpectedImprovement {
+		t.Logf("警告：清除缓存后的完整检测时间 %v 与增量检测时间 %v 差异较小（%.2fx）",
+			fullDetectionTime2, incrementalDetectionTime, improvement2)
+	}
+
+	// 验证结果正确性：增量检测和完整检测应该产生相同的结果
+	t.Log("=== 验证结果一致性 ===")
+
+	// 重新设置相同的测试环境
+	partitionMgr1 := NewPartitionAssigner(config, test_utils.NewMockPartitionStrategy(), logger, mockPlaner)
+	partitionMgr2 := NewPartitionAssigner(config, test_utils.NewMockPartitionStrategy(), logger, mockPlaner)
+
+	// 为两个管理器设置相同的分区状态
+	testPartitions := map[int]*model.PartitionInfo{
+		1: {PartitionID: 1, MinID: 1, MaxID: 1000},
+		2: {PartitionID: 2, MinID: 2001, MaxID: 3000}, // 故意留缺口 1001-2000
+	}
+
+	mockStrategy1 := test_utils.NewMockPartitionStrategy()
+	mockStrategy2 := test_utils.NewMockPartitionStrategy()
+	mockStrategy1.SetPartitions(testPartitions)
+	mockStrategy2.SetPartitions(testPartitions)
+
+	partitionMgr1.strategy = mockStrategy1
+	partitionMgr2.strategy = mockStrategy2
+
+	// 使用完整检测
+	fullResult, err := partitionMgr1.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, 2)
+	if err != nil {
+		t.Fatalf("完整检测失败: %v", err)
+	}
+
+	// 建立增量检测的缓存状态
+	_, err = partitionMgr2.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, 1)
+	if err != nil {
+		t.Fatalf("建立增量缓存失败: %v", err)
+	}
+
+	// 添加新分区并使用增量检测
+	testPartitions[2] = &model.PartitionInfo{PartitionID: 2, MinID: 2001, MaxID: 3000}
+	mockStrategy2.SetPartitions(testPartitions)
+
+	incrementalResult, err := partitionMgr2.DetectAndCreateGapPartitions(ctx, []string{"worker1"}, 2)
+	if err != nil {
+		t.Fatalf("增量检测失败: %v", err)
+	}
+
+	// 比较结果
+	if len(fullResult) != len(incrementalResult) {
+		t.Errorf("完整检测和增量检测结果数量不同：完整=%d，增量=%d",
+			len(fullResult), len(incrementalResult))
+	}
+
+	t.Logf("✅ 性能测试完成：增量检测比完整检测快 %.2fx", performanceImprovement)
+}
+
 // TestPartitionAssignerScalingPerformance 测试分区算法在大规模扩缩容时的性能
 func TestPartitionAssignerScalingPerformance(t *testing.T) {
 	if testing.Short() {
