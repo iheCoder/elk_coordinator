@@ -66,13 +66,6 @@ func (cp *CommandProcessor) processCommand(ctx context.Context, commandStr strin
 
 	cp.logger.Infof("开始处理命令: %s, 类型: %s", command.ID, command.Type)
 
-	// 更新命令状态为处理中
-	command.Status = "processing"
-	if err := cp.updateCommandInDataStore(ctx, commandStr, &command); err != nil {
-		cp.logger.Errorf("更新命令状态失败: %v", err)
-		return err
-	}
-
 	// 根据命令类型执行相应操作
 	var result *model.CommandResult
 	var processErr error
@@ -84,34 +77,21 @@ func (cp *CommandProcessor) processCommand(ctx context.Context, commandStr strin
 		processErr = fmt.Errorf("未知的命令类型: %s", command.Type)
 	}
 
-	// 更新命令结果
+	// 记录执行结果（仅用于日志，不更新存储状态）
 	if processErr != nil {
-		command.Status = "failed"
-		command.Error = processErr.Error()
 		cp.logger.Errorf("命令 %s 执行失败: %v", command.ID, processErr)
 	} else {
-		command.Status = "completed"
 		if result != nil {
-			resultMap := map[string]interface{}{
-				"success":             result.Success,
-				"processed_count":     result.ProcessedCount,
-				"message":             result.Message,
-				"affected_partitions": result.AffectedPartitions,
-			}
-			command.Result = resultMap
+			cp.logger.Infof("命令 %s 执行成功: %s, 处理数量: %d",
+				command.ID, result.Message, result.ProcessedCount)
+		} else {
+			cp.logger.Infof("命令 %s 执行成功", command.ID)
 		}
-		cp.logger.Infof("命令 %s 执行成功", command.ID)
 	}
 
-	// 保存最终状态
-	if err := cp.updateCommandInDataStore(ctx, commandStr, &command); err != nil {
-		cp.logger.Errorf("保存命令最终状态失败: %v", err)
-		return err
-	}
-
-	// 最后删除已处理的命令
+	// 直接删除已处理的命令，无需更新状态
 	cp.commandOps.DeleteCommand(ctx, cp.namespace, commandStr)
-	return nil
+	return processErr
 }
 
 // processRetryFailedPartitions 处理重试失败分区命令
@@ -156,15 +136,15 @@ func (cp *CommandProcessor) processRetryFailedPartitions(ctx context.Context, co
 	} else {
 		// 获取指定的分区并验证它们是否处于失败状态
 		for _, partitionID := range partitionIDs {
-			partition, err := cp.strategy.GetPartition(ctx, partitionID)
+			p, err := cp.strategy.GetPartition(ctx, partitionID)
 			if err != nil {
 				cp.logger.Warnf("获取分区 %d 失败: %v", partitionID, err)
 				continue
 			}
-			if partition.Status == model.StatusFailed {
-				targetPartitions = append(targetPartitions, partition)
+			if p.Status == model.StatusFailed {
+				targetPartitions = append(targetPartitions, p)
 			} else {
-				cp.logger.Warnf("分区 %d 状态为 %s，不是失败状态，跳过", partitionID, partition.Status)
+				cp.logger.Warnf("分区 %d 状态为 %s，不是失败状态，跳过", partitionID, p.Status)
 			}
 		}
 		cp.logger.Infof("指定 %d 个分区ID，其中 %d 个处于失败状态", len(partitionIDs), len(targetPartitions))
@@ -182,21 +162,21 @@ func (cp *CommandProcessor) processRetryFailedPartitions(ctx context.Context, co
 	successCount := 0
 	var affectedPartitions []int
 
-	for _, partition := range targetPartitions {
+	for _, p := range targetPartitions {
 		// 重置分区状态为pending
-		partition.Status = model.StatusPending
-		partition.WorkerID = ""
-		partition.UpdatedAt = time.Now()
+		p.Status = model.StatusPending
+		p.WorkerID = ""
+		p.UpdatedAt = time.Now()
 
 		// 更新分区状态
-		if err := cp.strategy.UpdatePartitionStatus(ctx, partition.PartitionID, "", model.StatusPending, nil); err != nil {
-			cp.logger.Errorf("更新分区 %d 状态为pending失败: %v", partition.PartitionID, err)
+		if err := cp.strategy.UpdatePartitionStatus(ctx, p.PartitionID, "", model.StatusPending, nil); err != nil {
+			cp.logger.Errorf("更新分区 %d 状态为pending失败: %v", p.PartitionID, err)
 			continue
 		}
 
 		successCount++
-		affectedPartitions = append(affectedPartitions, partition.PartitionID)
-		cp.logger.Infof("已将失败分区 %d 重置为pending状态", partition.PartitionID)
+		affectedPartitions = append(affectedPartitions, p.PartitionID)
+		cp.logger.Infof("已将失败分区 %d 重置为pending状态", p.PartitionID)
 	}
 
 	result := &model.CommandResult{
@@ -207,9 +187,4 @@ func (cp *CommandProcessor) processRetryFailedPartitions(ctx context.Context, co
 	}
 
 	return result, nil
-}
-
-// updateCommandInDataStore 更新命令状态到数据存储
-func (cp *CommandProcessor) updateCommandInDataStore(ctx context.Context, originalCommandStr string, command *model.Command) error {
-	return cp.commandOps.UpdateCommandStatus(ctx, cp.namespace, originalCommandStr, command)
 }
