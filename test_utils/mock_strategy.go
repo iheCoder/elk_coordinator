@@ -440,3 +440,105 @@ func (m *MockPartitionStrategy) SetPartitions(partitions map[int]*model.Partitio
 		m.Partitions[k] = &copy
 	}
 }
+
+// UpdatePartitionStatusCall 记录UpdatePartitionStatus方法调用
+type UpdatePartitionStatusCall struct {
+	PartitionID int
+	WorkerID    string
+	Status      model.PartitionStatus
+	Metadata    map[string]interface{}
+}
+
+// 为测试添加额外的字段和方法
+type MockPartitionStrategyTestHelper struct {
+	*MockPartitionStrategy
+	updatePartitionStatusCalls  []UpdatePartitionStatusCall
+	updatePartitionStatusErrors map[int]string // partitionID -> error message
+	filteredPartitions          []*model.PartitionInfo
+	testMutex                   sync.RWMutex
+}
+
+// NewMockPartitionStrategyWithTestHelper 创建带测试助手的MockPartitionStrategy
+func NewMockPartitionStrategyWithTestHelper() *MockPartitionStrategyTestHelper {
+	return &MockPartitionStrategyTestHelper{
+		MockPartitionStrategy:       NewMockPartitionStrategy(),
+		updatePartitionStatusCalls:  make([]UpdatePartitionStatusCall, 0),
+		updatePartitionStatusErrors: make(map[int]string),
+		filteredPartitions:          make([]*model.PartitionInfo, 0),
+	}
+}
+
+// UpdatePartitionStatus 重写UpdatePartitionStatus以记录调用
+func (m *MockPartitionStrategyTestHelper) UpdatePartitionStatus(ctx context.Context, partitionID int, workerID string, status model.PartitionStatus, metadata map[string]interface{}) error {
+	m.testMutex.Lock()
+	m.updatePartitionStatusCalls = append(m.updatePartitionStatusCalls, UpdatePartitionStatusCall{
+		PartitionID: partitionID,
+		WorkerID:    workerID,
+		Status:      status,
+		Metadata:    metadata,
+	})
+	m.testMutex.Unlock()
+
+	// 检查是否设置了错误
+	if errMsg, exists := m.updatePartitionStatusErrors[partitionID]; exists {
+		return fmt.Errorf(errMsg)
+	}
+
+	// 调用原始方法
+	return m.MockPartitionStrategy.UpdatePartitionStatus(ctx, partitionID, workerID, status, metadata)
+}
+
+// GetFilteredPartitions 重写GetFilteredPartitions以支持测试数据
+func (m *MockPartitionStrategyTestHelper) GetFilteredPartitions(ctx context.Context, filters model.GetPartitionsFilters) ([]*model.PartitionInfo, error) {
+	m.testMutex.RLock()
+	defer m.testMutex.RUnlock()
+
+	if len(m.filteredPartitions) > 0 {
+		// 返回测试设置的数据
+		result := make([]*model.PartitionInfo, len(m.filteredPartitions))
+		for i, p := range m.filteredPartitions {
+			copy := *p
+			result[i] = &copy
+		}
+		return result, nil
+	}
+
+	// 调用原始方法
+	return m.MockPartitionStrategy.GetFilteredPartitions(ctx, filters)
+}
+
+// SetFilteredPartitions 设置GetFilteredPartitions返回的数据
+func (m *MockPartitionStrategyTestHelper) SetFilteredPartitions(partitions []*model.PartitionInfo) {
+	m.testMutex.Lock()
+	defer m.testMutex.Unlock()
+
+	m.filteredPartitions = make([]*model.PartitionInfo, len(partitions))
+	for i, p := range partitions {
+		copy := *p
+		m.filteredPartitions[i] = &copy
+	}
+}
+
+// SetUpdatePartitionStatusError 设置特定分区的UpdatePartitionStatus错误
+func (m *MockPartitionStrategyTestHelper) SetUpdatePartitionStatusError(partitionID int, errorMessage string) {
+	m.testMutex.Lock()
+	defer m.testMutex.Unlock()
+	m.updatePartitionStatusErrors[partitionID] = errorMessage
+}
+
+// GetUpdatePartitionStatusCalls 获取UpdatePartitionStatus的调用记录
+func (m *MockPartitionStrategyTestHelper) GetUpdatePartitionStatusCalls() []UpdatePartitionStatusCall {
+	m.testMutex.RLock()
+	defer m.testMutex.RUnlock()
+
+	result := make([]UpdatePartitionStatusCall, len(m.updatePartitionStatusCalls))
+	copy(result, m.updatePartitionStatusCalls)
+	return result
+}
+
+// ClearUpdatePartitionStatusCalls 清空UpdatePartitionStatus的调用记录
+func (m *MockPartitionStrategyTestHelper) ClearUpdatePartitionStatusCalls() {
+	m.testMutex.Lock()
+	defer m.testMutex.Unlock()
+	m.updatePartitionStatusCalls = make([]UpdatePartitionStatusCall, 0)
+}

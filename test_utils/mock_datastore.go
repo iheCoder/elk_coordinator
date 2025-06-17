@@ -2,6 +2,7 @@ package test_utils
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -638,12 +639,24 @@ func (m *MockDataStore) SubmitCommand(ctx context.Context, namespace string, com
 	m.CommandMutex.Lock()
 	defer m.CommandMutex.Unlock()
 
-	// 使用独立的Commands存储而不是PartitionData
+	// 使用独立的Commands存储，每个namespace对应一个命令列表（用JSON数组存储）
 	commandKey := fmt.Sprintf("commands:%s", namespace)
+
+	// 将命令序列化为JSON字符串
+	bytes, err := json.Marshal(command)
+	if err != nil {
+		return fmt.Errorf("failed to marshal command: %w", err)
+	}
+	commandStr := string(bytes)
+
 	if m.Commands[commandKey] == "" {
-		m.Commands[commandKey] = fmt.Sprintf("%v", command)
+		// 第一个命令，创建JSON数组
+		m.Commands[commandKey] = fmt.Sprintf("[%s]", commandStr)
 	} else {
-		m.Commands[commandKey] += "|" + fmt.Sprintf("%v", command)
+		// 添加到现有数组中
+		existing := m.Commands[commandKey]
+		// 移除末尾的 ]，添加新命令，再加上 ]
+		m.Commands[commandKey] = existing[:len(existing)-1] + "," + commandStr + "]"
 	}
 	return nil
 }
@@ -659,18 +672,23 @@ func (m *MockDataStore) GetPendingCommands(ctx context.Context, namespace string
 		return []string{}, nil
 	}
 
-	// 简化实现：按|分割命令
-	commands := []string{}
-	if commandsStr != "" {
-		for _, cmd := range []string{commandsStr} {
-			if cmd != "" {
-				commands = append(commands, cmd)
-				if len(commands) >= limit {
-					break
-				}
-			}
-		}
+	// 解析JSON数组，命令可能是JSON对象，需要使用json.RawMessage
+	var rawCommands []json.RawMessage
+	if err := json.Unmarshal([]byte(commandsStr), &rawCommands); err != nil {
+		return []string{}, fmt.Errorf("failed to unmarshal commands JSON: %w", err)
 	}
+
+	// 将每个原始JSON消息转换为字符串
+	commands := make([]string, len(rawCommands))
+	for i, raw := range rawCommands {
+		commands[i] = string(raw)
+	}
+
+	// 应用limit
+	if limit > 0 && len(commands) > limit {
+		commands = commands[:limit]
+	}
+
 	return commands, nil
 }
 
@@ -680,7 +698,36 @@ func (m *MockDataStore) DeleteCommand(ctx context.Context, namespace, commandID 
 	defer m.CommandMutex.Unlock()
 
 	commandKey := fmt.Sprintf("commands:%s", namespace)
-	// 简化实现：清空命令
-	m.Commands[commandKey] = ""
+	commandsStr := m.Commands[commandKey]
+	if commandsStr == "" {
+		return nil // 没有命令可删除
+	}
+
+	// 解析JSON数组
+	var rawCommands []json.RawMessage
+	if err := json.Unmarshal([]byte(commandsStr), &rawCommands); err != nil {
+		return err
+	}
+
+	// 查找并删除匹配的命令
+	var newCommands []json.RawMessage
+	for _, raw := range rawCommands {
+		cmdStr := string(raw)
+		if cmdStr != commandID {
+			newCommands = append(newCommands, raw)
+		}
+	}
+
+	// 更新存储
+	if len(newCommands) == 0 {
+		m.Commands[commandKey] = ""
+	} else {
+		newCommandsBytes, err := json.Marshal(newCommands)
+		if err != nil {
+			return err
+		}
+		m.Commands[commandKey] = string(newCommandsBytes)
+	}
+
 	return nil
 }
