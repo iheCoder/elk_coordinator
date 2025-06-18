@@ -4,7 +4,8 @@ import (
 	"elk_coordinator/data"
 	"elk_coordinator/utils"
 	"net/http"
-	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 // Router HTTP路由器
@@ -12,6 +13,7 @@ type Router struct {
 	namespace string
 	dataStore data.DataStore
 	logger    utils.Logger
+	engine    *gin.Engine
 }
 
 // NewRouter 创建新的路由器
@@ -20,85 +22,83 @@ func NewRouter(namespace string, dataStore data.DataStore, logger utils.Logger) 
 		logger = utils.NewDefaultLogger()
 	}
 
+	// 设置Gin模式
+	gin.SetMode(gin.ReleaseMode)
+
+	engine := gin.New()
+
 	return &Router{
 		namespace: namespace,
 		dataStore: dataStore,
 		logger:    logger,
+		engine:    engine,
 	}
 }
 
 // SetupRoutes 设置路由
-func (rt *Router) SetupRoutes() *http.ServeMux {
-	mux := http.NewServeMux()
-
-	// API路由
-	mux.HandleFunc("/api/v1/retry-failed-partitions",
-		RetryFailedPartitionsHandler(rt.namespace, rt.dataStore, rt.logger))
-	mux.HandleFunc("/health", rt.healthCheckHandler)
-
+func (rt *Router) SetupRoutes() *gin.Engine {
 	// 添加中间件
-	return rt.withMiddleware(mux)
+	rt.engine.Use(rt.loggingMiddleware())
+	rt.engine.Use(rt.corsMiddleware())
+	rt.engine.Use(gin.Recovery())
+
+	// API路由组
+	v1 := rt.engine.Group("/api/v1")
+	{
+		v1.POST("/retry-failed-partitions", rt.retryFailedPartitionsHandler())
+	}
+
+	// 健康检查路由
+	rt.engine.GET("/health", rt.healthCheckHandler())
+
+	return rt.engine
+}
+
+// GetEngine 获取Gin引擎
+func (rt *Router) GetEngine() *gin.Engine {
+	return rt.engine
 }
 
 // healthCheckHandler 健康检查处理器
-func (rt *Router) healthCheckHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"ok","service":"elk-coordinator"}`))
+func (rt *Router) healthCheckHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "ok",
+			"service": "elk-coordinator",
+		})
+	}
 }
 
-// withMiddleware 添加中间件
-func (rt *Router) withMiddleware(handler http.Handler) *http.ServeMux {
-	mux := http.NewServeMux()
-	mux.Handle("/", rt.loggingMiddleware(rt.corsMiddleware(handler)))
-	return mux
+// retryFailedPartitionsHandler 重试失败分区处理器
+func (rt *Router) retryFailedPartitionsHandler() gin.HandlerFunc {
+	return RetryFailedPartitionsGinHandler(rt.namespace, rt.dataStore, rt.logger)
 }
 
 // loggingMiddleware 日志中间件
-func (rt *Router) loggingMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-
-		// 包装ResponseWriter以捕获状态码
-		wrappedWriter := &responseWriter{ResponseWriter: w}
-
-		next.ServeHTTP(wrappedWriter, r)
-
-		duration := time.Since(start)
-		rt.logger.Infof("HTTP %s %s - %d - %v", r.Method, r.URL.Path, wrappedWriter.statusCode, duration)
+func (rt *Router) loggingMiddleware() gin.HandlerFunc {
+	return gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
+		rt.logger.Infof("HTTP %s %s - %d - %v",
+			param.Method,
+			param.Path,
+			param.StatusCode,
+			param.Latency,
+		)
+		return ""
 	})
 }
 
 // corsMiddleware CORS中间件
-func (rt *Router) corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+func (rt *Router) corsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusOK)
+		if c.Request.Method == http.MethodOptions {
+			c.AbortWithStatus(http.StatusOK)
 			return
 		}
 
-		next.ServeHTTP(w, r)
-	})
-}
-
-// responseWriter 包装ResponseWriter以捕获状态码
-type responseWriter struct {
-	http.ResponseWriter
-	statusCode int
-}
-
-func (rw *responseWriter) WriteHeader(code int) {
-	rw.statusCode = code
-	rw.ResponseWriter.WriteHeader(code)
-}
-
-func (rw *responseWriter) Write(b []byte) (int, error) {
-	if rw.statusCode == 0 {
-		rw.statusCode = 200
+		c.Next()
 	}
-	return rw.ResponseWriter.Write(b)
 }

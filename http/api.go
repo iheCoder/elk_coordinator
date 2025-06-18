@@ -4,9 +4,11 @@ import (
 	"context"
 	"elk_coordinator/data"
 	"elk_coordinator/model"
-	"encoding/json"
+	"elk_coordinator/utils"
 	"fmt"
 	"net/http"
+
+	"github.com/gin-gonic/gin"
 )
 
 // RetryFailedPartitionsRequest 重试失败分区的请求结构
@@ -30,32 +32,17 @@ func SubmitCommand(ctx context.Context, namespace string, dataStore data.DataSto
 	return dataStore.SubmitCommand(ctx, namespace, command)
 }
 
-// RetryFailedPartitionsHandler HTTP处理器，用于处理重试失败分区的请求
-func RetryFailedPartitionsHandler(namespace string, dataStore data.DataStore, logger interface{}) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// 设置响应头
-		w.Header().Set("Content-Type", "application/json")
-
-		// 只接受POST请求
-		if r.Method != http.MethodPost {
-			response := CommandResponse{
-				Success: false,
-				Message: "只支持POST方法",
-			}
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			json.NewEncoder(w).Encode(response)
-			return
-		}
-
+// RetryFailedPartitionsGinHandler Gin版本的重试失败分区处理器
+func RetryFailedPartitionsGinHandler(namespace string, dataStore data.DataStore, logger utils.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
 		// 解析请求体
 		var req RetryFailedPartitionsRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := c.ShouldBindJSON(&req); err != nil {
 			response := CommandResponse{
 				Success: false,
 				Message: "无效的请求格式: " + err.Error(),
 			}
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(response)
+			c.JSON(http.StatusBadRequest, response)
 			return
 		}
 
@@ -66,8 +53,7 @@ func RetryFailedPartitionsHandler(namespace string, dataStore data.DataStore, lo
 					Success: false,
 					Message: fmt.Sprintf("无效的分区ID: %d, 分区ID必须大于0", partitionID),
 				}
-				w.WriteHeader(http.StatusBadRequest)
-				json.NewEncoder(w).Encode(response)
+				c.JSON(http.StatusBadRequest, response)
 				return
 			}
 		}
@@ -76,16 +62,16 @@ func RetryFailedPartitionsHandler(namespace string, dataStore data.DataStore, lo
 		command := model.NewRetryFailedPartitionsCommand(req.PartitionIDs)
 
 		// 提交命令
-		ctx := r.Context()
+		ctx := c.Request.Context()
 		err := SubmitCommand(ctx, namespace, dataStore, command)
 
 		if err != nil {
+			logger.Errorf("提交重试命令失败: %v", err)
 			response := CommandResponse{
 				Success: false,
 				Message: "提交命令失败: " + err.Error(),
 			}
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(response)
+			c.JSON(http.StatusInternalServerError, response)
 			return
 		}
 
@@ -97,12 +83,13 @@ func RetryFailedPartitionsHandler(namespace string, dataStore data.DataStore, lo
 			message = fmt.Sprintf("重试 %d 个指定分区的命令已提交", len(req.PartitionIDs))
 		}
 
+		logger.Infof("重试命令已提交: CommandID=%s, PartitionIDs=%v", command.ID, req.PartitionIDs)
+
 		response := CommandResponse{
 			Success:   true,
 			Message:   message,
 			CommandID: command.ID,
 		}
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(response)
+		c.JSON(http.StatusOK, response)
 	}
 }
