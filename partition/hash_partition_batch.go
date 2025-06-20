@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"elk_coordinator/model"
+	"github.com/iheCoder/elk_coordinator/model"
 )
 
 // ==================== 批量操作 ====================

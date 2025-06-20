@@ -2,8 +2,8 @@ package elk_coordinator
 
 import (
 	"context"
-	"elk_coordinator/model"
 	"fmt"
+	"github.com/iheCoder/elk_coordinator/model"
 	"os"
 	"os/signal"
 	"sync"

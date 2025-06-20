@@ -2,7 +2,7 @@ package leader
 
 import (
 	"context"
-	"elk_coordinator/test_utils"
+	"github.com/iheCoder/elk_coordinator/test_utils"
 	"sync"
 	"testing"
 	"time"

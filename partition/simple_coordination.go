@@ -2,10 +2,10 @@ package partition
 
 import (
 	"context"
-	"elk_coordinator/model"
-	"elk_coordinator/utils"
 	"errors"
 	"fmt"
+	"github.com/iheCoder/elk_coordinator/model"
+	"github.com/iheCoder/elk_coordinator/utils"
 
 	pkgerrors "github.com/pkg/errors"
 )

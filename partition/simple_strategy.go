@@ -2,9 +2,9 @@ package partition
 
 import (
 	"context"
-	"elk_coordinator/data"
-	"elk_coordinator/model"
-	"elk_coordinator/utils"
+	"github.com/iheCoder/elk_coordinator/data"
+	"github.com/iheCoder/elk_coordinator/model"
+	"github.com/iheCoder/elk_coordinator/utils"
 	"sync"
 	"time"
 )

@@ -2,9 +2,9 @@ package elk_coordinator
 
 import (
 	"context"
-	"elk_coordinator/data"
-	"elk_coordinator/model"
 	"fmt"
+	"github.com/iheCoder/elk_coordinator/data"
+	"github.com/iheCoder/elk_coordinator/model"
 	"sync"
 	"sync/atomic"
 	"testing"

@@ -3,9 +3,9 @@ package task
 
 import (
 	"context"
-	"elk_coordinator/model"
-	"elk_coordinator/test_utils"
 	"fmt"
+	"github.com/iheCoder/elk_coordinator/model"
+	"github.com/iheCoder/elk_coordinator/test_utils"
 	"math"
 	"testing"
 	"time"

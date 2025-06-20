@@ -2,7 +2,7 @@ package partition
 
 import (
 	"context"
-	"elk_coordinator/model"
+	"github.com/iheCoder/elk_coordinator/model"
 )
 
 // PartitionStrategy 定义分区管理策略接口

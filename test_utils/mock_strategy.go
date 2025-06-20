@@ -2,8 +2,8 @@ package test_utils
 
 import (
 	"context"
-	"elk_coordinator/model"
 	"fmt"
+	"github.com/iheCoder/elk_coordinator/model"
 	"sync"
 	"time"
 )

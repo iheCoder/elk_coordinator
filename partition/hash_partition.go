@@ -2,11 +2,11 @@ package partition
 
 import (
 	"context"
-	"elk_coordinator/model"
+	"github.com/iheCoder/elk_coordinator/model"
 	"time"
 
-	"elk_coordinator/data"
-	"elk_coordinator/utils"
+	"github.com/iheCoder/elk_coordinator/data"
+	"github.com/iheCoder/elk_coordinator/utils"
 )
 
 const (

@@ -2,7 +2,7 @@ package task
 
 import (
 	"context"
-	"elk_coordinator/metrics"
+	"github.com/iheCoder/elk_coordinator/metrics"
 	"sync"
 	"sync/atomic"
 	"time"

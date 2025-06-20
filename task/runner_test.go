@@ -2,10 +2,10 @@ package task
 
 import (
 	"context"
-	"elk_coordinator/model"
-	"elk_coordinator/partition"
-	"elk_coordinator/test_utils" // 保留导入test_utils包
 	"errors"
+	"github.com/iheCoder/elk_coordinator/model"
+	"github.com/iheCoder/elk_coordinator/partition"
+	"github.com/iheCoder/elk_coordinator/test_utils" // 保留导入test_utils包
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"testing"

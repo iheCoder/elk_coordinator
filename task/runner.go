@@ -2,10 +2,10 @@ package task
 
 import (
 	"context"
-	"elk_coordinator/metrics"
-	"elk_coordinator/model"
-	"elk_coordinator/partition"
-	"elk_coordinator/utils"
+	"github.com/iheCoder/elk_coordinator/metrics"
+	"github.com/iheCoder/elk_coordinator/model"
+	"github.com/iheCoder/elk_coordinator/partition"
+	"github.com/iheCoder/elk_coordinator/utils"
 	"time"
 
 	"github.com/pkg/errors"
