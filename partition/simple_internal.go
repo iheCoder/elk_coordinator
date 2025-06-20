@@ -2,11 +2,11 @@ package partition
 
 import (
 	"context"
-	"elk_coordinator/data"
-	"elk_coordinator/model"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/iheCoder/elk_coordinator/data"
+	"github.com/iheCoder/elk_coordinator/model"
 	"time"
 
 	pkgerrors "github.com/pkg/errors"

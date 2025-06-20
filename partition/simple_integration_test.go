@@ -2,11 +2,11 @@ package partition
 
 import (
 	"context"
-	"elk_coordinator/data"
-	"elk_coordinator/model"
-	"elk_coordinator/test_utils"
 	"fmt"
 	"github.com/alicebob/miniredis/v2"
+	"github.com/iheCoder/elk_coordinator/data"
+	"github.com/iheCoder/elk_coordinator/model"
+	"github.com/iheCoder/elk_coordinator/test_utils"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

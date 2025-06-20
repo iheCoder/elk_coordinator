@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
-	"elk_coordinator"
-	"elk_coordinator/data"
-	"elk_coordinator/model"
 	"fmt"
+	"github.com/iheCoder/elk_coordinator"
+	"github.com/iheCoder/elk_coordinator/data"
+	"github.com/iheCoder/elk_coordinator/model"
 	"log"
 	"math/rand"
 	"os"

@@ -2,11 +2,11 @@ package task
 
 import (
 	"context"
-	"elk_coordinator/model"
-	"elk_coordinator/test_utils"
-	"elk_coordinator/utils"
 	"errors"
 	"fmt"
+	"github.com/iheCoder/elk_coordinator/model"
+	"github.com/iheCoder/elk_coordinator/test_utils"
+	"github.com/iheCoder/elk_coordinator/utils"
 	"sync"
 	"testing"
 	"time"

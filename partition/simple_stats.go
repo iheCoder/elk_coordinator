@@ -2,7 +2,7 @@ package partition
 
 import (
 	"context"
-	"elk_coordinator/model"
+	"github.com/iheCoder/elk_coordinator/model"
 )
 
 // ==================== 统计操作 ====================

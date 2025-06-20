@@ -2,12 +2,12 @@ package elk_coordinator
 
 import (
 	"context"
-	"elk_coordinator/data"
-	"elk_coordinator/leader"
-	"elk_coordinator/model"
-	"elk_coordinator/task"
-	"elk_coordinator/test_utils"
 	"fmt"
+	"github.com/iheCoder/elk_coordinator/data"
+	"github.com/iheCoder/elk_coordinator/leader"
+	"github.com/iheCoder/elk_coordinator/model"
+	"github.com/iheCoder/elk_coordinator/task"
+	"github.com/iheCoder/elk_coordinator/test_utils"
 	"sync"
 	"sync/atomic"
 	"testing"
