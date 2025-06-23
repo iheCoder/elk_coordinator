@@ -1,8 +1,8 @@
 package http
 
 import (
-	"elk_coordinator/data"
-	"elk_coordinator/utils"
+	"github.com/iheCoder/elk_coordinator/data"
+	"github.com/iheCoder/elk_coordinator/utils"
 	"net/http"
 
 	"github.com/gin-gonic/gin"

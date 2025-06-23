@@ -3,9 +3,9 @@ package http
 import (
 	"bytes"
 	"context"
-	"elk_coordinator/model"
-	"elk_coordinator/test_utils"
 	"encoding/json"
+	"github.com/iheCoder/elk_coordinator/model"
+	"github.com/iheCoder/elk_coordinator/test_utils"
 	"net/http"
 	"net/http/httptest"
 	"testing"
