@@ -19,7 +19,7 @@ const (
 	DefaultPartitionLockExpiry     = 3 * time.Minute
 	DefaultHeartbeatInterval       = 10 * time.Second
 	DefaultLeaderElectionInterval  = 180 * time.Second
-	DefaultAllocationInterval      = 2 * time.Minute // 默认分区分配检查间隔
+	DefaultAllocationInterval      = 30 * time.Second // 默认分区分配检查间隔
 	DefaultPartitionCount          = 8
 	DefaultMaxRetries              = 3
 	DefaultConsolidationInterval   = 30 * time.Second

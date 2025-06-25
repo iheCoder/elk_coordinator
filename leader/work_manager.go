@@ -27,7 +27,7 @@ type WorkManagerConfig struct {
 	}
 	Logger                 utils.Logger
 	ValidHeartbeatDuration time.Duration // 有效心跳持续时间
-	AllocationInterval     time.Duration // 分区分配检查间隔，默认2分钟
+	AllocationInterval     time.Duration // 分区分配检查间隔，默认30秒
 }
 
 // NewWorkManager 创建新的工作管理器

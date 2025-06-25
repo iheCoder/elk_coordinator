@@ -39,7 +39,7 @@ type Mgr struct {
 	PartitionLockExpiry     time.Duration // 分区锁过期时间
 	LeaderLockExpiry        time.Duration // Leader锁过期时间
 	WorkerPartitionMultiple int64         // 每个工作节点分配的分区倍数，用于计算ID探测范围
-	AllocationInterval      time.Duration // 分区分配检查间隔，默认2分钟
+	AllocationInterval      time.Duration // 分区分配检查间隔，默认30秒
 	AllowPreemption         bool          // 是否允许抢占其他节点的分区，默认false
 
 	// 任务窗口配置

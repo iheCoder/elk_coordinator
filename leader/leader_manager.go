@@ -87,7 +87,7 @@ type LeaderConfig struct {
 	WorkerPartitionMultiple int64
 	ValidHeartbeatDuration  time.Duration
 	Strategy                partition.PartitionStrategy
-	AllocationInterval      time.Duration // 分区分配检查间隔，默认2分钟
+	AllocationInterval      time.Duration // 分区分配检查间隔，默认30秒
 }
 
 // Start 启动领导者管理

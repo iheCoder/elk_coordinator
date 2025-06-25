@@ -116,13 +116,6 @@ func (pm *PartitionAssigner) AllocatePartitions(ctx context.Context, activeWorke
 	// 更新分区总数指标
 	metrics.SetPartitionsTotal(float64(stats.Total))
 
-	// 检查是否需要分配新的分区
-	if !pm.ShouldAllocateNewPartitions(*stats) {
-		pm.logger.Debugf("现有分区依然存在很多未处理，暂不分配新分区。完成率: %.2f%%", stats.CompletionRate*100)
-		// 不记录分配耗时，因为没有实际分配
-		return nil
-	}
-
 	// 从统计信息中直接获取已计算好的边界值
 	lastAllocatedID := stats.LastAllocatedID
 	maxPartitionID := stats.MaxPartitionID
@@ -177,34 +170,6 @@ func (pm *PartitionAssigner) AllocatePartitions(ctx context.Context, activeWorke
 	metrics.ObservePartitionAssignmentDuration(time.Since(start))
 
 	return nil
-}
-
-// ShouldAllocateNewPartitions 判断是否应该分配新的分区
-// 简化版本：主要确保不会一次性分配过多分区，不过度依赖完成率
-func (pm *PartitionAssigner) ShouldAllocateNewPartitions(stats model.PartitionStats) bool {
-	// 如果没有分区，应该分配
-	if stats.Total == 0 {
-		return true
-	}
-
-	// 如果有太多失败的分区，暂停分配新分区
-	if stats.Failed > stats.Total/3 { // 失败率超过1/3
-		pm.logger.Debugf("失败分区过多 (%d/%d)，暂停分配新分区", stats.Failed, stats.Total)
-		return false
-	}
-
-	// 如果等待处理或正在运行的分区太多，不需要分配新分区
-	// 简化逻辑：只要等待处理和正在运行的分区不超过总数的一半，就可以分配新分区
-	if (stats.Pending + stats.Running) >= stats.Total/2 {
-		pm.logger.Debugf("等待处理和正在运行的分区太多 (%d+%d=%d/%d)，暂停分配新分区",
-			stats.Pending, stats.Running, stats.Pending+stats.Running, stats.Total)
-		return false
-	}
-
-	// 简化判断：只要不是上述两种情况，就可以分配新分区
-	pm.logger.Debugf("分区状态正常，可以分配新分区。总数=%d, 等待=%d, 运行中=%d, 完成=%d, 失败=%d",
-		stats.Total, stats.Pending, stats.Running, stats.Completed, stats.Failed)
-	return true
 }
 
 // GetNextProcessingRange 获取下一批次的处理范围

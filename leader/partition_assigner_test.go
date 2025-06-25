@@ -190,48 +190,6 @@ func TestGetLastAllocatedID(t *testing.T) {
 	}
 }
 
-// TestShouldAllocateNewPartitions 测试分区分配决策逻辑
-func TestShouldAllocateNewPartitions(t *testing.T) {
-	partitionMgr := NewPartitionAssigner(PartitionAssignerConfig{Namespace: "test"}, test_utils.NewMockPartitionStrategy(), test_utils.NewMockLogger(false), &mockPartitionPlaner{})
-
-	// 测试场景1: 空分区应该分配
-	stats1 := model.PartitionStats{
-		Total: 0,
-	}
-	if !partitionMgr.ShouldAllocateNewPartitions(stats1) {
-		t.Error("对于空分区，应该分配新分区，但结果是不分配")
-	}
-
-	// 测试场景2: 大量失败分区应该暂停分配
-	stats2 := model.PartitionStats{
-		Total:  10,
-		Failed: 4, // 40%失败率，超过1/3
-	}
-	if partitionMgr.ShouldAllocateNewPartitions(stats2) {
-		t.Error("对于大量失败分区，应该暂停分配，但结果是分配")
-	}
-
-	// 测试场景3: 足够的等待/运行中分区应该暂停分配
-	stats3 := model.PartitionStats{
-		Total:   10,
-		Pending: 3,
-		Running: 3, // 总共6个，超过了一半
-	}
-	if partitionMgr.ShouldAllocateNewPartitions(stats3) {
-		t.Error("对于足够的等待/运行中分区，应该暂停分配，但结果是分配")
-	}
-
-	// 测试场景4: 高完成率应该分配新分区
-	stats4 := model.PartitionStats{
-		Total:          10,
-		Completed:      8,
-		CompletionRate: 0.8, // 80%完成率，超过70%
-	}
-	if !partitionMgr.ShouldAllocateNewPartitions(stats4) {
-		t.Error("对于高完成率，应该分配新分区，但结果是不分配")
-	}
-}
-
 // TestCreatePartitionsRequest 测试创建分区请求
 func TestCreatePartitionsRequest(t *testing.T) {
 	planer := &mockPartitionPlaner{
