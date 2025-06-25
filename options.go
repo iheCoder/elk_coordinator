@@ -1,9 +1,10 @@
 package elk_coordinator
 
 import (
+	"time"
+
 	"github.com/iheCoder/elk_coordinator/model"
 	"github.com/iheCoder/elk_coordinator/utils"
-	"time"
 )
 
 // MgrOption 定义管理器的配置选项
@@ -12,7 +13,13 @@ type MgrOption func(*Mgr)
 // WithLogger 设置自定义日志记录器
 func WithLogger(logger utils.Logger) MgrOption {
 	return func(m *Mgr) {
-		m.Logger = logger
+		// 如果传入的已经是LeveledLogger，直接使用
+		if leveledLogger, ok := logger.(*utils.LeveledLogger); ok {
+			m.Logger = leveledLogger
+		} else {
+			// 否则用LeveledLogger包装，默认为WarnLevel
+			m.Logger = utils.NewLeveledLogger(logger)
+		}
 	}
 }
 
@@ -108,5 +115,18 @@ func WithMetricsEnabled(enabled bool) MgrOption {
 func WithMetricsAddr(addr string) MgrOption {
 	return func(m *Mgr) {
 		m.MetricsAddr = addr
+	}
+}
+
+// WithLogLevel 设置日志等级
+func WithLogLevel(level utils.LogLevel) MgrOption {
+	return func(m *Mgr) {
+		// 如果当前Logger是LeveledLogger，则设置等级
+		if leveledLogger, ok := m.Logger.(*utils.LeveledLogger); ok {
+			leveledLogger.SetLevel(level)
+		} else {
+			// 如果不是LeveledLogger，则创建一个带等级的Logger
+			m.Logger = utils.NewLeveledLoggerWithLevel(m.Logger, level)
+		}
 	}
 }

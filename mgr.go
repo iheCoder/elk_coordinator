@@ -3,6 +3,10 @@ package elk_coordinator
 import (
 	"context"
 	"fmt"
+	"os"
+	"sync"
+	"time"
+
 	"github.com/iheCoder/elk_coordinator/data"
 	"github.com/iheCoder/elk_coordinator/leader"
 	"github.com/iheCoder/elk_coordinator/metrics"
@@ -10,9 +14,6 @@ import (
 	"github.com/iheCoder/elk_coordinator/partition"
 	"github.com/iheCoder/elk_coordinator/task"
 	"github.com/iheCoder/elk_coordinator/utils"
-	"os"
-	"sync"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
@@ -78,7 +79,7 @@ func NewMgr(namespace string, dataStore data.DataStore, processor task.Processor
 		DataStore:       dataStore,
 		TaskProcessor:   processor,
 		PartitionPlaner: planer,
-		Logger:          utils.NewDefaultLogger(),
+		Logger:          utils.NewLeveledLogger(utils.NewDefaultLogger()),
 
 		// 默认配置
 		HeartbeatInterval:       model.DefaultHeartbeatInterval,
