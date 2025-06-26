@@ -46,7 +46,7 @@ func (s *HashPartitionStrategy) GetPartition(ctx context.Context, partitionID in
 	}
 
 	// Active Layer 中未找到，尝试从 Archive Layer 查找
-	archivedPartition, err := s.GetCompletedPartition(ctx, partitionID)
+	archivedPartition, err := s.GetArchivedPartition(ctx, partitionID)
 	if err != nil {
 		// 如果 Archive Layer 中也没找到，返回统一的 NotFound 错误
 		s.logger.Debugf("分区 %d 在活跃层和归档层中都未找到", partitionID)
@@ -60,7 +60,7 @@ func (s *HashPartitionStrategy) GetPartition(ctx context.Context, partitionID in
 // GetAllActivePartitions 从 Active Layer 中检索所有活跃分区数据。
 //
 // 注意：此方法只返回 Active Layer 中的分区，不包括已归档的 completed 分区。
-// 如需获取包括已归档分区在内的所有分区，请使用 GetFilteredPartitions 并设置 IncludeCompleted: true。
+// 如需获取包括已归档分区在内的所有分区，请使用 GetFilteredPartitions 并设置 IncludeArchived: true。
 //
 // 参数:
 //   - ctx: 上下文
@@ -99,7 +99,7 @@ func (s *HashPartitionStrategy) GetAllActivePartitions(ctx context.Context) ([]*
 //
 // 支持分离式归档策略：
 // - 默认只查询 Active Layer 中的分区
-// - 当 filters.IncludeCompleted 为 true 时，会同时查询 Archive Layer
+// - 当 filters.IncludeArchived 为 true 时，会同时查询 Archive Layer
 //
 // 参数:
 //   - ctx: 上下文
@@ -111,17 +111,17 @@ func (s *HashPartitionStrategy) GetAllActivePartitions(ctx context.Context) ([]*
 func (s *HashPartitionStrategy) GetFilteredPartitions(ctx context.Context, filters model.GetPartitionsFilters) ([]*model.PartitionInfo, error) {
 	var allPartitions []*model.PartitionInfo
 
-	if filters.IncludeCompleted {
+	if filters.IncludeArchived {
 		// 获取活跃分区
 		activePartitions, err := s.GetAllActivePartitions(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("获取活跃分区失败: %w", err)
 		}
 
-		// 获取已完成分区
-		completedPartitions, err := s.GetAllCompletedPartitions(ctx)
+		// 获取已归档分区
+		completedPartitions, err := s.GetAllArchivedPartitions(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("获取已完成分区失败: %w", err)
+			return nil, fmt.Errorf("获取已归档分区失败: %w", err)
 		}
 
 		// 合并所有分区
@@ -227,7 +227,7 @@ func (s *HashPartitionStrategy) GetFilteredPartitions(ctx context.Context, filte
 //   - error: 错误信息
 func (s *HashPartitionStrategy) GetAllPartitions(ctx context.Context) ([]*model.PartitionInfo, error) {
 	return s.GetFilteredPartitions(ctx, model.GetPartitionsFilters{
-		IncludeCompleted: true,
+		IncludeArchived: true,
 	})
 }
 

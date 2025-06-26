@@ -60,7 +60,7 @@ func TestHashPartitionStrategy_ArchiveCompletedPartition(t *testing.T) {
 	require.Equal(t, "test-worker", partitionAfterArchive.WorkerID)
 
 	// 验证：同样的分区应该已归档到Archive Layer（使用专门的归档查询确认）
-	archivedPartition, err := strategy.GetCompletedPartition(ctx, 1)
+	archivedPartition, err := strategy.GetArchivedPartition(ctx, 1)
 	require.NoError(t, err)
 	require.NotNil(t, archivedPartition)
 
@@ -85,7 +85,7 @@ func TestHashPartitionStrategy_ArchiveCompletedPartition(t *testing.T) {
 	}
 
 	// 步骤5: 验证统计信息
-	completedCount, err := strategy.GetCompletedPartitionsCount(ctx)
+	completedCount, err := strategy.GetArchivedPartitionsCount(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, 1, completedCount)
 
@@ -148,13 +148,13 @@ func TestHashPartitionStrategy_ArchiveMultiplePartitions(t *testing.T) {
 	}
 
 	// 验证所有分区都已归档
-	completedCount, err := strategy.GetCompletedPartitionsCount(ctx)
+	completedCount, err := strategy.GetArchivedPartitionsCount(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, numPartitions, completedCount)
 
 	// 验证每个归档分区的数据完整性
 	for i := 1; i <= numPartitions; i++ {
-		archived, err := strategy.GetCompletedPartition(ctx, i)
+		archived, err := strategy.GetArchivedPartition(ctx, i)
 		require.NoError(t, err)
 		assert.Equal(t, i, archived.PartitionID)
 		assert.Equal(t, model.StatusCompleted, archived.Status)
@@ -204,7 +204,7 @@ func TestHashPartitionStrategy_ArchiveIntegrity(t *testing.T) {
 	require.NoError(t, err)
 
 	// 验证归档分区包含所有原始数据
-	archived, err := strategy.GetCompletedPartition(ctx, 100)
+	archived, err := strategy.GetArchivedPartition(ctx, 100)
 	require.NoError(t, err)
 
 	// 基本分区信息验证
@@ -345,22 +345,22 @@ func TestHashPartitionStrategy_StatsWithArchive(t *testing.T) {
 	// 验证过滤查询
 	// 只查询活跃层
 	activeOnly, err := strategy.GetFilteredPartitions(ctx, model.GetPartitionsFilters{
-		IncludeCompleted: false,
+		IncludeArchived: false,
 	})
 	require.NoError(t, err)
 	assert.Len(t, activeOnly, 3, "活跃层应该有3个分区") // 分区3,4,5
 
 	// 查询包含归档层
 	allIncluded, err := strategy.GetFilteredPartitions(ctx, model.GetPartitionsFilters{
-		IncludeCompleted: true,
+		IncludeArchived: true,
 	})
 	require.NoError(t, err)
 	assert.Len(t, allIncluded, 5, "包含归档层应该有5个分区")
 
 	// 验证状态过滤功能
 	completedOnly, err := strategy.GetFilteredPartitions(ctx, model.GetPartitionsFilters{
-		TargetStatuses:   []model.PartitionStatus{model.StatusCompleted},
-		IncludeCompleted: true,
+		TargetStatuses:  []model.PartitionStatus{model.StatusCompleted},
+		IncludeArchived: true,
 	})
 	require.NoError(t, err)
 	assert.Len(t, completedOnly, 2, "应该找到2个已完成分区")
