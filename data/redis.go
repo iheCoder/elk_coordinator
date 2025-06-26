@@ -131,11 +131,11 @@ func (d *RedisDataStore) GetKeys(ctx context.Context, pattern string) ([]string,
 		return nil, err
 	}
 
-	// Remove prefix from keys before returning
-	prefixLen := len(d.opts.KeyPrefix)
+	// Remove full prefix (elkKeyPrefix + opts.KeyPrefix) from keys before returning
+	fullPrefixLen := len(elkKeyPrefix + d.opts.KeyPrefix)
 	for i := range keys {
-		if len(keys[i]) > prefixLen {
-			keys[i] = keys[i][prefixLen:]
+		if len(keys[i]) > fullPrefixLen {
+			keys[i] = keys[i][fullPrefixLen:]
 		}
 	}
 

@@ -63,7 +63,7 @@ func TestRedisDataStore_prefixKey(t *testing.T) {
 
 	key := "test_key"
 	prefixedKey := store.prefixKey(key)
-	expected := "test:" + key
+	expected := "elk:test:" + key
 
 	assert.Equal(t, expected, prefixedKey)
 }
