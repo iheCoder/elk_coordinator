@@ -20,7 +20,7 @@ import (
 // 4. 时间优先策略：对于claimed/running分区，优先获取更新时间较久远的
 func (r *Runner) acquirePartitionTask(ctx context.Context) (model.PartitionInfo, error) {
 	// 获取所有分区信息
-	allPartitions, err := r.partitionStrategy.GetAllPartitions(ctx)
+	allPartitions, err := r.partitionStrategy.GetAllActivePartitions(ctx)
 	if err != nil {
 		return model.PartitionInfo{}, errors.Wrap(err, "获取分区信息失败")
 	}
@@ -155,7 +155,7 @@ func (r *Runner) getPartitionInfo(ctx context.Context, partitionID int) (*model.
 
 // getAllPartitions 获取所有分区信息
 func (r *Runner) getAllPartitions(ctx context.Context) ([]*model.PartitionInfo, error) {
-	return r.partitionStrategy.GetAllPartitions(ctx)
+	return r.partitionStrategy.GetAllActivePartitions(ctx)
 }
 
 // getAvailablePartitions 获取可用的分区

@@ -131,7 +131,7 @@ func TestSimpleStrategy_GetAllPartitions(t *testing.T) {
 	ctx := context.Background()
 
 	// 测试空分区列表
-	partitions, err := strategy.GetAllPartitions(ctx)
+	partitions, err := strategy.GetAllActivePartitions(ctx)
 	assert.NoError(t, err)
 	assert.Empty(t, partitions)
 
@@ -148,7 +148,7 @@ func TestSimpleStrategy_GetAllPartitions(t *testing.T) {
 	}
 
 	// 测试获取所有分区
-	allPartitions, err := strategy.GetAllPartitions(ctx)
+	allPartitions, err := strategy.GetAllActivePartitions(ctx)
 	assert.NoError(t, err)
 	assert.Len(t, allPartitions, 3)
 
@@ -635,7 +635,7 @@ func TestSimpleStrategy_DeletePartitions(t *testing.T) {
 	assert.NoError(t, err)
 
 	// 验证删除成功
-	allPartitions, err := strategy.GetAllPartitions(ctx)
+	allPartitions, err := strategy.GetAllActivePartitions(ctx)
 	assert.NoError(t, err)
 	assert.Len(t, allPartitions, 1)
 	assert.Equal(t, 2, allPartitions[0].PartitionID)
@@ -699,7 +699,7 @@ func TestSimpleStrategy_CreatePartitionsIfNotExist(t *testing.T) {
 	}
 
 	// 验证总分区数量没有变化
-	allPartitions, err := strategy.GetAllPartitions(ctx)
+	allPartitions, err := strategy.GetAllActivePartitions(ctx)
 	assert.NoError(t, err)
 	assert.Len(t, allPartitions, 2)
 }
@@ -770,7 +770,7 @@ func TestSimpleStrategy_CreatePartitionsIfNotExist_DataRangeConflict(t *testing.
 	assert.Equal(t, int64(3000), created3[0].MaxID)
 
 	// 4. 验证现在总共有两个分区
-	allPartitions, err := strategy.GetAllPartitions(ctx)
+	allPartitions, err := strategy.GetAllActivePartitions(ctx)
 	assert.NoError(t, err)
 	assert.Len(t, allPartitions, 2)
 
@@ -835,7 +835,7 @@ func TestSimpleStrategy_CreatePartitionsIfNotExist_DataRangeConflict(t *testing.
 	assert.Equal(t, 2, conflictResolvedCount)
 
 	// 6. 验证最终的分区总数
-	finalPartitions, err := strategy.GetAllPartitions(ctx)
+	finalPartitions, err := strategy.GetAllActivePartitions(ctx)
 	assert.NoError(t, err)
 	assert.Len(t, finalPartitions, 5) // 原来2个 + 新增3个 = 5个
 }
@@ -1294,7 +1294,7 @@ func TestSimpleStrategy_DataStoreErrors(t *testing.T) {
 	_, err = strategy.GetPartition(ctx, 1)
 	assert.Error(t, err)
 
-	_, err = strategy.GetAllPartitions(ctx)
+	_, err = strategy.GetAllActivePartitions(ctx)
 	assert.Error(t, err)
 
 	err = strategy.DeletePartition(ctx, 1)
@@ -1340,7 +1340,7 @@ func TestSimpleStrategy_LargeScale(t *testing.T) {
 
 	// 测试查询性能
 	start = time.Now()
-	allPartitions, err := strategy.GetAllPartitions(ctx)
+	allPartitions, err := strategy.GetAllActivePartitions(ctx)
 	queryTime := time.Since(start)
 	assert.NoError(t, err)
 	assert.Len(t, allPartitions, numPartitions)
@@ -1503,7 +1503,7 @@ func BenchmarkGetAllPartitions(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = strategy.GetAllPartitions(ctx)
+		_, _ = strategy.GetAllActivePartitions(ctx)
 	}
 }
 

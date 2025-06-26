@@ -2,8 +2,9 @@ package partition
 
 import (
 	"context"
-	"github.com/iheCoder/elk_coordinator/model"
 	"time"
+
+	"github.com/iheCoder/elk_coordinator/model"
 
 	"github.com/iheCoder/elk_coordinator/data"
 	"github.com/iheCoder/elk_coordinator/utils"
@@ -23,6 +24,7 @@ const (
 // - 批量操作：批量创建和删除分区 (hash_partition_batch.go)
 // - 状态管理：分区状态更新和释放 (hash_partition_status.go)
 // - 统计功能：分区状态统计 (hash_partition_stats.go)
+// - 归档策略：分离式归档和已完成分区管理 (hash_partition_archive.go)
 type HashPartitionStrategy struct {
 	store          data.HashPartitionOperations // 分区存储接口，使用最小接口而不是完整DataStore
 	logger         utils.Logger                 // 日志记录器
@@ -43,11 +45,13 @@ func NewHashPartitionStrategy(store data.HashPartitionOperations, logger utils.L
 	if logger == nil {
 		panic("logger cannot be nil") // 日志记录器不能为空
 	}
-	return &HashPartitionStrategy{
+	strategy := &HashPartitionStrategy{
 		store:          store,
 		logger:         logger,
 		staleThreshold: 5 * time.Minute, // 默认5分钟心跳超时阈值
 	}
+
+	return strategy
 }
 
 // NewHashPartitionStrategyWithConfig 创建带配置的 Hash 分区策略实例
@@ -66,11 +70,13 @@ func NewHashPartitionStrategyWithConfig(store data.HashPartitionOperations, logg
 	if staleThreshold <= 0 {
 		staleThreshold = 5 * time.Minute // 默认值
 	}
-	return &HashPartitionStrategy{
+	strategy := &HashPartitionStrategy{
 		store:          store,
 		logger:         logger,
 		staleThreshold: staleThreshold,
 	}
+
+	return strategy
 }
 
 // StrategyType 获取策略类型标识

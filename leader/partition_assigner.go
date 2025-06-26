@@ -375,7 +375,7 @@ func (pm *PartitionAssigner) fullGapDetection(ctx context.Context, maxPartitionI
 	pm.logger.Debugf("执行完整缺口检测")
 
 	// 获取所有分区
-	allPartitions, err := pm.strategy.GetAllPartitions(ctx)
+	allPartitions, err := pm.strategy.GetAllActivePartitions(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "获取所有分区失败")
 	}

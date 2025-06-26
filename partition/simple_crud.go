@@ -18,14 +18,19 @@ func (s *SimpleStrategy) GetPartition(ctx context.Context, partitionID int) (*mo
 	return s.ensurePartitionExists(partitions, partitionID)
 }
 
-// GetAllPartitions 获取所有分区
-func (s *SimpleStrategy) GetAllPartitions(ctx context.Context) ([]*model.PartitionInfo, error) {
+// GetAllActivePartitions 获取所有活跃分区
+func (s *SimpleStrategy) GetAllActivePartitions(ctx context.Context) ([]*model.PartitionInfo, error) {
 	partitions, err := s.getAllPartitionsInternal(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	return s.convertToPartitionSlice(partitions), nil
+}
+
+// GetAllPartitions 获取所有分区（对于简单策略，等同于获取所有活跃分区）
+func (s *SimpleStrategy) GetAllPartitions(ctx context.Context) ([]*model.PartitionInfo, error) {
+	return s.GetAllActivePartitions(ctx)
 }
 
 // DeletePartition 删除单个分区

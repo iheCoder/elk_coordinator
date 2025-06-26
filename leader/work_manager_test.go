@@ -101,7 +101,7 @@ func TestTryAllocatePartitions(t *testing.T) {
 	workManager.tryAllocatePartitions(ctx, partitionMgr)
 
 	// 验证分区是否已创建 - 使用strategy检查而不是datastore
-	allPartitions, err := mockStrategy.GetAllPartitions(ctx)
+	allPartitions, err := mockStrategy.GetAllActivePartitions(ctx)
 	if err != nil {
 		t.Errorf("获取分区失败: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestTryAllocatePartitions(t *testing.T) {
 	workManager.tryAllocatePartitions(ctx, partitionMgr)
 
 	// 验证没有分区被创建
-	allPartitions, err = mockStrategy.GetAllPartitions(ctx)
+	allPartitions, err = mockStrategy.GetAllActivePartitions(ctx)
 	if err != nil {
 		t.Errorf("获取分区失败: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestRunPartitionAllocationLoop(t *testing.T) {
 	wg.Wait()
 
 	// 验证分区是否已创建 - 使用strategy检查而不是datastore
-	allPartitions, err := mockStrategy.GetAllPartitions(context.Background())
+	allPartitions, err := mockStrategy.GetAllActivePartitions(context.Background())
 	if err != nil {
 		t.Errorf("获取分区失败: %v", err)
 	}

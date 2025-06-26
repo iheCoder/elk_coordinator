@@ -143,4 +143,8 @@ type GetPartitionsFilters struct {
 
 	// MaxID 最大分区ID过滤器，只返回ID小于等于此值的分区
 	MaxID *int
+
+	// IncludeCompleted 是否包含已完成分区（从 Archive Layer 查询）
+	// 默认为 false，只查询 Active Layer；设置为 true 时会同时查询两个层
+	IncludeCompleted bool
 }

@@ -59,7 +59,7 @@ func TestGetExistingPartitions(t *testing.T) {
 	ctx := context.Background()
 
 	// 测试空分区情况 - 直接使用 Strategy 方法
-	allPartitions, err := mockStrategy.GetAllPartitions(ctx)
+	allPartitions, err := mockStrategy.GetAllActivePartitions(ctx)
 	if err != nil {
 		t.Errorf("获取分区失败: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestGetExistingPartitions(t *testing.T) {
 	mockStrategy.SetPartitions(testPartitions)
 
 	// 再次获取分区，现在应该有数据了 - 直接使用 Strategy 方法
-	allPartitions, err = mockStrategy.GetAllPartitions(ctx)
+	allPartitions, err = mockStrategy.GetAllActivePartitions(ctx)
 	if err != nil {
 		t.Errorf("获取分区失败: %v", err)
 	}

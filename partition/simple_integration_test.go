@@ -97,7 +97,7 @@ func TestSimpleStrategy_BasicCRUD(t *testing.T) {
 	assert.Equal(t, int64(1000), partition.MaxID)
 
 	// 测试获取所有分区
-	allPartitions, err := strategy.GetAllPartitions(ctx)
+	allPartitions, err := strategy.GetAllActivePartitions(ctx)
 	assert.NoError(t, err)
 	assert.Len(t, allPartitions, 3)
 
@@ -118,7 +118,7 @@ func TestSimpleStrategy_BasicCRUD(t *testing.T) {
 	_, err = strategy.GetPartition(ctx, 3)
 	assert.Error(t, err)
 
-	allPartitions, err = strategy.GetAllPartitions(ctx)
+	allPartitions, err = strategy.GetAllActivePartitions(ctx)
 	assert.NoError(t, err)
 	assert.Len(t, allPartitions, 2)
 }
@@ -196,7 +196,7 @@ func TestSimpleStrategy_FilteredOperations(t *testing.T) {
 	staleDuration := 1 * time.Second
 
 	// 获取所有分区并设置为过时
-	allPartitions, err := strategy.GetAllPartitions(ctx)
+	allPartitions, err := strategy.GetAllActivePartitions(ctx)
 	require.NoError(t, err)
 
 	staleTime := time.Now().Add(-2 * time.Second)
@@ -258,7 +258,7 @@ func TestSimpleStrategy_BatchOperations(t *testing.T) {
 	assert.NoError(t, err)
 
 	// 验证删除结果
-	allPartitions, err := strategy.GetAllPartitions(ctx)
+	allPartitions, err := strategy.GetAllActivePartitions(ctx)
 	assert.NoError(t, err)
 	assert.Len(t, allPartitions, 3)
 

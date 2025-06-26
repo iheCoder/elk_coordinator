@@ -13,8 +13,8 @@ type PartitionStrategy interface {
 	// GetPartition 获取单个分区
 	GetPartition(ctx context.Context, partitionID int) (*model.PartitionInfo, error)
 
-	// GetAllPartitions 获取所有分区
-	GetAllPartitions(ctx context.Context) ([]*model.PartitionInfo, error)
+	// GetAllActivePartitions 获取所有活跃分区
+	GetAllActivePartitions(ctx context.Context) ([]*model.PartitionInfo, error)
 
 	// DeletePartition 删除分区
 	DeletePartition(ctx context.Context, partitionID int) error

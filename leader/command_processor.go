@@ -2,12 +2,12 @@ package leader
 
 import (
 	"context"
-	"elk_coordinator/data"
-	"elk_coordinator/model"
-	"elk_coordinator/partition"
-	"elk_coordinator/utils"
 	"encoding/json"
 	"fmt"
+	"github.com/iheCoder/elk_coordinator/data"
+	"github.com/iheCoder/elk_coordinator/model"
+	"github.com/iheCoder/elk_coordinator/partition"
+	"github.com/iheCoder/elk_coordinator/utils"
 	"time"
 )
 

@@ -299,7 +299,7 @@ func TestSimpleStrategy_DistributedDataConsistency(t *testing.T) {
 
 	// 验证所有策略实例看到的数据是一致的
 	for i, strategy := range strategies {
-		partitions, err := strategy.GetAllPartitions(ctx)
+		partitions, err := strategy.GetAllActivePartitions(ctx)
 		assert.NoError(t, err, "策略实例 %d 获取分区失败", i)
 		assert.Len(t, partitions, 2, "策略实例 %d 看到的分区数量不正确", i)
 
@@ -386,7 +386,7 @@ func TestSimpleStrategy_SimulateRealWorldScenario(t *testing.T) {
 	}
 
 	// 验证最终状态
-	allPartitions, err := strategies[0].GetAllPartitions(ctx)
+	allPartitions, err := strategies[0].GetAllActivePartitions(ctx)
 	assert.NoError(t, err)
 	assert.Len(t, allPartitions, 3)
 

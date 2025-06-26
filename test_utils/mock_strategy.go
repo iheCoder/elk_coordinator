@@ -58,7 +58,7 @@ func (m *MockPartitionStrategy) GetPartition(ctx context.Context, partitionID in
 }
 
 // GetAllPartitions 获取所有分区
-func (m *MockPartitionStrategy) GetAllPartitions(ctx context.Context) ([]*model.PartitionInfo, error) {
+func (m *MockPartitionStrategy) GetAllActivePartitions(ctx context.Context) ([]*model.PartitionInfo, error) {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 

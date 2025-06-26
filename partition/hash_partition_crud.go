@@ -15,6 +15,9 @@ import (
 // ==================== 基础 CRUD 操作 ====================
 
 // GetPartition 通过其 ID 检索特定的分区。
+// 该方法会智能地从 Active Layer 和 Archive Layer 中查找分区，
+// 优先查找 Active Layer，如果未找到则查找 Archive Layer，
+// 确保对调用者透明，无论分区是否已归档都能正常获取。
 //
 // 参数:
 //   - ctx: 上下文
@@ -24,37 +27,52 @@ import (
 //   - *model.PartitionInfo: 分区信息
 //   - error: 错误信息
 func (s *HashPartitionStrategy) GetPartition(ctx context.Context, partitionID int) (*model.PartitionInfo, error) {
+	// 优先从 Active Layer 查找
 	partitionJson, err := s.store.HGetPartition(ctx, partitionHashKey, strconv.Itoa(partitionID))
-	if err != nil {
-		if err == data.ErrNotFound {
-			return nil, ErrPartitionNotFound
+	if err == nil {
+		// 在 Active Layer 中找到，直接返回
+		var partition model.PartitionInfo
+		if err := json.Unmarshal([]byte(partitionJson), &partition); err != nil {
+			s.logger.Errorf("活跃层分区 %d 的 JSON 反序列化失败: %v", partitionID, err)
+			return nil, fmt.Errorf("反序列化活跃层分区 %d 失败: %w", partitionID, err)
 		}
-		s.logger.Errorf("从存储中获取分区 %d 失败: %v", partitionID, err)
-		return nil, fmt.Errorf("获取分区 %d 失败: %w", partitionID, err)
+		return &partition, nil
 	}
 
-	var partition model.PartitionInfo
-	if err := json.Unmarshal([]byte(partitionJson), &partition); err != nil {
-		s.logger.Errorf("分区 %d 的 JSON 反序列化失败: %v", partitionID, err)
-		return nil, fmt.Errorf("反序列化分区 %d 失败: %w", partitionID, err)
+	// 如果不是 NotFound 错误，直接返回错误
+	if err != data.ErrNotFound {
+		s.logger.Errorf("从活跃层获取分区 %d 失败: %v", partitionID, err)
+		return nil, fmt.Errorf("获取活跃层分区 %d 失败: %w", partitionID, err)
 	}
 
-	return &partition, nil
+	// Active Layer 中未找到，尝试从 Archive Layer 查找
+	archivedPartition, err := s.GetCompletedPartition(ctx, partitionID)
+	if err != nil {
+		// 如果 Archive Layer 中也没找到，返回统一的 NotFound 错误
+		s.logger.Debugf("分区 %d 在活跃层和归档层中都未找到", partitionID)
+		return nil, ErrPartitionNotFound
+	}
+
+	s.logger.Debugf("分区 %d 从归档层获取", partitionID)
+	return archivedPartition, nil
 }
 
-// GetAllPartitions 从存储中检索所有分区数据。
+// GetAllActivePartitions 从 Active Layer 中检索所有活跃分区数据。
+//
+// 注意：此方法只返回 Active Layer 中的分区，不包括已归档的 completed 分区。
+// 如需获取包括已归档分区在内的所有分区，请使用 GetFilteredPartitions 并设置 IncludeCompleted: true。
 //
 // 参数:
 //   - ctx: 上下文
 //
 // 返回:
-//   - []*model.PartitionInfo: 所有分区信息的切片，按 PartitionID 升序排序
+//   - []*model.PartitionInfo: 活跃分区信息的切片，按 PartitionID 升序排序
 //   - error: 错误信息
-func (s *HashPartitionStrategy) GetAllPartitions(ctx context.Context) ([]*model.PartitionInfo, error) {
+func (s *HashPartitionStrategy) GetAllActivePartitions(ctx context.Context) ([]*model.PartitionInfo, error) {
 	dataMap, err := s.store.HGetAllPartitions(ctx, partitionHashKey)
 	if err != nil {
-		s.logger.Errorf("从存储中获取所有分区失败: %v", err)
-		return nil, fmt.Errorf("获取所有分区失败: %w", err)
+		s.logger.Errorf("从存储中获取所有活跃分区失败: %v", err)
+		return nil, fmt.Errorf("获取所有活跃分区失败: %w", err)
 	}
 
 	// 如果 dataMap 为空（键不存在或键存在但没有字段），这将正确地返回一个空切片。
@@ -79,6 +97,10 @@ func (s *HashPartitionStrategy) GetAllPartitions(ctx context.Context) ([]*model.
 // GetFilteredPartitions 根据提供的过滤器从存储中检索分区数据。
 // 返回的分区将按 PartitionID 升序排序。
 //
+// 支持分离式归档策略：
+// - 默认只查询 Active Layer 中的分区
+// - 当 filters.IncludeCompleted 为 true 时，会同时查询 Archive Layer
+//
 // 参数:
 //   - ctx: 上下文
 //   - filters: 过滤条件
@@ -87,10 +109,37 @@ func (s *HashPartitionStrategy) GetAllPartitions(ctx context.Context) ([]*model.
 //   - []*model.PartitionInfo: 符合条件的分区信息切片
 //   - error: 错误信息
 func (s *HashPartitionStrategy) GetFilteredPartitions(ctx context.Context, filters model.GetPartitionsFilters) ([]*model.PartitionInfo, error) {
-	// 首先获取所有分区
-	allPartitions, err := s.GetAllPartitions(ctx)
-	if err != nil {
-		return nil, err
+	var allPartitions []*model.PartitionInfo
+
+	if filters.IncludeCompleted {
+		// 获取活跃分区
+		activePartitions, err := s.GetAllActivePartitions(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("获取活跃分区失败: %w", err)
+		}
+
+		// 获取已完成分区
+		completedPartitions, err := s.GetAllCompletedPartitions(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("获取已完成分区失败: %w", err)
+		}
+
+		// 合并所有分区
+		allPartitions = make([]*model.PartitionInfo, 0, len(activePartitions)+len(completedPartitions))
+		allPartitions = append(allPartitions, activePartitions...)
+		allPartitions = append(allPartitions, completedPartitions...)
+
+		// 按 PartitionID 排序
+		sort.Slice(allPartitions, func(i, j int) bool {
+			return allPartitions[i].PartitionID < allPartitions[j].PartitionID
+		})
+	} else {
+		// 只获取活跃分区
+		partitions, err := s.GetAllActivePartitions(ctx)
+		if err != nil {
+			return nil, err
+		}
+		allPartitions = partitions
 	}
 
 	// 在循环外获取当前时间，以保持一致性
@@ -163,6 +212,23 @@ func (s *HashPartitionStrategy) GetFilteredPartitions(ctx context.Context, filte
 	}
 
 	return filteredPartitions, nil
+}
+
+// GetAllPartitions 获取所有分区（包括活跃分区和已归档分区）
+//
+// 这是 GetFilteredPartitions 的便捷封装，用于获取系统中的所有分区。
+// 该方法会从 Active Layer 和 Archive Layer 中获取所有分区。
+//
+// 参数:
+//   - ctx: 上下文
+//
+// 返回:
+//   - []*model.PartitionInfo: 所有分区信息的切片，按 PartitionID 升序排序
+//   - error: 错误信息
+func (s *HashPartitionStrategy) GetAllPartitions(ctx context.Context) ([]*model.PartitionInfo, error) {
+	return s.GetFilteredPartitions(ctx, model.GetPartitionsFilters{
+		IncludeCompleted: true,
+	})
 }
 
 // DeletePartition 从存储中删除一个分区。

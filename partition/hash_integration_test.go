@@ -132,7 +132,7 @@ func TestHashPartitionStrategy_BasicCRUD(t *testing.T) {
 	assert.Equal(t, int64(1000), partition.MaxID)
 
 	// 测试获取所有分区
-	allPartitions, err := strategy.GetAllPartitions(ctx)
+	allPartitions, err := strategy.GetAllActivePartitions(ctx)
 	assert.NoError(t, err)
 	assert.Len(t, allPartitions, 3)
 
@@ -154,7 +154,7 @@ func TestHashPartitionStrategy_BasicCRUD(t *testing.T) {
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrPartitionNotFound)
 
-	allPartitions, err = strategy.GetAllPartitions(ctx)
+	allPartitions, err = strategy.GetAllActivePartitions(ctx)
 	assert.NoError(t, err)
 	assert.Len(t, allPartitions, 2)
 }
@@ -285,7 +285,7 @@ func TestHashPartitionStrategy_BatchOperations(t *testing.T) {
 	assert.NoError(t, err)
 
 	// 验证删除结果
-	remainingPartitions, err := strategy.GetAllPartitions(ctx)
+	remainingPartitions, err := strategy.GetAllActivePartitions(ctx)
 	assert.NoError(t, err)
 	assert.Len(t, remainingPartitions, 2)
 
@@ -510,12 +510,13 @@ func TestHashPartitionStrategy_HeartbeatAndPreemption(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 
 	// 工作节点2尝试抢占（不允许抢占）
+	options := &model.AcquirePartitionOptions{AllowPreemption: false}
 	_, success, err = strategy.AcquirePartition(ctx, 1, "worker-2", nil)
 	assert.NoError(t, err)
 	assert.False(t, success)
 
 	// 工作节点2尝试抢占（允许抢占）
-	options := &model.AcquirePartitionOptions{AllowPreemption: true}
+	options = &model.AcquirePartitionOptions{AllowPreemption: true}
 	preemptedPartition, success, err := strategy.AcquirePartition(ctx, 1, "worker-2", options)
 	assert.NoError(t, err)
 	assert.True(t, success)
@@ -648,7 +649,7 @@ func TestHashPartitionStrategy_AtomicOperations(t *testing.T) {
 	assert.Equal(t, 0, errorCount, "所有原子创建应该都成功")
 
 	// 验证创建的分区数量
-	allPartitions, err := strategy.GetAllPartitions(ctx)
+	allPartitions, err := strategy.GetAllActivePartitions(ctx)
 	assert.NoError(t, err)
 	assert.Len(t, allPartitions, numWorkers+1) // +1 for the first partition
 }

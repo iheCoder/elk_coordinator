@@ -397,7 +397,7 @@ func TestGetAllPartitions(t *testing.T) {
 	ctx := context.Background()
 
 	// 测试场景1: 空结果
-	partitions, err := repo.GetAllPartitions(ctx)
+	partitions, err := repo.GetAllActivePartitions(ctx)
 	if err != nil {
 		t.Fatalf("获取所有分区失败: %v", err)
 	}
@@ -414,7 +414,7 @@ func TestGetAllPartitions(t *testing.T) {
 	repo.SavePartition(ctx, partition2)
 	repo.SavePartition(ctx, partition3)
 
-	partitions, err = repo.GetAllPartitions(ctx)
+	partitions, err = repo.GetAllActivePartitions(ctx)
 	if err != nil {
 		t.Fatalf("获取所有分区失败: %v", err)
 	}
@@ -435,7 +435,7 @@ func TestGetAllPartitions(t *testing.T) {
 
 	// 测试场景3: 包含损坏数据
 	mockStore.HSetPartition(ctx, partitionHashKey, "999", "invalid-json")
-	partitions, err = repo.GetAllPartitions(ctx)
+	partitions, err = repo.GetAllActivePartitions(ctx)
 	if err != nil {
 		t.Fatalf("获取所有分区失败: %v", err)
 	}
@@ -873,9 +873,9 @@ func TestRepository_ConcurrentReadWrites(t *testing.T) {
 					// 执行各种读取操作
 					switch readerID % 3 {
 					case 0:
-						_, err := repo.GetAllPartitions(ctx)
+						_, err := repo.GetAllActivePartitions(ctx)
 						if err != nil {
-							errorChan <- fmt.Errorf("Reader %d GetAllPartitions 错误: %v", readerID, err)
+							errorChan <- fmt.Errorf("Reader %d GetAllActivePartitions 错误: %v", readerID, err)
 							return
 						}
 					case 1:
@@ -944,7 +944,7 @@ func TestRepository_ConcurrentReadWrites(t *testing.T) {
 	t.Logf("完成 %d 次读操作和 %d 次写操作", readCount, writeCount)
 
 	// 验证最终状态一致性
-	allPartitions, err := repo.GetAllPartitions(ctx)
+	allPartitions, err := repo.GetAllActivePartitions(ctx)
 	if err != nil {
 		t.Fatalf("最终获取所有分区失败: %v", err)
 	}
@@ -1096,7 +1096,7 @@ func TestRepository_ConcurrentDeleteAndAccess(t *testing.T) {
 	}
 
 	// 验证所有分区都被删除
-	allPartitions, err := repo.GetAllPartitions(ctx)
+	allPartitions, err := repo.GetAllActivePartitions(ctx)
 	if err != nil {
 		t.Fatalf("获取所有分区失败: %v", err)
 	}
@@ -1228,7 +1228,7 @@ func TestRepository_HighConcurrencyStress(t *testing.T) {
 	t.Logf("  过滤操作: %d", operationCounts.filters)
 
 	// 验证系统仍然正常工作
-	allPartitions, err := repo.GetAllPartitions(ctx)
+	allPartitions, err := repo.GetAllActivePartitions(ctx)
 	if err != nil {
 		t.Fatalf("压力测试后获取所有分区失败: %v", err)
 	}
@@ -1525,7 +1525,7 @@ func TestRepository_ConcurrentContextCancellation(t *testing.T) {
 	wg.Wait()
 
 	// 验证一些分区可能已经创建
-	allPartitions, err := repo.GetAllPartitions(context.Background())
+	allPartitions, err := repo.GetAllActivePartitions(context.Background())
 	if err != nil {
 		t.Fatalf("获取所有分区失败: %v", err)
 	}
@@ -1555,7 +1555,7 @@ func TestRepository_LargeDataSets(t *testing.T) {
 
 	// 获取所有分区
 	start = time.Now()
-	allPartitions, err := repo.GetAllPartitions(ctx)
+	allPartitions, err := repo.GetAllActivePartitions(ctx)
 	if err != nil {
 		t.Fatalf("获取所有分区失败: %v", err)
 	}
@@ -1605,7 +1605,7 @@ func TestRepository_LargeDataSets(t *testing.T) {
 	t.Logf("删除 %d 个分区耗时: %v", numPartitions, deleteDuration)
 
 	// 验证删除
-	finalPartitions, err := repo.GetAllPartitions(ctx)
+	finalPartitions, err := repo.GetAllActivePartitions(ctx)
 	if err != nil {
 		t.Fatalf("最终获取所有分区失败: %v", err)
 	}
@@ -1640,7 +1640,7 @@ func TestRepository_ErrorRecovery(t *testing.T) {
 	mockStore.HSetPartition(ctx, partitionHashKey, "damaged", "invalid-json-data")
 
 	// 获取所有分区应该跳过损坏的数据
-	allPartitions, err := repo.GetAllPartitions(ctx)
+	allPartitions, err := repo.GetAllActivePartitions(ctx)
 	if err != nil {
 		t.Fatalf("获取所有分区失败: %v", err)
 	}
@@ -1879,7 +1879,7 @@ func TestRepository_MemoryLeakPrevention(t *testing.T) {
 
 		// 每10个周期检查一次分区数量
 		if cycle%10 == 9 {
-			allPartitions, err := repo.GetAllPartitions(ctx)
+			allPartitions, err := repo.GetAllActivePartitions(ctx)
 			if err != nil {
 				t.Fatalf("Cycle %d: 获取所有分区失败: %v", cycle, err)
 			}
@@ -1892,7 +1892,7 @@ func TestRepository_MemoryLeakPrevention(t *testing.T) {
 	}
 
 	// 最终清理验证
-	allPartitions, err := repo.GetAllPartitions(ctx)
+	allPartitions, err := repo.GetAllActivePartitions(ctx)
 	if err != nil {
 		t.Fatalf("最终获取所有分区失败: %v", err)
 	}
@@ -1906,7 +1906,7 @@ func TestRepository_MemoryLeakPrevention(t *testing.T) {
 	}
 
 	// 验证清理完成
-	finalPartitions, err := repo.GetAllPartitions(ctx)
+	finalPartitions, err := repo.GetAllActivePartitions(ctx)
 	if err != nil {
 		t.Fatalf("清理后获取分区失败: %v", err)
 	}

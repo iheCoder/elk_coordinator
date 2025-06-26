@@ -31,12 +31,12 @@ func newSlowPartitionStrategy(networkLatency, serializationBase, serializationPe
 }
 
 // GetAllPartitions 模拟Redis的SCAN/KEYS操作 - 延迟随分区数量线性增长
-func (s *slowPartitionStrategy) GetAllPartitions(ctx context.Context) ([]*model.PartitionInfo, error) {
+func (s *slowPartitionStrategy) GetAllActivePartitions(ctx context.Context) ([]*model.PartitionInfo, error) {
 	// 网络往返延迟（TCP连接 + Redis命令传输）
 	time.Sleep(s.networkLatency)
 
 	// 获取分区数据以计算序列化延迟
-	partitions, err := s.MockPartitionStrategy.GetAllPartitions(ctx)
+	partitions, err := s.MockPartitionStrategy.GetAllActivePartitions(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -375,7 +375,7 @@ func TestPartitionAssignerScalingPerformance(t *testing.T) {
 			}
 
 			// 验证分区数据正确性
-			finalPartitions, err := mockStrategy.GetAllPartitions(ctx)
+			finalPartitions, err := mockStrategy.GetAllActivePartitions(ctx)
 			if err != nil {
 				t.Errorf("获取最终分区失败: %v", err)
 			}

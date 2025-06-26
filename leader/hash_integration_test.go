@@ -293,7 +293,7 @@ func TestLeaderManager_PartitionAllocation(t *testing.T) {
 
 	// 验证分区已创建
 	strategy := partition.NewHashPartitionStrategy(dataStore, test_utils.NewMockLogger(false))
-	allPartitions, err := strategy.GetAllPartitions(ctx)
+	allPartitions, err := strategy.GetAllActivePartitions(ctx)
 	assert.NoError(t, err)
 	assert.Greater(t, len(allPartitions), 0, "应该创建了分区")
 
@@ -515,7 +515,7 @@ func TestLeaderManager_ConcurrentWorkerHeartbeats(t *testing.T) {
 	var err error
 	maxRetries := 5
 	for i := 0; i < maxRetries; i++ {
-		allPartitions, err = strategy.GetAllPartitions(ctx)
+		allPartitions, err = strategy.GetAllActivePartitions(ctx)
 		if err == nil && len(allPartitions) > 0 {
 			break
 		}
@@ -615,7 +615,7 @@ func TestLeaderManager_PartitionCreationWithDifferentStrategies(t *testing.T) {
 			var err error
 			maxRetries := 3
 			for i := 0; i < maxRetries; i++ {
-				allPartitions, err = strategy.GetAllPartitions(ctx)
+				allPartitions, err = strategy.GetAllActivePartitions(ctx)
 				if err == nil && len(allPartitions) >= tc.expectedMin {
 					break
 				}
@@ -779,7 +779,7 @@ func TestLeaderManager_CommandProcessing(t *testing.T) {
 
 	// 获取当前已创建的分区，然后在此基础上创建测试分区
 	strategy := partition.NewHashPartitionStrategy(dataStore, test_utils.NewMockLogger(false))
-	existingPartitions, err := strategy.GetAllPartitions(ctx)
+	existingPartitions, err := strategy.GetAllActivePartitions(ctx)
 	require.NoError(t, err)
 
 	// 计算下一个可用的分区ID

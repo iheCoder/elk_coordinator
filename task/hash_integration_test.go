@@ -341,7 +341,7 @@ func TestTaskIntegration_ConcurrentWorkers(t *testing.T) {
 	wg.Wait()
 
 	// 验证所有分区都被处理
-	allPartitions, err := strategy.GetAllPartitions(ctx)
+	allPartitions, err := strategy.GetAllActivePartitions(ctx)
 	assert.NoError(t, err)
 
 	completedCount := 0
@@ -762,7 +762,7 @@ func TestTaskIntegration_ComplexDistributedWorkflow(t *testing.T) {
 	// 验证最终结果 - 使用新的context避免deadline exceeded
 	validationCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	allPartitions, err := strategy.GetAllPartitions(validationCtx)
+	allPartitions, err := strategy.GetAllActivePartitions(validationCtx)
 	assert.NoError(t, err)
 
 	statusCounts := make(map[model.PartitionStatus]int)

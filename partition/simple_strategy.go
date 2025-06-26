@@ -111,7 +111,7 @@ func (s *SimpleStrategy) Stop(ctx context.Context) error {
 	s.logger.Infof("SimpleStrategy stopping, cleaning up partition locks...")
 
 	// 获取所有分区信息，用于清理
-	allPartitions, err := s.GetAllPartitions(ctx)
+	allPartitions, err := s.GetAllActivePartitions(ctx)
 	if err != nil {
 		s.logger.Errorf("Failed to get partitions during stop: %v", err)
 		// 即使获取分区失败，也要继续尝试清理
