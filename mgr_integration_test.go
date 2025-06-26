@@ -8,6 +8,7 @@ import (
 	"github.com/iheCoder/elk_coordinator/model"
 	"github.com/iheCoder/elk_coordinator/task"
 	"github.com/iheCoder/elk_coordinator/test_utils"
+	"github.com/iheCoder/elk_coordinator/utils"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -458,6 +459,7 @@ func TestMgr_HighConcurrencyStressTest(t *testing.T) {
 			WithLeaderElectionInterval(500*time.Millisecond),
 			WithPartitionLockExpiry(5*time.Second), // 适当延长锁过期时间，给抢占机制更多时间
 			WithAllocationInterval(1*time.Second),  // 非常频繁的分区分配检查
+			WithLogLevel(utils.DebugLevel),
 		)
 	}
 

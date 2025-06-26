@@ -15,7 +15,14 @@ import (
 // ==================== 版本控制相关操作 ====================
 
 // updatePartitionWithVersionControl 内部方法，处理带版本控制的分区更新
-// 使用传入分区信息中的版本进行乐观锁更新，避免竞争条件
+//
+// 使用乐观锁机制进行分区更新：
+// 1. 使用传入分区信息中的版本号作为期望版本
+// 2. 只有当存储中的分区版本等于期望版本时才执行更新
+// 3. 更新成功后版本号自动递增
+// 4. 如果版本不匹配，返回 ErrOptimisticLockFailed 错误
+//
+// 这种机制避免了并发修改导致的数据不一致问题。
 //
 // 参数:
 //   - ctx: 上下文
@@ -23,9 +30,9 @@ import (
 //
 // 返回:
 //   - *model.PartitionInfo: 更新后的分区信息（版本号已递增）
-//   - error: 错误信息，可能是 data.ErrOptimisticLockFailed
+//   - error: 错误信息，如果乐观锁失败返回 data.ErrOptimisticLockFailed
 //
-// 注意: 调用方应该已经获取了分区的当前版本，避免竞争条件
+// 注意: 调用方应该已经获取了分区的当前版本，避免重新获取造成竞争条件
 func (s *HashPartitionStrategy) updatePartitionWithVersionControl(ctx context.Context, partitionInfo *model.PartitionInfo) (*model.PartitionInfo, error) {
 	if partitionInfo == nil {
 		return nil, errors.New("partitionInfo cannot be nil")
@@ -52,18 +59,23 @@ func (s *HashPartitionStrategy) updatePartitionWithVersionControl(ctx context.Co
 		return nil, fmt.Errorf("序列化分区 %d 以进行更新失败: %w", updatedPartition.PartitionID, err)
 	}
 
-	// 使用乐观锁进行更新
+	// 使用乐观锁进行更新：只有当存储中的分区版本等于expectedVersion时才执行更新
+	// 这是一个原子操作，防止并发修改导致的数据不一致
 	success, err := s.store.HUpdatePartitionWithVersion(ctx, partitionHashKey, strconv.Itoa(updatedPartition.PartitionID), string(partitionJson), expectedVersion)
 	if err != nil {
 		if errors.Is(err, data.ErrOptimisticLockFailed) {
-			s.logger.Warnf("分区 %d 的乐观锁失败：期望版本 %d，但存储中的条件未满足", updatedPartition.PartitionID, expectedVersion)
+			// 乐观锁失败：存储中的分区版本已经不是expectedVersion了
+			// 这通常意味着另一个并发操作已经修改了这个分区
+			s.logger.Warnf("分区 %d 的乐观锁失败：期望版本 %d，但存储中的分区版本已被其他操作修改", updatedPartition.PartitionID, expectedVersion)
 			return nil, data.ErrOptimisticLockFailed // 返回特定的错误
 		}
 		s.logger.Errorf("为分区 %d 执行 HUpdatePartitionWithVersion 失败: %v", updatedPartition.PartitionID, err)
 		return nil, fmt.Errorf("乐观更新分区 %d 失败: %w", updatedPartition.PartitionID, err)
 	}
 	if !success {
-		s.logger.Warnf("分区 %d 的乐观锁失败：期望版本 %d，但存储中的条件未满足", updatedPartition.PartitionID, expectedVersion)
+		// success为false表示条件更新失败：存储中的分区版本与expectedVersion不匹配
+		// 这是另一种形式的乐观锁失败，通常发生在并发环境中
+		s.logger.Warnf("分区 %d 的乐观锁失败：期望版本 %d，但存储中的分区版本不匹配（可能被其他worker修改）", updatedPartition.PartitionID, expectedVersion)
 		return nil, data.ErrOptimisticLockFailed
 	}
 

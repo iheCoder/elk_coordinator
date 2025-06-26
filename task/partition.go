@@ -146,31 +146,6 @@ func (r *Runner) maintainPartitionHold(ctx context.Context, partitionID int) err
 	return r.partitionStrategy.MaintainPartitionHold(ctx, partitionID, r.workerID)
 }
 
-// ------------- 分区信息查询相关函数 -------------
-
-// getPartitionInfo 获取单个分区信息
-func (r *Runner) getPartitionInfo(ctx context.Context, partitionID int) (*model.PartitionInfo, error) {
-	return r.partitionStrategy.GetPartition(ctx, partitionID)
-}
-
-// getAllPartitions 获取所有分区信息
-func (r *Runner) getAllPartitions(ctx context.Context) ([]*model.PartitionInfo, error) {
-	return r.partitionStrategy.GetAllActivePartitions(ctx)
-}
-
-// getAvailablePartitions 获取可用的分区
-func (r *Runner) getAvailablePartitions(ctx context.Context) ([]*model.PartitionInfo, error) {
-	filters := model.GetPartitionsFilters{
-		TargetStatuses: []model.PartitionStatus{model.StatusPending},
-	}
-	return r.partitionStrategy.GetFilteredPartitions(ctx, filters)
-}
-
-// getPartitionStats 获取分区状态统计信息
-func (r *Runner) getPartitionStats(ctx context.Context) (*model.PartitionStats, error) {
-	return r.partitionStrategy.GetPartitionStats(ctx)
-}
-
 // ------------- 混合分区获取策略的辅助方法 -------------
 
 // filterPendingPartitions 过滤出所有pending状态的分区
