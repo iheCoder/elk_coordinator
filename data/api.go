@@ -67,6 +67,22 @@ type HashPartitionOperations interface {
 	HDeletePartition(ctx context.Context, key string, field string) error
 }
 
+// PartitionStatsOperations 定义分区统计管理的接口
+type PartitionStatsOperations interface {
+	// InitPartitionStats 初始化分区统计数据
+	InitPartitionStats(ctx context.Context, statsKey string) error
+	// GetPartitionStatsData 获取统计数据（原子操作）
+	GetPartitionStatsData(ctx context.Context, statsKey string) (map[string]string, error)
+	// UpdatePartitionStatsOnCreate 创建分区时更新统计
+	UpdatePartitionStatsOnCreate(ctx context.Context, statsKey string, partitionID int, dataID int64) error
+	// UpdatePartitionStatsOnStatusChange 状态变更时更新统计
+	UpdatePartitionStatsOnStatusChange(ctx context.Context, statsKey string, oldStatus, newStatus string) error
+	// UpdatePartitionStatsOnDelete 删除分区时更新统计
+	UpdatePartitionStatsOnDelete(ctx context.Context, statsKey string, status string) error
+	// RebuildPartitionStats 重建统计数据（从现有分区数据）
+	RebuildPartitionStats(ctx context.Context, statsKey string, activePartitionsKey, archivedPartitionsKey string) error
+}
+
 // StatusOperations 定义状态操作的接口
 type StatusOperations interface {
 	// 设置同步状态
@@ -144,4 +160,5 @@ type DataStore interface {
 	AdvancedOperations
 	QueueOperations
 	CommandOperations
+	PartitionStatsOperations
 }

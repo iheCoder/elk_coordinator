@@ -1914,3 +1914,494 @@ func TestCommandOperations_LargeCommands(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 0, len(remainingCommands))
 }
+
+// ==================== 分区统计管理测试 ====================
+
+// TestPartitionStatsOperations_InitAndGet 测试初始化和获取统计数据
+func TestPartitionStatsOperations_InitAndGet(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	statsKey := "test_partition_stats"
+
+	// 测试初始化统计数据
+	err := store.InitPartitionStats(ctx, statsKey)
+	assert.NoError(t, err)
+
+	// 测试获取统计数据
+	statsData, err := store.GetPartitionStatsData(ctx, statsKey)
+	assert.NoError(t, err)
+	assert.NotNil(t, statsData)
+
+	// 验证初始值
+	assert.Equal(t, "0", statsData["total"])
+	assert.Equal(t, "0", statsData["pending"])
+	assert.Equal(t, "0", statsData["claimed"])
+	assert.Equal(t, "0", statsData["running"])
+	assert.Equal(t, "0", statsData["completed"])
+	assert.Equal(t, "0", statsData["failed"])
+	assert.Equal(t, "0", statsData["max_partition_id"])
+	assert.Equal(t, "0", statsData["last_allocated_id"])
+}
+
+// TestPartitionStatsOperations_CreateUpdate 测试创建分区时的统计更新
+func TestPartitionStatsOperations_CreateUpdate(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	statsKey := "test_partition_stats"
+
+	// 初始化统计数据
+	err := store.InitPartitionStats(ctx, statsKey)
+	assert.NoError(t, err)
+
+	// 测试创建分区时更新统计
+	err = store.UpdatePartitionStatsOnCreate(ctx, statsKey, 1001, 5000)
+	assert.NoError(t, err)
+
+	// 验证统计数据更新
+	statsData, err := store.GetPartitionStatsData(ctx, statsKey)
+	assert.NoError(t, err)
+
+	assert.Equal(t, "1", statsData["total"])
+	assert.Equal(t, "1", statsData["pending"])
+	assert.Equal(t, "1001", statsData["max_partition_id"])
+	assert.Equal(t, "5000", statsData["last_allocated_id"])
+
+	// 创建另一个分区，测试递增和最大值更新
+	err = store.UpdatePartitionStatsOnCreate(ctx, statsKey, 1002, 10000)
+	assert.NoError(t, err)
+
+	statsData, err = store.GetPartitionStatsData(ctx, statsKey)
+	assert.NoError(t, err)
+
+	assert.Equal(t, "2", statsData["total"])
+	assert.Equal(t, "2", statsData["pending"])
+	assert.Equal(t, "1002", statsData["max_partition_id"])
+	assert.Equal(t, "10000", statsData["last_allocated_id"])
+
+	// 创建ID较小的分区，验证max_partition_id不会倒退
+	err = store.UpdatePartitionStatsOnCreate(ctx, statsKey, 500, 2000)
+	assert.NoError(t, err)
+
+	statsData, err = store.GetPartitionStatsData(ctx, statsKey)
+	assert.NoError(t, err)
+
+	assert.Equal(t, "3", statsData["total"])
+	assert.Equal(t, "3", statsData["pending"])
+	assert.Equal(t, "1002", statsData["max_partition_id"])   // 不应该变成500
+	assert.Equal(t, "10000", statsData["last_allocated_id"]) // 不应该变成2000
+}
+
+// TestPartitionStatsOperations_StatusChange 测试状态变更时的统计更新
+func TestPartitionStatsOperations_StatusChange(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	statsKey := "test_partition_stats"
+
+	// 初始化统计数据并创建分区
+	err := store.InitPartitionStats(ctx, statsKey)
+	assert.NoError(t, err)
+
+	err = store.UpdatePartitionStatsOnCreate(ctx, statsKey, 1001, 5000)
+	assert.NoError(t, err)
+
+	// 测试状态变更：pending -> claimed
+	err = store.UpdatePartitionStatsOnStatusChange(ctx, statsKey, "pending", "claimed")
+	assert.NoError(t, err)
+
+	statsData, err := store.GetPartitionStatsData(ctx, statsKey)
+	assert.NoError(t, err)
+
+	assert.Equal(t, "1", statsData["total"])
+	assert.Equal(t, "0", statsData["pending"])
+	assert.Equal(t, "1", statsData["claimed"])
+	assert.Equal(t, "0", statsData["running"])
+
+	// 测试状态变更：claimed -> running
+	err = store.UpdatePartitionStatsOnStatusChange(ctx, statsKey, "claimed", "running")
+	assert.NoError(t, err)
+
+	statsData, err = store.GetPartitionStatsData(ctx, statsKey)
+	assert.NoError(t, err)
+
+	assert.Equal(t, "0", statsData["claimed"])
+	assert.Equal(t, "1", statsData["running"])
+
+	// 测试状态变更：running -> completed
+	err = store.UpdatePartitionStatsOnStatusChange(ctx, statsKey, "running", "completed")
+	assert.NoError(t, err)
+
+	statsData, err = store.GetPartitionStatsData(ctx, statsKey)
+	assert.NoError(t, err)
+
+	assert.Equal(t, "0", statsData["running"])
+	assert.Equal(t, "1", statsData["completed"])
+
+	// 测试状态变更：completed -> failed (异常情况测试)
+	err = store.UpdatePartitionStatsOnStatusChange(ctx, statsKey, "completed", "failed")
+	assert.NoError(t, err)
+
+	statsData, err = store.GetPartitionStatsData(ctx, statsKey)
+	assert.NoError(t, err)
+
+	assert.Equal(t, "0", statsData["completed"])
+	assert.Equal(t, "1", statsData["failed"])
+}
+
+// TestPartitionStatsOperations_Delete 测试删除分区时的统计更新
+func TestPartitionStatsOperations_Delete(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	statsKey := "test_partition_stats"
+
+	// 初始化统计数据并创建多个分区
+	err := store.InitPartitionStats(ctx, statsKey)
+	assert.NoError(t, err)
+
+	// 创建3个分区
+	err = store.UpdatePartitionStatsOnCreate(ctx, statsKey, 1001, 5000)
+	assert.NoError(t, err)
+	err = store.UpdatePartitionStatsOnCreate(ctx, statsKey, 1002, 10000)
+	assert.NoError(t, err)
+	err = store.UpdatePartitionStatsOnCreate(ctx, statsKey, 1003, 15000)
+	assert.NoError(t, err)
+
+	// 将其中一个改为running状态
+	err = store.UpdatePartitionStatsOnStatusChange(ctx, statsKey, "pending", "running")
+	assert.NoError(t, err)
+
+	// 验证当前状态
+	statsData, err := store.GetPartitionStatsData(ctx, statsKey)
+	assert.NoError(t, err)
+	assert.Equal(t, "3", statsData["total"])
+	assert.Equal(t, "2", statsData["pending"])
+	assert.Equal(t, "1", statsData["running"])
+
+	// 删除一个pending状态的分区
+	err = store.UpdatePartitionStatsOnDelete(ctx, statsKey, "pending")
+	assert.NoError(t, err)
+
+	statsData, err = store.GetPartitionStatsData(ctx, statsKey)
+	assert.NoError(t, err)
+	assert.Equal(t, "2", statsData["total"])
+	assert.Equal(t, "1", statsData["pending"])
+	assert.Equal(t, "1", statsData["running"])
+
+	// 删除running状态的分区
+	err = store.UpdatePartitionStatsOnDelete(ctx, statsKey, "running")
+	assert.NoError(t, err)
+
+	statsData, err = store.GetPartitionStatsData(ctx, statsKey)
+	assert.NoError(t, err)
+	assert.Equal(t, "1", statsData["total"])
+	assert.Equal(t, "1", statsData["pending"])
+	assert.Equal(t, "0", statsData["running"])
+}
+
+// TestPartitionStatsOperations_RebuildStats 测试重建统计数据
+func TestPartitionStatsOperations_RebuildStats(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	statsKey := "test_partition_stats"
+	activePartitionsKey := "test_active_partitions"
+	archivedPartitionsKey := "test_archived_partitions"
+
+	// 创建一些测试分区数据
+	activePartitions := map[string]string{
+		"1001": `{"partition_id":1001,"status":"pending","max_id":5000}`,
+		"1002": `{"partition_id":1002,"status":"claimed","max_id":10000}`,
+		"1003": `{"partition_id":1003,"status":"running","max_id":15000}`,
+	}
+
+	archivedPartitions := map[string]string{
+		"2001": `{"partition_id":2001,"status":"completed","max_id":20000}`,
+		"2002": `{"partition_id":2002,"status":"failed","max_id":25000}`,
+	}
+
+	// 设置分区数据
+	for field, value := range activePartitions {
+		err := store.HSetPartition(ctx, activePartitionsKey, field, value)
+		assert.NoError(t, err)
+	}
+
+	for field, value := range archivedPartitions {
+		err := store.HSetPartition(ctx, archivedPartitionsKey, field, value)
+		assert.NoError(t, err)
+	}
+
+	// 测试重建统计数据
+	err := store.RebuildPartitionStats(ctx, statsKey, activePartitionsKey, archivedPartitionsKey)
+	assert.NoError(t, err)
+
+	// 验证重建后的统计数据
+	statsData, err := store.GetPartitionStatsData(ctx, statsKey)
+	assert.NoError(t, err)
+
+	assert.Equal(t, "5", statsData["total"]) // 3个活跃 + 2个归档
+	assert.Equal(t, "1", statsData["pending"])
+	assert.Equal(t, "1", statsData["claimed"])
+	assert.Equal(t, "1", statsData["running"])
+	assert.Equal(t, "1", statsData["completed"])
+	assert.Equal(t, "1", statsData["failed"])
+	assert.Equal(t, "2002", statsData["max_partition_id"])   // 最大的分区ID
+	assert.Equal(t, "25000", statsData["last_allocated_id"]) // 最大的数据ID
+}
+
+// TestPartitionStatsOperations_ConcurrentUpdates 测试并发统计更新
+func TestPartitionStatsOperations_ConcurrentUpdates(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	statsKey := "test_concurrent_stats"
+
+	// 初始化统计数据
+	err := store.InitPartitionStats(ctx, statsKey)
+	assert.NoError(t, err)
+
+	const numWorkers = 10
+	const operationsPerWorker = 20
+
+	var wg sync.WaitGroup
+	var successCount int64
+
+	// 并发创建分区
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for j := 0; j < operationsPerWorker; j++ {
+				partitionID := workerID*operationsPerWorker + j + 1000
+				dataID := int64(partitionID * 10)
+
+				err := store.UpdatePartitionStatsOnCreate(ctx, statsKey, partitionID, dataID)
+				if err == nil {
+					atomic.AddInt64(&successCount, 1)
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	// 验证最终统计
+	statsData, err := store.GetPartitionStatsData(ctx, statsKey)
+	assert.NoError(t, err)
+
+	expectedTotal := numWorkers * operationsPerWorker
+	assert.Equal(t, strconv.Itoa(expectedTotal), statsData["total"])
+	assert.Equal(t, strconv.Itoa(expectedTotal), statsData["pending"])
+	assert.Equal(t, successCount, int64(expectedTotal))
+
+	// 验证最大分区ID和数据ID
+	maxPartitionID, _ := strconv.Atoi(statsData["max_partition_id"])
+	maxDataID, _ := strconv.ParseInt(statsData["last_allocated_id"], 10, 64)
+
+	// 最大分区ID应该是最后一个创建的分区
+	expectedMaxPartitionID := 1000 + numWorkers*operationsPerWorker - 1
+	assert.Equal(t, expectedMaxPartitionID, maxPartitionID)
+
+	// 最大数据ID应该对应最大分区ID
+	expectedMaxDataID := int64(expectedMaxPartitionID * 10)
+	assert.Equal(t, expectedMaxDataID, maxDataID)
+}
+
+// TestPartitionStatsOperations_ConcurrentStatusChanges 测试并发状态变更
+func TestPartitionStatsOperations_ConcurrentStatusChanges(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	statsKey := "test_concurrent_status_stats"
+
+	// 初始化统计数据并创建100个pending分区
+	err := store.InitPartitionStats(ctx, statsKey)
+	assert.NoError(t, err)
+
+	const numPartitions = 100
+	for i := 0; i < numPartitions; i++ {
+		err = store.UpdatePartitionStatsOnCreate(ctx, statsKey, i+1000, int64((i+1000)*10))
+		assert.NoError(t, err)
+	}
+
+	// 验证初始状态
+	statsData, err := store.GetPartitionStatsData(ctx, statsKey)
+	assert.NoError(t, err)
+	assert.Equal(t, strconv.Itoa(numPartitions), statsData["total"])
+	assert.Equal(t, strconv.Itoa(numPartitions), statsData["pending"])
+
+	const numWorkers = 10
+	var wg sync.WaitGroup
+
+	// 并发执行状态变更：pending -> claimed
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for j := 0; j < numPartitions/numWorkers; j++ {
+				err := store.UpdatePartitionStatsOnStatusChange(ctx, statsKey, "pending", "claimed")
+				assert.NoError(t, err)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	// 验证状态变更后的统计
+	statsData, err = store.GetPartitionStatsData(ctx, statsKey)
+	assert.NoError(t, err)
+
+	assert.Equal(t, strconv.Itoa(numPartitions), statsData["total"])
+	assert.Equal(t, "0", statsData["pending"])
+	assert.Equal(t, strconv.Itoa(numPartitions), statsData["claimed"])
+}
+
+// TestPartitionStatsOperations_EdgeCases 测试边界情况
+func TestPartitionStatsOperations_EdgeCases(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	statsKey := "test_edge_cases_stats"
+
+	// 测试在未初始化的情况下获取统计数据
+	statsData, err := store.GetPartitionStatsData(ctx, statsKey)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(statsData)) // 应该返回空map
+
+	// 测试在未初始化的情况下更新统计数据
+	err = store.UpdatePartitionStatsOnCreate(ctx, statsKey, 1001, 5000)
+	assert.NoError(t, err) // 应该不报错，Redis会自动创建字段
+
+	// 验证自动创建的字段
+	statsData, err = store.GetPartitionStatsData(ctx, statsKey)
+	assert.NoError(t, err)
+	assert.Equal(t, "1", statsData["total"])
+	assert.Equal(t, "1", statsData["pending"])
+
+	// 测试空状态字符串
+	err = store.UpdatePartitionStatsOnStatusChange(ctx, statsKey, "", "claimed")
+	assert.NoError(t, err)
+
+	err = store.UpdatePartitionStatsOnStatusChange(ctx, statsKey, "claimed", "")
+	assert.NoError(t, err)
+
+	// 测试删除空状态
+	err = store.UpdatePartitionStatsOnDelete(ctx, statsKey, "")
+	assert.NoError(t, err)
+
+	// 测试重建空的分区数据
+	err = store.RebuildPartitionStats(ctx, "empty_stats", "non_existent_active", "non_existent_archived")
+	assert.NoError(t, err)
+
+	// 验证空重建的结果
+	emptyStats, err := store.GetPartitionStatsData(ctx, "empty_stats")
+	assert.NoError(t, err)
+	assert.Equal(t, "0", emptyStats["total"])
+	assert.Equal(t, "0", emptyStats["max_partition_id"])
+	assert.Equal(t, "0", emptyStats["last_allocated_id"])
+}
+
+// TestPartitionStatsOperations_IntegrationScenario 测试完整的业务场景
+func TestPartitionStatsOperations_IntegrationScenario(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	statsKey := "test_integration_stats"
+
+	// 初始化统计数据
+	err := store.InitPartitionStats(ctx, statsKey)
+	assert.NoError(t, err)
+
+	// 场景1：创建多个分区
+	partitionIDs := []int{1001, 1002, 1003, 1004, 1005}
+	dataIDs := []int64{5000, 10000, 15000, 20000, 25000}
+
+	for i, pid := range partitionIDs {
+		err = store.UpdatePartitionStatsOnCreate(ctx, statsKey, pid, dataIDs[i])
+		assert.NoError(t, err)
+	}
+
+	// 验证创建后的统计
+	statsData, err := store.GetPartitionStatsData(ctx, statsKey)
+	assert.NoError(t, err)
+	assert.Equal(t, "5", statsData["total"])
+	assert.Equal(t, "5", statsData["pending"])
+	assert.Equal(t, "1005", statsData["max_partition_id"])
+	assert.Equal(t, "25000", statsData["last_allocated_id"])
+
+	// 场景2：工作节点声明分区（pending -> claimed）
+	for i := 0; i < 3; i++ {
+		err = store.UpdatePartitionStatsOnStatusChange(ctx, statsKey, "pending", "claimed")
+		assert.NoError(t, err)
+	}
+
+	statsData, err = store.GetPartitionStatsData(ctx, statsKey)
+	assert.NoError(t, err)
+	assert.Equal(t, "2", statsData["pending"])
+	assert.Equal(t, "3", statsData["claimed"])
+
+	// 场景3：开始处理分区（claimed -> running）
+	for i := 0; i < 2; i++ {
+		err = store.UpdatePartitionStatsOnStatusChange(ctx, statsKey, "claimed", "running")
+		assert.NoError(t, err)
+	}
+
+	statsData, err = store.GetPartitionStatsData(ctx, statsKey)
+	assert.NoError(t, err)
+	assert.Equal(t, "1", statsData["claimed"])
+	assert.Equal(t, "2", statsData["running"])
+
+	// 场景4：完成处理（running -> completed）
+	err = store.UpdatePartitionStatsOnStatusChange(ctx, statsKey, "running", "completed")
+	assert.NoError(t, err)
+
+	// 场景5：处理失败（running -> failed）
+	err = store.UpdatePartitionStatsOnStatusChange(ctx, statsKey, "running", "failed")
+	assert.NoError(t, err)
+
+	// 验证最终状态
+	statsData, err = store.GetPartitionStatsData(ctx, statsKey)
+	assert.NoError(t, err)
+
+	assert.Equal(t, "5", statsData["total"])
+	assert.Equal(t, "2", statsData["pending"])   // 未处理的分区
+	assert.Equal(t, "1", statsData["claimed"])   // 已声明但未开始的分区
+	assert.Equal(t, "0", statsData["running"])   // 正在处理的分区
+	assert.Equal(t, "1", statsData["completed"]) // 成功完成的分区
+	assert.Equal(t, "1", statsData["failed"])    // 失败的分区
+
+	// 场景6：删除失败的分区进行清理
+	err = store.UpdatePartitionStatsOnDelete(ctx, statsKey, "failed")
+	assert.NoError(t, err)
+
+	statsData, err = store.GetPartitionStatsData(ctx, statsKey)
+	assert.NoError(t, err)
+	assert.Equal(t, "4", statsData["total"])
+	assert.Equal(t, "0", statsData["failed"])
+
+	// 最终验证：计算处理率
+	total, _ := strconv.Atoi(statsData["total"])
+	completed, _ := strconv.Atoi(statsData["completed"])
+	pending, _ := strconv.Atoi(statsData["pending"])
+	claimed, _ := strconv.Atoi(statsData["claimed"])
+
+	completionRate := float64(completed) / float64(total)
+	workloadRate := float64(pending+claimed) / float64(total)
+
+	t.Logf("最终统计: 总计=%d, 完成=%d, 待处理=%d, 已声明=%d", total, completed, pending, claimed)
+	t.Logf("完成率: %.2f%%, 工作负载率: %.2f%%", completionRate*100, workloadRate*100)
+
+	assert.Equal(t, 0.25, completionRate) // 1/4 = 25%
+	assert.Equal(t, 0.75, workloadRate)   // 3/4 = 75%
+}

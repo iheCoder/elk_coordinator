@@ -3,9 +3,10 @@ package data
 import (
 	"context"
 	"encoding/json"
-	"github.com/iheCoder/elk_coordinator/utils"
 	"strconv"
 	"time"
+
+	"github.com/iheCoder/elk_coordinator/utils"
 
 	"github.com/pkg/errors"
 	"github.com/redis/go-redis/v9"
@@ -565,4 +566,160 @@ func (d *RedisDataStore) GetPendingCommands(ctx context.Context, namespace strin
 func (d *RedisDataStore) DeleteCommand(ctx context.Context, namespace, commandID string) error {
 	key := d.prefixKey("commands:" + namespace)
 	return d.rds.ZRem(ctx, key, commandID).Err()
+}
+
+// ==================== 分区统计管理实现 ====================
+
+// InitPartitionStats 初始化分区统计数据
+func (d *RedisDataStore) InitPartitionStats(ctx context.Context, statsKey string) error {
+	key := d.prefixKey(statsKey)
+
+	// 初始化所有统计字段为0
+	initialStats := map[string]interface{}{
+		"total":             "0",
+		"pending":           "0",
+		"claimed":           "0",
+		"running":           "0",
+		"completed":         "0",
+		"failed":            "0",
+		"max_partition_id":  "0",
+		"last_allocated_id": "0",
+	}
+
+	return d.rds.HMSet(ctx, key, initialStats).Err()
+}
+
+// GetPartitionStatsData 获取统计数据（原子操作）
+func (d *RedisDataStore) GetPartitionStatsData(ctx context.Context, statsKey string) (map[string]string, error) {
+	key := d.prefixKey(statsKey)
+	return d.rds.HGetAll(ctx, key).Result()
+}
+
+// UpdatePartitionStatsOnCreate 创建分区时更新统计
+func (d *RedisDataStore) UpdatePartitionStatsOnCreate(ctx context.Context, statsKey string, partitionID int, dataID int64) error {
+	key := d.prefixKey(statsKey)
+
+	// 使用Lua脚本保证原子性
+	script := `
+		redis.call('HINCRBY', KEYS[1], 'total', 1)
+		redis.call('HINCRBY', KEYS[1], 'pending', 1)
+
+		local currentMaxPartitionID = tonumber(redis.call('HGET', KEYS[1], 'max_partition_id') or 0)
+		if tonumber(ARGV[1]) > currentMaxPartitionID then
+			redis.call('HSET', KEYS[1], 'max_partition_id', ARGV[1])
+		end
+
+		local currentLastAllocatedID = tonumber(redis.call('HGET', KEYS[1], 'last_allocated_id') or 0)
+		if tonumber(ARGV[2]) > currentLastAllocatedID then
+			redis.call('HSET', KEYS[1], 'last_allocated_id', ARGV[2])
+		end
+
+		return 'OK'
+	`
+
+	_, err := d.rds.Eval(ctx, script, []string{key}, partitionID, dataID).Result()
+	return err
+}
+
+// UpdatePartitionStatsOnStatusChange 状态变更时更新统计
+func (d *RedisDataStore) UpdatePartitionStatsOnStatusChange(ctx context.Context, statsKey string, oldStatus, newStatus string) error {
+	key := d.prefixKey(statsKey)
+
+	// 使用Lua脚本保证原子性
+	script := `
+		if ARGV[1] ~= '' then
+			redis.call('HINCRBY', KEYS[1], ARGV[1], -1)
+		end
+		if ARGV[2] ~= '' then
+			redis.call('HINCRBY', KEYS[1], ARGV[2], 1)
+		end
+		return 'OK'
+	`
+
+	_, err := d.rds.Eval(ctx, script, []string{key}, oldStatus, newStatus).Result()
+	return err
+}
+
+// UpdatePartitionStatsOnDelete 删除分区时更新统计
+func (d *RedisDataStore) UpdatePartitionStatsOnDelete(ctx context.Context, statsKey string, status string) error {
+	key := d.prefixKey(statsKey)
+
+	// 使用Lua脚本保证原子性
+	script := `
+		redis.call('HINCRBY', KEYS[1], 'total', -1)
+		if ARGV[1] ~= '' then
+			redis.call('HINCRBY', KEYS[1], ARGV[1], -1)
+		end
+		return 'OK'
+	`
+
+	_, err := d.rds.Eval(ctx, script, []string{key}, status).Result()
+	return err
+}
+
+// RebuildPartitionStats 重建统计数据（从现有分区数据）
+func (d *RedisDataStore) RebuildPartitionStats(ctx context.Context, statsKey string, activePartitionsKey, archivedPartitionsKey string) error {
+	key := d.prefixKey(statsKey)
+	activeKey := d.prefixKey(activePartitionsKey)
+	archivedKey := d.prefixKey(archivedPartitionsKey)
+
+	// 使用Lua脚本重建统计
+	script := `
+		-- 重置所有统计
+		redis.call('HSET', KEYS[1], 'total', 0)
+		redis.call('HSET', KEYS[1], 'pending', 0)
+		redis.call('HSET', KEYS[1], 'claimed', 0)
+		redis.call('HSET', KEYS[1], 'running', 0)
+		redis.call('HSET', KEYS[1], 'completed', 0)
+		redis.call('HSET', KEYS[1], 'failed', 0)
+		redis.call('HSET', KEYS[1], 'max_partition_id', 0)
+		redis.call('HSET', KEYS[1], 'last_allocated_id', 0)
+
+		local function processPartitions(partitionKey)
+			local partitions = redis.call('HGETALL', partitionKey)
+			for i = 2, #partitions, 2 do
+				local partitionData = partitions[i]
+				local success, decoded = pcall(cjson.decode, partitionData)
+				if success then
+					-- 更新总数
+					redis.call('HINCRBY', KEYS[1], 'total', 1)
+
+					-- 更新状态统计
+					local status = decoded.status
+					if status then
+						redis.call('HINCRBY', KEYS[1], status, 1)
+					end
+
+					-- 更新最大分区ID
+					local partitionID = tonumber(decoded.partition_id or 0)
+					local currentMaxPartitionID = tonumber(redis.call('HGET', KEYS[1], 'max_partition_id'))
+					if partitionID > currentMaxPartitionID then
+						redis.call('HSET', KEYS[1], 'max_partition_id', partitionID)
+					end
+
+					-- 更新最大数据ID
+					local maxID = tonumber(decoded.max_id or 0)
+					local currentLastAllocatedID = tonumber(redis.call('HGET', KEYS[1], 'last_allocated_id'))
+					if maxID > currentLastAllocatedID then
+						redis.call('HSET', KEYS[1], 'last_allocated_id', maxID)
+					end
+				end
+			end
+		end
+
+		-- 处理活跃分区
+		if redis.call('EXISTS', KEYS[2]) == 1 then
+			processPartitions(KEYS[2])
+		end
+
+		-- 处理归档分区
+		if redis.call('EXISTS', KEYS[3]) == 1 then
+			processPartitions(KEYS[3])
+		end
+
+		return 'OK'
+	`
+
+	_, err := d.rds.Eval(ctx, script, []string{key, activeKey, archivedKey}).Result()
+	return err
 }
