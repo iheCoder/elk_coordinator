@@ -261,9 +261,10 @@ func main() {
 		DB:   0,
 	})
 
+	namespace := "monitoring-demo"
 	// 创建数据存储选项
 	options := &data.Options{
-		KeyPrefix:     "elk:",
+		KeyPrefix:     namespace,
 		DefaultExpiry: 2 * time.Hour,
 		MaxRetries:    3,                     // 增加重试次数
 		RetryDelay:    50 * time.Millisecond, // 较短的初始重试延迟
@@ -290,7 +291,6 @@ func main() {
 
 	// 创建管理器
 	fmt.Println("3. 创建 ELK Coordinator 管理器...")
-	namespace := "monitoring-demo"
 	mgr := elk_coordinator.NewMgr(
 		namespace,
 		dataStore,

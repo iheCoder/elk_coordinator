@@ -3,7 +3,6 @@ package elk_coordinator
 import (
 	"context"
 	"fmt"
-	"os"
 	"sync"
 	"time"
 
@@ -15,7 +14,6 @@ import (
 	"github.com/iheCoder/elk_coordinator/task"
 	"github.com/iheCoder/elk_coordinator/utils"
 
-	"github.com/google/uuid"
 	"github.com/pkg/errors"
 )
 
@@ -70,7 +68,7 @@ type Mgr struct {
 
 // NewMgr 创建一个新的管理器实例
 func NewMgr(namespace string, dataStore data.DataStore, processor task.Processor, planer leader.PartitionPlaner, strategyType model.StrategyType, options ...MgrOption) *Mgr {
-	nodeID := generateNodeID()
+	nodeID := utils.GenerateNodeID()
 
 	// 创建带默认值的管理器
 	mgr := &Mgr{
@@ -111,15 +109,6 @@ func NewMgr(namespace string, dataStore data.DataStore, processor task.Processor
 	mgr.PartitionStrategy = mgr.createPartitionStrategy()
 
 	return mgr
-}
-
-// generateNodeID 生成唯一的节点ID
-func generateNodeID() string {
-	hostname, err := os.Hostname()
-	if err != nil {
-		hostname = "unknown-host"
-	}
-	return fmt.Sprintf("%s-%d-%s", hostname, os.Getpid(), uuid.New().String()[:8])
 }
 
 // Start 启动管理器

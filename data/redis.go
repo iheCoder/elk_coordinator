@@ -3,6 +3,7 @@ package data
 import (
 	"context"
 	"encoding/json"
+	"github.com/iheCoder/elk_coordinator/utils"
 	"strconv"
 	"time"
 
@@ -27,8 +28,13 @@ type Options struct {
 
 // DefaultOptions returns default Redis data store options
 func DefaultOptions() *Options {
+	nodeID := utils.GenerateNodeID()
+	if len(nodeID) > 8 {
+		nodeID = nodeID[len(nodeID)-8:]
+	}
+
 	return &Options{
-		KeyPrefix:     "dist:",
+		KeyPrefix:     nodeID + ":",
 		DefaultExpiry: 24 * time.Hour,
 		MaxRetries:    3,
 		RetryDelay:    100 * time.Millisecond,
@@ -50,7 +56,7 @@ func NewRedisDataStore(redisClient *redis.Client, opts *Options) *RedisDataStore
 
 // prefixKey adds the configured prefix to keys
 func (d *RedisDataStore) prefixKey(key string) string {
-	return d.opts.KeyPrefix + key
+	return elkKeyPrefix + d.opts.KeyPrefix + key
 }
 
 // AcquireLock attempts to acquire a distributed lock

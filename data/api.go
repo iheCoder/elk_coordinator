@@ -5,6 +5,10 @@ import (
 	"time"
 )
 
+const (
+	elkKeyPrefix = "elk:"
+)
+
 // LockOperations 定义分布式锁操作的接口
 type LockOperations interface {
 	// 获取锁
