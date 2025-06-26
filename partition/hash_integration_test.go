@@ -511,7 +511,7 @@ func TestHashPartitionStrategy_HeartbeatAndPreemption(t *testing.T) {
 
 	// 工作节点2尝试抢占（不允许抢占）
 	options := &model.AcquirePartitionOptions{AllowPreemption: false}
-	_, success, err = strategy.AcquirePartition(ctx, 1, "worker-2", nil)
+	_, success, err = strategy.AcquirePartition(ctx, 1, "worker-2", options)
 	assert.NoError(t, err)
 	assert.False(t, success)
 
