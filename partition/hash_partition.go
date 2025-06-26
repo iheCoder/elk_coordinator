@@ -11,8 +11,16 @@ import (
 )
 
 const (
-	partitionHashKey = "elk_partitions" // 分区数据在 Redis Hash 中的键名
+	partitionHashKey = "elk_partitions"      // 分区数据在 Redis Hash 中的键名
+	statsKey         = "elk_partition_stats" // 统计数据的键名
 )
+
+// HashPartitionStoreInterface 定义Hash分区策略需要的完整存储接口
+// 组合了分区操作和统计操作接口
+type HashPartitionStoreInterface interface {
+	data.HashPartitionOperations
+	data.PartitionStatsOperations
+}
 
 // HashPartitionStrategy 处理分区数据的访问和生命周期管理。
 // 实现 PartitionStrategy 接口，提供基于 Redis Hash 的分区存储策略
@@ -26,22 +34,22 @@ const (
 // - 统计功能：分区状态统计 (hash_partition_stats.go)
 // - 归档策略：分离式归档和已完成分区管理 (hash_partition_archive.go)
 type HashPartitionStrategy struct {
-	store          data.HashPartitionOperations // 分区存储接口，使用最小接口而不是完整DataStore
-	logger         utils.Logger                 // 日志记录器
-	staleThreshold time.Duration                // 分区被认为过时的心跳阈值，用于抢占判断
+	store          HashPartitionStoreInterface // 分区存储接口，支持分区操作和统计操作
+	logger         utils.Logger                // 日志记录器
+	staleThreshold time.Duration               // 分区被认为过时的心跳阈值，用于抢占判断
 }
 
 // NewHashPartitionStrategy 创建一个新的 Hash 分区策略实例。
 //
 // 参数:
-//   - store: 分区存储接口，必须实现 HashPartitionOperations
+//   - store: 分区存储接口，必须实现 HashPartitionStoreInterface
 //   - logger: 日志记录器，不能为空
 //
 // 返回:
 //   - *HashPartitionStrategy: 配置完成的策略实例
 //
 // 注意: 如果 logger 为空会 panic
-func NewHashPartitionStrategy(store data.HashPartitionOperations, logger utils.Logger) *HashPartitionStrategy {
+func NewHashPartitionStrategy(store HashPartitionStoreInterface, logger utils.Logger) *HashPartitionStrategy {
 	if logger == nil {
 		panic("logger cannot be nil") // 日志记录器不能为空
 	}
@@ -51,19 +59,25 @@ func NewHashPartitionStrategy(store data.HashPartitionOperations, logger utils.L
 		staleThreshold: 5 * time.Minute, // 默认5分钟心跳超时阈值
 	}
 
+	// 初始化统计数据
+	ctx := context.Background()
+	if err := store.InitPartitionStats(ctx, statsKey); err != nil {
+		logger.Warnf("初始化分区统计数据失败: %v", err)
+	}
+
 	return strategy
 }
 
 // NewHashPartitionStrategyWithConfig 创建带配置的 Hash 分区策略实例
 //
 // 参数:
-//   - store: 分区存储接口
+//   - store: 分区存储接口，必须实现 HashPartitionStoreInterface
 //   - logger: 日志记录器，不能为空
 //   - staleThreshold: 心跳过期阈值，小于等于0时使用默认值
 //
 // 返回:
 //   - *HashPartitionStrategy: 配置完成的策略实例
-func NewHashPartitionStrategyWithConfig(store data.HashPartitionOperations, logger utils.Logger, staleThreshold time.Duration) *HashPartitionStrategy {
+func NewHashPartitionStrategyWithConfig(store HashPartitionStoreInterface, logger utils.Logger, staleThreshold time.Duration) *HashPartitionStrategy {
 	if logger == nil {
 		panic("logger cannot be nil") // 日志记录器不能为空
 	}
@@ -74,6 +88,12 @@ func NewHashPartitionStrategyWithConfig(store data.HashPartitionOperations, logg
 		store:          store,
 		logger:         logger,
 		staleThreshold: staleThreshold,
+	}
+
+	// 初始化统计数据
+	ctx := context.Background()
+	if err := store.InitPartitionStats(ctx, statsKey); err != nil {
+		logger.Warnf("初始化分区统计数据失败: %v", err)
 	}
 
 	return strategy

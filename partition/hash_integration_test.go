@@ -45,6 +45,11 @@ func setupHashPartitionStrategyIntegrationTest(t *testing.T) (*HashPartitionStra
 	logger := test_utils.NewMockLogger(true)
 	strategy := NewHashPartitionStrategy(dataStore, logger)
 
+	// 初始化统计数据
+	ctx := context.Background()
+	err = dataStore.InitPartitionStats(ctx, statsKey)
+	require.NoError(t, err, "初始化分区统计数据失败")
+
 	// 清理函数
 	cleanup := func() {
 		client.Close()

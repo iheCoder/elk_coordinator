@@ -58,6 +58,9 @@ func (s *HashPartitionStrategy) UpdatePartitionStatus(ctx context.Context, parti
 // handleCompletedPartition 处理 completed 状态分区的分离式归档
 // 实现"先归档再删除"策略，确保数据安全
 func (s *HashPartitionStrategy) handleCompletedPartition(ctx context.Context, partition *model.PartitionInfo, workerID string, metadata map[string]interface{}) error {
+	// 记录原始状态用于统计更新
+	oldStatus := string(partition.Status)
+
 	// 1. 更新分区状态为 completed
 	partition.Status = model.StatusCompleted
 
@@ -81,11 +84,20 @@ func (s *HashPartitionStrategy) handleCompletedPartition(ctx context.Context, pa
 	}
 
 	// 5. 归档成功后，才从 Active Layer 移除分区
-	if err := s.DeletePartition(ctx, partition.PartitionID); err != nil {
+	if err := s.deletePartitionFromActiveLayer(ctx, partition.PartitionID); err != nil {
 		s.logger.Errorf("从活跃层移除分区 %d 失败: %v", partition.PartitionID, err)
 		// 注意：此时归档已成功，即使删除失败，数据也是安全的
 		// 可以考虑添加补偿机制，但不应该返回错误影响业务流程
 		s.logger.Warnf("分区 %d 已成功归档，但从活跃层删除失败，存在数据重复", partition.PartitionID)
+	}
+
+	// 6. 更新统计数据（状态变更）
+	newStatus := string(model.StatusCompleted)
+	if oldStatus != newStatus {
+		if err := s.store.UpdatePartitionStatsOnStatusChange(ctx, statsKey, oldStatus, newStatus); err != nil {
+			s.logger.Errorf("分区 %d 状态变更后更新统计失败 (%s -> %s): %v", partition.PartitionID, oldStatus, newStatus, err)
+			// 不返回错误，因为分区状态已经更新和归档成功
+		}
 	}
 
 	s.logger.Infof("分区 %d 已完成分离式归档处理 (Worker: %s, 状态: %s)",
@@ -96,6 +108,9 @@ func (s *HashPartitionStrategy) handleCompletedPartition(ctx context.Context, pa
 
 // updatePartitionNormalStatus 更新非 completed 状态的分区
 func (s *HashPartitionStrategy) updatePartitionNormalStatus(ctx context.Context, partition *model.PartitionInfo, status model.PartitionStatus, metadata map[string]interface{}) error {
+	// 记录原始状态用于统计更新
+	oldStatus := string(partition.Status)
+
 	// 更新分区状态
 	partition.Status = status
 
@@ -128,6 +143,15 @@ func (s *HashPartitionStrategy) updatePartitionNormalStatus(ctx context.Context,
 	if err != nil {
 		s.logger.Errorf("更新分区 %d 状态失败: %v", partition.PartitionID, err)
 		return fmt.Errorf("更新分区 %d 状态失败: %w", partition.PartitionID, err)
+	}
+
+	// 更新统计数据（状态变更）
+	newStatus := string(status)
+	if oldStatus != newStatus {
+		if err := s.store.UpdatePartitionStatsOnStatusChange(ctx, statsKey, oldStatus, newStatus); err != nil {
+			s.logger.Errorf("分区 %d 状态变更后更新统计失败 (%s -> %s): %v", partition.PartitionID, oldStatus, newStatus, err)
+			// 不返回错误，因为分区状态已经更新成功
+		}
 	}
 
 	s.logger.Infof("成功更新分区 %d 状态为 %s（工作节点: %s）", partition.PartitionID, status, partition.WorkerID)

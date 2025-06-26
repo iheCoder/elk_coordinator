@@ -164,6 +164,14 @@ func (s *HashPartitionStrategy) createPartitionsBatch(ctx context.Context, reque
 		return nil, fmt.Errorf("批量创建分区事务失败: %w", err)
 	}
 
+	// 批量更新统计数据
+	for _, partition := range partitionInfos {
+		if err := s.store.UpdatePartitionStatsOnCreate(ctx, statsKey, partition.PartitionID, partition.MaxID); err != nil {
+			s.logger.Errorf("创建分区 %d 后更新统计失败: %v", partition.PartitionID, err)
+			// 不返回错误，因为分区已经创建成功
+		}
+	}
+
 	s.logger.Infof("成功批量创建 %d 个分区", len(partitionInfos))
 	return partitionInfos, nil
 }

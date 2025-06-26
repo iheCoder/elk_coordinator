@@ -112,13 +112,30 @@ func (s *HashPartitionStrategy) MaintainPartitionHold(ctx context.Context, parti
 //   - *model.PartitionInfo: 更新后的分区信息
 //   - error: 错误信息
 func (s *HashPartitionStrategy) acquirePartitionDirect(ctx context.Context, partition *model.PartitionInfo, workerID string) (*model.PartitionInfo, error) {
+	// 记录原始状态用于统计更新
+	oldStatus := string(partition.Status)
+
 	// 更新分区状态
 	partition.Status = model.StatusClaimed
 	partition.WorkerID = workerID
 	partition.LastHeartbeat = time.Now()
 
 	// 使用版本控制更新
-	return s.updatePartitionWithVersionControl(ctx, partition)
+	updatedPartition, err := s.updatePartitionWithVersionControl(ctx, partition)
+	if err != nil {
+		return nil, err
+	}
+
+	// 更新统计数据（状态变更）
+	newStatus := string(updatedPartition.Status)
+	if oldStatus != newStatus {
+		if err := s.store.UpdatePartitionStatsOnStatusChange(ctx, statsKey, oldStatus, newStatus); err != nil {
+			s.logger.Errorf("分区 %d 状态变更后更新统计失败 (%s -> %s): %v", updatedPartition.PartitionID, oldStatus, newStatus, err)
+			// 不返回错误，因为分区状态已经更新成功
+		}
+	}
+
+	return updatedPartition, nil
 }
 
 // preemptPartitionByHeartbeat 基于心跳时间抢占分区

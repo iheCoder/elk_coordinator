@@ -3,9 +3,10 @@ package partition
 import (
 	"context"
 	"fmt"
+	"testing"
+
 	"github.com/iheCoder/elk_coordinator/model"
 	"github.com/iheCoder/elk_coordinator/test_utils"
-	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -105,6 +106,7 @@ func NewMockHashPartitionOperationsWithFailure(failAfterBatch int) *MockHashPart
 		MockHashPartitionOperations: &MockHashPartitionOperations{
 			partitions: make(map[string]map[string]string),
 			versions:   make(map[string]int64),
+			stats:      make(map[string]map[string]string),
 		},
 		failAfterBatch: failAfterBatch,
 		shouldFail:     true,

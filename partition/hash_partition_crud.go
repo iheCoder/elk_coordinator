@@ -3,6 +3,7 @@ package partition
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -240,13 +241,47 @@ func (s *HashPartitionStrategy) GetAllPartitions(ctx context.Context) ([]*model.
 // 返回:
 //   - error: 错误信息
 func (s *HashPartitionStrategy) DeletePartition(ctx context.Context, partitionID int) error {
-	err := s.store.HDeletePartition(ctx, partitionHashKey, strconv.Itoa(partitionID))
+	// 先获取分区信息以便更新统计
+	existingPartition, err := s.GetPartition(ctx, partitionID)
+	if err != nil {
+		if errors.Is(err, ErrPartitionNotFound) {
+			s.logger.Debugf("分区 %d 在活跃层和归档层中都未找到", partitionID)
+			// Redis HDEL 对不存在的字段不报错，这里也保持一致的行为
+			return nil
+		}
+		s.logger.Errorf("获取分区 %d 信息用于删除失败: %v", partitionID, err)
+		return fmt.Errorf("获取分区 %d 信息失败: %w", partitionID, err)
+	}
+
+	// 删除分区
+	err = s.store.HDeletePartition(ctx, partitionHashKey, strconv.Itoa(partitionID))
 	if err != nil {
 		s.logger.Errorf("删除分区 %d 失败: %v", partitionID, err)
 		return fmt.Errorf("删除分区 %d 失败: %w", partitionID, err)
 	}
 
-	s.logger.Infof("成功删除分区 %d", partitionID)
+	// 更新统计数据
+	if err := s.store.UpdatePartitionStatsOnDelete(ctx, statsKey, string(existingPartition.Status)); err != nil {
+		s.logger.Errorf("删除分区 %d 后更新统计失败: %v", partitionID, err)
+		// 不返回错误，因为分区已经删除成功，统计更新失败不应该影响主操作
+	}
+
+	s.logger.Infof("成功删除分区 %d (状态: %s)", partitionID, existingPartition.Status)
+	return nil
+}
+
+// deletePartitionFromActiveLayer 从活跃层删除分区，但不更新统计数据
+// 这个方法主要用于归档操作，因为归档只是将分区从活跃层移动到归档层，
+// 总分区数不应该改变
+func (s *HashPartitionStrategy) deletePartitionFromActiveLayer(ctx context.Context, partitionID int) error {
+	// 直接删除分区，不获取现有分区信息，也不更新统计数据
+	err := s.store.HDeletePartition(ctx, partitionHashKey, strconv.Itoa(partitionID))
+	if err != nil {
+		s.logger.Errorf("从活跃层删除分区 %d 失败: %v", partitionID, err)
+		return fmt.Errorf("从活跃层删除分区 %d 失败: %w", partitionID, err)
+	}
+
+	s.logger.Infof("成功从活跃层删除分区 %d", partitionID)
 	return nil
 }
 
@@ -264,6 +299,18 @@ func (s *HashPartitionStrategy) DeletePartition(ctx context.Context, partitionID
 func (s *HashPartitionStrategy) SavePartition(ctx context.Context, partitionInfo *model.PartitionInfo) error {
 	if partitionInfo == nil {
 		return fmt.Errorf("SavePartition 的 partitionInfo 不能为空")
+	}
+
+	// 检查分区是否已存在，用于决定是创建还是更新
+	existingPartition, err := s.GetPartition(ctx, partitionInfo.PartitionID)
+	isCreate := errors.Is(err, ErrPartitionNotFound)
+	var oldStatus string
+	if !isCreate && err != nil {
+		s.logger.Errorf("检查分区 %d 是否存在时失败: %v", partitionInfo.PartitionID, err)
+		return fmt.Errorf("检查分区 %d 是否存在失败: %w", partitionInfo.PartitionID, err)
+	}
+	if !isCreate {
+		oldStatus = string(existingPartition.Status)
 	}
 
 	// 对于直接保存，如果版本为 0，设置为 1 避免潜在问题
@@ -290,6 +337,24 @@ func (s *HashPartitionStrategy) SavePartition(ctx context.Context, partitionInfo
 	if err != nil {
 		s.logger.Errorf("保存分区 %d 失败: %v", partitionInfo.PartitionID, err)
 		return fmt.Errorf("保存分区 %d 失败: %w", partitionInfo.PartitionID, err)
+	}
+
+	// 更新统计数据
+	if isCreate {
+		// 创建分区
+		if err := s.store.UpdatePartitionStatsOnCreate(ctx, statsKey, partitionInfo.PartitionID, partitionInfo.MaxID); err != nil {
+			s.logger.Errorf("创建分区 %d 后更新统计失败: %v", partitionInfo.PartitionID, err)
+			// 不返回错误，因为分区已经创建成功
+		}
+	} else {
+		// 更新分区，可能状态发生了变化
+		newStatus := string(partitionInfo.Status)
+		if oldStatus != newStatus {
+			if err := s.store.UpdatePartitionStatsOnStatusChange(ctx, statsKey, oldStatus, newStatus); err != nil {
+				s.logger.Errorf("更新分区 %d 状态后更新统计失败: %v", partitionInfo.PartitionID, err)
+				// 不返回错误，因为分区已经更新成功
+			}
+		}
 	}
 
 	s.logger.Infof("成功保存分区 %d (状态: %s, WorkerID: %s, 版本: %d)",

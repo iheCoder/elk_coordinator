@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -63,12 +64,14 @@ type MockHashPartitionOperations struct {
 	mu         sync.RWMutex
 	partitions map[string]map[string]string // key -> field -> value
 	versions   map[string]int64             // field -> version
+	stats      map[string]map[string]string // statsKey -> stats
 }
 
 func NewMockHashPartitionOperations() *MockHashPartitionOperations {
 	return &MockHashPartitionOperations{
 		partitions: make(map[string]map[string]string),
 		versions:   make(map[string]int64),
+		stats:      make(map[string]map[string]string),
 	}
 }
 
@@ -205,6 +208,193 @@ func (m *MockHashPartitionOperations) HSetPartitionsInTx(ctx context.Context, ke
 		}
 	}
 
+	return nil
+}
+
+// 实现 PartitionStatsOperations 接口
+
+// InitPartitionStats 初始化分区统计数据
+func (m *MockHashPartitionOperations) InitPartitionStats(ctx context.Context, statsKey string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.stats[statsKey] = map[string]string{
+		"total":        "0",
+		"pending":      "0",
+		"claimed":      "0", // 添加 claimed 状态
+		"running":      "0",
+		"completed":    "0",
+		"failed":       "0",
+		"archived":     "0",
+		"last_updated": fmt.Sprintf("%d", time.Now().Unix()),
+	}
+	return nil
+}
+
+// GetPartitionStatsData 获取分区统计数据
+func (m *MockHashPartitionOperations) GetPartitionStatsData(ctx context.Context, statsKey string) (map[string]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	stats, exists := m.stats[statsKey]
+	if !exists {
+		return nil, fmt.Errorf("stats not found for key: %s", statsKey)
+	}
+
+	// 返回副本
+	result := make(map[string]string)
+	for k, v := range stats {
+		result[k] = v
+	}
+	return result, nil
+}
+
+// UpdatePartitionStatsOnCreate 创建分区时更新统计
+func (m *MockHashPartitionOperations) UpdatePartitionStatsOnCreate(ctx context.Context, statsKey string, partitionID int, dataID int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.stats[statsKey] == nil {
+		m.InitPartitionStats(ctx, statsKey)
+	}
+
+	stats := m.stats[statsKey]
+
+	// 增加总数
+	if total, exists := stats["total"]; exists {
+		if count, err := strconv.Atoi(total); err == nil {
+			stats["total"] = strconv.Itoa(count + 1)
+		}
+	}
+
+	// 默认新创建的分区是pending状态
+	if statusCount, exists := stats["pending"]; exists {
+		if count, err := strconv.Atoi(statusCount); err == nil {
+			stats["pending"] = strconv.Itoa(count + 1)
+		}
+	}
+
+	stats["last_updated"] = fmt.Sprintf("%d", time.Now().Unix())
+	return nil
+}
+
+// UpdatePartitionStatsOnStatusChange 状态变更时更新统计
+func (m *MockHashPartitionOperations) UpdatePartitionStatsOnStatusChange(ctx context.Context, statsKey, oldStatus, newStatus string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.stats[statsKey] == nil {
+		m.InitPartitionStats(ctx, statsKey)
+	}
+
+	stats := m.stats[statsKey]
+
+	// 减少旧状态计数
+	if oldStatusCount, exists := stats[oldStatus]; exists {
+		if count, err := strconv.Atoi(oldStatusCount); err == nil && count > 0 {
+			stats[oldStatus] = strconv.Itoa(count - 1)
+		}
+	}
+
+	// 增加新状态计数
+	if newStatusCount, exists := stats[newStatus]; exists {
+		if count, err := strconv.Atoi(newStatusCount); err == nil {
+			stats[newStatus] = strconv.Itoa(count + 1)
+		}
+	}
+
+	stats["last_updated"] = fmt.Sprintf("%d", time.Now().Unix())
+	return nil
+}
+
+// UpdatePartitionStatsOnDelete 删除分区时更新统计
+func (m *MockHashPartitionOperations) UpdatePartitionStatsOnDelete(ctx context.Context, statsKey, status string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.stats[statsKey] == nil {
+		return nil // 如果统计不存在，忽略删除操作
+	}
+
+	stats := m.stats[statsKey]
+
+	// 减少总数
+	if total, exists := stats["total"]; exists {
+		if count, err := strconv.Atoi(total); err == nil && count > 0 {
+			stats["total"] = strconv.Itoa(count - 1)
+		}
+	}
+
+	// 减少对应状态的计数
+	if statusCount, exists := stats[status]; exists {
+		if count, err := strconv.Atoi(statusCount); err == nil && count > 0 {
+			stats[status] = strconv.Itoa(count - 1)
+		}
+	}
+
+	stats["last_updated"] = fmt.Sprintf("%d", time.Now().Unix())
+	return nil
+}
+
+// RebuildPartitionStats 重建统计数据
+func (m *MockHashPartitionOperations) RebuildPartitionStats(ctx context.Context, statsKey string, activePartitionsKey, archivedPartitionsKey string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// 初始化统计数据
+	stats := map[string]string{
+		"total":        "0",
+		"pending":      "0",
+		"claimed":      "0",
+		"running":      "0",
+		"completed":    "0",
+		"failed":       "0",
+		"archived":     "0",
+		"last_updated": fmt.Sprintf("%d", time.Now().Unix()),
+	}
+
+	// 统计活跃分区
+	if activePartitions, exists := m.partitions[activePartitionsKey]; exists {
+		for _, partitionData := range activePartitions {
+			var partitionInfo map[string]interface{}
+			if err := json.Unmarshal([]byte(partitionData), &partitionInfo); err == nil {
+				if status, ok := partitionInfo["status"].(string); ok {
+					if count, err := strconv.Atoi(stats[status]); err == nil {
+						stats[status] = strconv.Itoa(count + 1)
+					}
+					if total, err := strconv.Atoi(stats["total"]); err == nil {
+						stats["total"] = strconv.Itoa(total + 1)
+					}
+				}
+			}
+		}
+	}
+
+	// 统计归档分区
+	if archivedPartitions, exists := m.partitions[archivedPartitionsKey]; exists {
+		for _, partitionData := range archivedPartitions {
+			var partitionInfo map[string]interface{}
+			if err := json.Unmarshal([]byte(partitionData), &partitionInfo); err == nil {
+				if status, ok := partitionInfo["status"].(string); ok {
+					// 归档分区按其实际状态统计（如 completed, failed 等）
+					if count, err := strconv.Atoi(stats[status]); err == nil {
+						stats[status] = strconv.Itoa(count + 1)
+					}
+				}
+				// 归档分区也计入总数
+				if total, err := strconv.Atoi(stats["total"]); err == nil {
+					stats["total"] = strconv.Itoa(total + 1)
+				}
+			}
+		}
+		// 同时更新归档计数
+		archivedCount := len(archivedPartitions)
+		if archived, err := strconv.Atoi(stats["archived"]); err == nil {
+			stats["archived"] = strconv.Itoa(archived + archivedCount)
+		}
+	}
+
+	m.stats[statsKey] = stats
 	return nil
 }
 
