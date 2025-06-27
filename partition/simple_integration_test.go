@@ -3,6 +3,9 @@ package partition
 import (
 	"context"
 	"fmt"
+	"testing"
+	"time"
+
 	"github.com/alicebob/miniredis/v2"
 	"github.com/iheCoder/elk_coordinator/data"
 	"github.com/iheCoder/elk_coordinator/model"
@@ -10,8 +13,6 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"testing"
-	"time"
 )
 
 // setupSimpleStrategyIntegrationTest 创建集成测试环境
@@ -242,15 +243,15 @@ func TestSimpleStrategy_BatchOperations(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Len(t, createdPartitions, 5)
 
-	// 测试重复创建（应该返回现有分区）
+	// 测试重复创建（应该返回空列表，因为所有分区都已存在）
 	createdPartitions2, err := strategy.CreatePartitionsIfNotExist(ctx, request)
 	assert.NoError(t, err)
-	assert.Len(t, createdPartitions2, 5)
+	assert.Len(t, createdPartitions2, 0) // 应该返回0个分区，因为没有新创建的分区
 
-	// 验证返回的是相同的分区（通过版本号）
-	for i := range createdPartitions {
-		assert.Equal(t, createdPartitions[i].Version, createdPartitions2[i].Version)
-	}
+	// 验证原有分区仍然存在
+	allPartitions, err := strategy.GetAllActivePartitions(ctx)
+	assert.NoError(t, err)
+	assert.Len(t, allPartitions, 5)
 
 	// 测试批量删除
 	partitionIDsToDelete := []int{2, 4}
@@ -258,7 +259,7 @@ func TestSimpleStrategy_BatchOperations(t *testing.T) {
 	assert.NoError(t, err)
 
 	// 验证删除结果
-	allPartitions, err := strategy.GetAllActivePartitions(ctx)
+	allPartitions, err = strategy.GetAllActivePartitions(ctx)
 	assert.NoError(t, err)
 	assert.Len(t, allPartitions, 3)
 

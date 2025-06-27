@@ -3,12 +3,13 @@ package partition
 import (
 	"context"
 	"fmt"
-	"github.com/iheCoder/elk_coordinator/data"
-	"github.com/iheCoder/elk_coordinator/model"
-	"github.com/iheCoder/elk_coordinator/test_utils"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/iheCoder/elk_coordinator/data"
+	"github.com/iheCoder/elk_coordinator/model"
+	"github.com/iheCoder/elk_coordinator/test_utils"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -687,18 +688,12 @@ func TestSimpleStrategy_CreatePartitionsIfNotExist(t *testing.T) {
 		assert.NotNil(t, partition.Options)
 	}
 
-	// 再次尝试创建相同分区（应该返回现有分区）
+	// 再次尝试创建相同分区（应该返回空列表，因为都已存在）
 	created2, err := strategy.CreatePartitionsIfNotExist(ctx, request)
 	assert.NoError(t, err)
-	assert.Len(t, created2, 2)
+	assert.Len(t, created2, 0) // 应该返回0个分区，因为没有新创建的分区
 
-	// 验证返回的是现有分区
-	for i, partition := range created2 {
-		assert.Equal(t, created[i].PartitionID, partition.PartitionID)
-		assert.Equal(t, created[i].Version, partition.Version)
-	}
-
-	// 验证总分区数量没有变化
+	// 验证原有分区仍然存在
 	allPartitions, err := strategy.GetAllActivePartitions(ctx)
 	assert.NoError(t, err)
 	assert.Len(t, allPartitions, 2)
@@ -744,11 +739,15 @@ func TestSimpleStrategy_CreatePartitionsIfNotExist_DataRangeConflict(t *testing.
 
 	created2, err := strategy.CreatePartitionsIfNotExist(ctx, request2)
 	assert.NoError(t, err)
-	assert.Len(t, created2, 1)
-	assert.Equal(t, 1, created2[0].PartitionID) // 仍然是原来的ID
-	assert.Equal(t, int64(1), created2[0].MinID)
-	assert.Equal(t, int64(1000), created2[0].MaxID)
-	assert.Equal(t, created1[0].Version, created2[0].Version) // 版本应该相同，因为是同一个分区
+	assert.Len(t, created2, 0) // 应该返回0个分区，因为没有新创建的分区
+
+	// 验证原有分区仍然存在且没有改变
+	existingPartition, err := strategy.GetPartition(ctx, 1)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, existingPartition.PartitionID)
+	assert.Equal(t, int64(1), existingPartition.MinID)
+	assert.Equal(t, int64(1000), existingPartition.MaxID)
+	assert.Equal(t, created1[0].Version, existingPartition.Version) // 版本应该相同，因为没有更新
 
 	// 3. 测试相同ID但不同数据范围 - 应该生成新的分区ID
 	request3 := model.CreatePartitionsRequest{

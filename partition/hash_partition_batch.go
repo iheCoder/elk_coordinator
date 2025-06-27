@@ -30,7 +30,7 @@ import (
 //   - request: 创建分区请求，包含分区列表
 //
 // 返回:
-//   - []*model.PartitionInfo: 成功创建的分区信息列表
+//   - []*model.PartitionInfo: 新创建的分区信息列表（不包含已存在的分区）
 //   - error: 错误信息
 func (s *HashPartitionStrategy) CreatePartitionsIfNotExist(ctx context.Context, request model.CreatePartitionsRequest) ([]*model.PartitionInfo, error) {
 	if len(request.Partitions) == 0 {
@@ -107,19 +107,15 @@ func (s *HashPartitionStrategy) CreatePartitionsIfNotExist(ctx context.Context, 
 		}
 	}
 
-	// 合并结果
-	allPartitions := make([]*model.PartitionInfo, 0, len(existingPartitions)+len(newPartitions))
-	allPartitions = append(allPartitions, existingPartitions...)
-	allPartitions = append(allPartitions, newPartitions...)
-
+	// 只返回新创建的分区
 	// 按 PartitionID 排序以确保一致的顺序
-	sort.Slice(allPartitions, func(i, j int) bool {
-		return allPartitions[i].PartitionID < allPartitions[j].PartitionID
+	sort.Slice(newPartitions, func(i, j int) bool {
+		return newPartitions[i].PartitionID < newPartitions[j].PartitionID
 	})
 
-	s.logger.Infof("批量创建/获取分区完成，总共处理 %d 个分区请求，其中 %d 个已存在，%d 个新创建",
-		len(allPartitions), len(existingPartitions), len(newPartitions))
-	return allPartitions, nil
+	s.logger.Infof("批量创建分区完成，总共处理 %d 个分区请求，其中 %d 个已存在，%d 个新创建",
+		len(existingPartitions)+len(newPartitions), len(existingPartitions), len(newPartitions))
+	return newPartitions, nil
 }
 
 // createPartitionsBatch 批量创建多个分区，使用Redis事务保证原子性

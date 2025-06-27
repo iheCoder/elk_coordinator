@@ -2,6 +2,7 @@ package partition
 
 import (
 	"context"
+
 	"github.com/iheCoder/elk_coordinator/model"
 )
 
@@ -26,6 +27,7 @@ type PartitionStrategy interface {
 
 	// CreatePartitionsIfNotExist 批量创建分区（如果不存在）
 	// 提供明确的批量创建语义，避免单个分区创建的歧义
+	// 返回新创建的分区列表，已存在的分区不包含在返回结果中
 	CreatePartitionsIfNotExist(ctx context.Context, request model.CreatePartitionsRequest) ([]*model.PartitionInfo, error)
 
 	// DeletePartitions 批量删除分区

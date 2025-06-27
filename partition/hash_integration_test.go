@@ -3,12 +3,13 @@ package partition
 import (
 	"context"
 	"fmt"
-	"github.com/iheCoder/elk_coordinator/data"
-	"github.com/iheCoder/elk_coordinator/model"
-	"github.com/iheCoder/elk_coordinator/test_utils"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/iheCoder/elk_coordinator/data"
+	"github.com/iheCoder/elk_coordinator/model"
+	"github.com/iheCoder/elk_coordinator/test_utils"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -273,15 +274,20 @@ func TestHashPartitionStrategy_BatchOperations(t *testing.T) {
 		assert.Equal(t, int64(1), partition.Version)
 	}
 
-	// 测试重复创建应该返回现有分区
+	// 测试重复创建应该返回空列表（因为所有分区都已存在）
 	duplicatePartitions, err := strategy.CreatePartitionsIfNotExist(ctx, request)
 	assert.NoError(t, err)
-	assert.Len(t, duplicatePartitions, 5)
+	assert.Len(t, duplicatePartitions, 0) // 应该返回0个分区，因为没有新创建的分区
 
-	// 验证返回的是现有分区（版本号应该相同）
-	for i, partition := range duplicatePartitions {
-		assert.Equal(t, createdPartitions[i].PartitionID, partition.PartitionID)
-		assert.Equal(t, createdPartitions[i].Version, partition.Version)
+	// 验证原有分区仍然存在
+	allPartitions, err := strategy.GetAllActivePartitions(ctx)
+	assert.NoError(t, err)
+	assert.Len(t, allPartitions, 5)
+
+	// 验证分区数据正确
+	for i, partition := range allPartitions {
+		assert.Equal(t, request.Partitions[i].PartitionID, partition.PartitionID)
+		assert.Equal(t, int64(1), partition.Version) // 版本号应该保持不变
 	}
 
 	// 测试批量删除

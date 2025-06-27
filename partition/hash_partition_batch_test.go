@@ -51,9 +51,7 @@ func TestCreatePartitionsIfNotExist_DataRangeConsistency(t *testing.T) {
 
 	existingPartitions, err := strategy.CreatePartitionsIfNotExist(ctx, identicalRequest)
 	require.NoError(t, err)
-	assert.Len(t, existingPartitions, 1)
-	assert.Equal(t, int64(1), existingPartitions[0].MinID)
-	assert.Equal(t, int64(1000), existingPartitions[0].MaxID)
+	assert.Len(t, existingPartitions, 0) // 应该返回0个分区，因为没有新创建的分区
 }
 
 // TestCreatePartitionsIfNotExist_OrderedCreation 测试有序创建和连续性保证
@@ -211,19 +209,25 @@ func TestCreatePartitionsIfNotExist_MixedExistingAndNew(t *testing.T) {
 		},
 	}
 
-	allPartitions, err := strategy.CreatePartitionsIfNotExist(ctx, mixedRequest)
+	newPartitions, err := strategy.CreatePartitionsIfNotExist(ctx, mixedRequest)
 	require.NoError(t, err)
-	assert.Len(t, allPartitions, 4)
+	assert.Len(t, newPartitions, 2) // 只有2个新分区（分区2和分区4）
 
-	// 验证所有分区都存在
+	// 验证新创建的分区
+	expectedNewPartitionIDs := []int{2, 4}
+	for i, partition := range newPartitions {
+		assert.Equal(t, expectedNewPartitionIDs[i], partition.PartitionID)
+	}
+
+	// 验证所有分区都存在（包括之前创建的）
 	for i := 1; i <= 4; i++ {
 		partition, err := strategy.GetPartition(ctx, i)
 		require.NoError(t, err)
 		assert.Equal(t, i, partition.PartitionID)
 	}
 
-	// 验证返回的分区按ID排序
-	for i := 0; i < len(allPartitions)-1; i++ {
-		assert.True(t, allPartitions[i].PartitionID < allPartitions[i+1].PartitionID)
+	// 验证返回的新分区按ID排序
+	for i := 0; i < len(newPartitions)-1; i++ {
+		assert.True(t, newPartitions[i].PartitionID < newPartitions[i+1].PartitionID)
 	}
 }

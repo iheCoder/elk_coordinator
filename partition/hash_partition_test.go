@@ -904,13 +904,13 @@ func TestCreatePartitionsIfNotExist(t *testing.T) {
 		t.Errorf("应创建2个分区, 实际: %d", len(partitions))
 	}
 
-	// 再次创建应不会重复
+	// 再次创建应不会重复，应返回空列表
 	partitions2, err := repo.CreatePartitionsIfNotExist(context.Background(), request)
 	if err != nil {
 		t.Fatalf("重复批量创建分区失败: %v", err)
 	}
-	if len(partitions2) != 2 {
-		t.Errorf("重复创建应返回2个分区, 实际: %d", len(partitions2))
+	if len(partitions2) != 0 {
+		t.Errorf("重复创建应返回0个分区（因为都已存在）, 实际: %d", len(partitions2))
 	}
 }
 
