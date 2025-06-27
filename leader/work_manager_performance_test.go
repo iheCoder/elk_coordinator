@@ -3,12 +3,13 @@ package leader
 import (
 	"context"
 	"fmt"
-	"github.com/iheCoder/elk_coordinator/model"
-	"github.com/iheCoder/elk_coordinator/test_utils"
 	"runtime"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/iheCoder/elk_coordinator/model"
+	"github.com/iheCoder/elk_coordinator/test_utils"
 )
 
 // slowPartitionStrategy 模拟真实Redis操作的网络和序列化延迟
@@ -556,12 +557,19 @@ func TestWorkManagerMemoryLeak(t *testing.T) {
 				runtime.GC()
 				runtime.ReadMemStats(&m2)
 				currentAlloc := m2.Alloc
-				growth := currentAlloc - initialAlloc
+
+				// 安全计算内存增长，避免uint64下溢
+				var growth int64
+				if currentAlloc > initialAlloc {
+					growth = int64(currentAlloc - initialAlloc)
+				} else {
+					growth = -int64(initialAlloc - currentAlloc)
+				}
 
 				t.Logf("Cycle %d: 当前内存=%d KB, 增长=%d KB",
 					cycle, currentAlloc/1024, growth/1024)
 
-				// 如果内存增长超过合理范围，报告潜在泄漏
+				// 如果内存增长超过合理范围，报告潜在泄漏（只检查正增长）
 				if growth > 10*1024*1024 { // 超过10MB增长
 					t.Errorf("Cycle %d: 内存增长过大: %d KB，可能存在内存泄漏", cycle, growth/1024)
 				}
@@ -574,24 +582,42 @@ func TestWorkManagerMemoryLeak(t *testing.T) {
 		runtime.ReadMemStats(&m2)
 
 		finalAlloc := m2.Alloc
-		totalGrowth := finalAlloc - initialAlloc
+
+		// 安全计算内存增长，避免uint64下溢
+		var totalGrowth int64
+		if finalAlloc > initialAlloc {
+			totalGrowth = int64(finalAlloc - initialAlloc)
+		} else {
+			totalGrowth = -int64(initialAlloc - finalAlloc) // 内存实际减少了
+		}
 
 		t.Logf("内存测试完成: 初始=%d KB, 最终=%d KB, 总增长=%d KB",
 			initialAlloc/1024, finalAlloc/1024, totalGrowth/1024)
 
-		// 检查是否存在显著内存泄漏
+		// 检查是否存在显著内存泄漏（只有正增长才算泄漏）
 		if totalGrowth > 20*1024*1024 { // 超过20MB
 			t.Errorf("检测到可能的内存泄漏: 总增长 %d KB", totalGrowth/1024)
+		} else if totalGrowth < 0 {
+			t.Logf("内存实际减少了 %d KB，这是正常的GC行为", (-totalGrowth)/1024)
 		}
 	})
 
 	// 子测试3: 分区缓存无限增长测试
 	t.Run("PartitionCacheGrowthTest", func(t *testing.T) {
-		// 清理现有数据
-		mockStrategy.Partitions = make(map[int]*model.PartitionInfo)
+		// 创建新的 PartitionAssigner 实例以确保测试隔离
+		freshMockStrategy := test_utils.NewMockPartitionStrategy()
+		freshPartitionMgr := NewPartitionAssigner(
+			PartitionAssignerConfig{
+				Namespace:               "PartitionCacheGrowthTest",
+				WorkerPartitionMultiple: 1,
+			},
+			freshMockStrategy, // 使用新的mock策略
+			test_utils.NewMockLogger(false),
+			mockPlaner,
+		)
 
 		// 检查分区范围缓存的初始状态
-		initialCacheSize := len(partitionMgr.knownPartitionRanges)
+		initialCacheSize := len(freshPartitionMgr.knownPartitionRanges)
 		t.Logf("初始分区范围缓存大小: %d", initialCacheSize)
 
 		// 模拟大量分区创建
@@ -603,18 +629,18 @@ func TestWorkManagerMemoryLeak(t *testing.T) {
 				Status:      model.StatusCompleted,
 				WorkerID:    fmt.Sprintf("worker-%d", i%10),
 			}
-			mockStrategy.Partitions[i] = partition
+			freshMockStrategy.Partitions[i] = partition
 		}
 
 		// 执行多次缺口检测，每次都会更新缓存
 		activeWorkers := []string{"worker-1", "worker-2"}
 		for round := 0; round < 10; round++ {
-			_, err := partitionMgr.DetectAndCreateGapPartitions(context.Background(), activeWorkers, len(mockStrategy.Partitions))
+			_, err := freshPartitionMgr.DetectAndCreateGapPartitions(context.Background(), activeWorkers, len(freshMockStrategy.Partitions))
 			if err != nil {
 				t.Errorf("Round %d: 缺口检测失败: %v", round, err)
 			}
 
-			currentCacheSize := len(partitionMgr.knownPartitionRanges)
+			currentCacheSize := len(freshPartitionMgr.knownPartitionRanges)
 			t.Logf("Round %d: 分区范围缓存大小: %d", round, currentCacheSize)
 
 			// 检查缓存是否在无控制地增长
@@ -623,13 +649,13 @@ func TestWorkManagerMemoryLeak(t *testing.T) {
 			}
 		}
 
-		finalCacheSize := len(partitionMgr.knownPartitionRanges)
+		finalCacheSize := len(freshPartitionMgr.knownPartitionRanges)
 		t.Logf("最终分区范围缓存大小: %d", finalCacheSize)
 
 		// 验证缓存大小是否合理
-		if finalCacheSize > len(mockStrategy.Partitions)*2 {
+		if finalCacheSize > len(freshMockStrategy.Partitions)*2 {
 			t.Errorf("分区范围缓存异常增长: 实际分区=%d, 缓存大小=%d",
-				len(mockStrategy.Partitions), finalCacheSize)
+				len(freshMockStrategy.Partitions), finalCacheSize)
 		}
 	})
 }

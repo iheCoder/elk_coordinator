@@ -2,8 +2,8 @@ package leader
 
 import (
 	"context"
-	"elk_coordinator/model"
-	"elk_coordinator/test_utils"
+	"github.com/iheCoder/elk_coordinator/model"
+	"github.com/iheCoder/elk_coordinator/test_utils"
 	"testing"
 	"time"
 
