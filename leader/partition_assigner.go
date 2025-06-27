@@ -2,18 +2,21 @@ package leader
 
 import (
 	"context"
+	"sort"
+	"time"
+
 	"github.com/iheCoder/elk_coordinator/metrics"
 	"github.com/iheCoder/elk_coordinator/model"
 	"github.com/iheCoder/elk_coordinator/partition"
 	"github.com/iheCoder/elk_coordinator/utils"
-	"sort"
-	"time"
 
 	"github.com/pkg/errors"
 )
 
 const (
 	DefaultRangeSize = 1000_000
+	// 缓存清理阈值：当缓存中的范围超过这个数量时触发清理
+	MaxCachedRanges = 1000
 )
 
 // PartitionRange 表示分区的数据范围
@@ -40,6 +43,7 @@ type PartitionAssigner struct {
 	planer               PartitionPlaner
 	lastGapDetectionID   int              // 上次缺口检测时的最大分区ID
 	knownPartitionRanges []PartitionRange // 已知的分区范围缓存
+	confirmedNoGapMaxID  int64            // 已确认无缺口的最大ID，小于等于此ID的范围可以清理
 }
 
 // NewPartitionAssigner 创建新的分区管理器
@@ -453,7 +457,71 @@ func (pm *PartitionAssigner) incrementalGapDetection(ctx context.Context, maxPar
 	return gapPartitions, nil
 }
 
-// rebuildPartitionRangeCache 重建分区范围缓存
+// cleanupOldPartitionRanges 清理不再需要的旧分区范围
+func (pm *PartitionAssigner) cleanupOldPartitionRanges() {
+	if len(pm.knownPartitionRanges) <= MaxCachedRanges {
+		return
+	}
+
+	originalCount := len(pm.knownPartitionRanges)
+
+	// 按MinID排序，确保顺序
+	sort.Slice(pm.knownPartitionRanges, func(i, j int) bool {
+		return pm.knownPartitionRanges[i].MinID < pm.knownPartitionRanges[j].MinID
+	})
+
+	// 找到连续无缺口的分区范围
+	var newRanges []PartitionRange
+	var maxConfirmedID int64 = 0
+
+	// 找到最大的连续无缺口范围
+	for i := 0; i < len(pm.knownPartitionRanges)-1; i++ {
+		current := pm.knownPartitionRanges[i]
+		next := pm.knownPartitionRanges[i+1]
+
+		// 如果当前分区和下一个分区是连续的，更新已确认的最大ID
+		if current.MaxID+1 == next.MinID {
+			maxConfirmedID = current.MaxID
+		} else {
+			// 遇到缺口，停止
+			break
+		}
+	}
+
+	// 保留最近的一些分区范围用于边界检测，删除已确认无缺口的旧范围
+	// 直接按分区数量保留，而不是按ID范围（避免硬编码倍数）
+	if len(pm.knownPartitionRanges) > MaxCachedRanges {
+		// 按分区ID升序排列，保持与其他地方的一致性
+		sort.Slice(pm.knownPartitionRanges, func(i, j int) bool {
+			return pm.knownPartitionRanges[i].PartitionID < pm.knownPartitionRanges[j].PartitionID
+		})
+
+		// 保留最新的分区（分区ID更大的）
+		keepCount := MaxCachedRanges / 2
+		startIdx := len(pm.knownPartitionRanges) - keepCount
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		newRanges = pm.knownPartitionRanges[startIdx:]
+	} else {
+		// 如果总数没超过限制，保留所有分区
+		newRanges = pm.knownPartitionRanges
+	}
+
+	pm.knownPartitionRanges = newRanges
+	pm.confirmedNoGapMaxID = maxConfirmedID
+
+	pm.logger.Infof("清理分区范围缓存: 清理前 %d 个，清理后 %d 个，已确认无缺口到ID %d",
+		originalCount, len(pm.knownPartitionRanges), maxConfirmedID)
+}
+
+// shouldSkipGapDetection 检查是否应该跳过缺口检测（因为已经确认无缺口）
+func (pm *PartitionAssigner) shouldSkipGapDetection(startID, endID int64) bool {
+	// 如果检测范围完全在已确认无缺口的范围内，跳过检测
+	return startID <= pm.confirmedNoGapMaxID && endID <= pm.confirmedNoGapMaxID
+}
+
+// rebuildPartitionRangeCache 重建分区范围缓存（优化版）
 func (pm *PartitionAssigner) rebuildPartitionRangeCache(allPartitions []*model.PartitionInfo) {
 	pm.knownPartitionRanges = make([]PartitionRange, 0, len(allPartitions))
 	for _, p := range allPartitions {
@@ -470,6 +538,9 @@ func (pm *PartitionAssigner) rebuildPartitionRangeCache(allPartitions []*model.P
 	})
 
 	pm.logger.Debugf("重建分区范围缓存，共 %d 个分区", len(pm.knownPartitionRanges))
+
+	// 触发缓存清理
+	pm.cleanupOldPartitionRanges()
 }
 
 // updatePartitionRangeCache 更新分区范围缓存（增量添加新分区）
@@ -490,6 +561,11 @@ func (pm *PartitionAssigner) updatePartitionRangeCache(newPartitions []*model.Pa
 
 	pm.logger.Debugf("更新分区范围缓存，新增 %d 个分区，总共 %d 个分区",
 		len(newPartitions), len(pm.knownPartitionRanges))
+
+	// 如果缓存过大，触发清理
+	if len(pm.knownPartitionRanges) >= MaxCachedRanges {
+		pm.cleanupOldPartitionRanges()
+	}
 }
 
 // detectGapsAroundNewPartitions 检测新分区附近的缺口
@@ -504,21 +580,28 @@ func (pm *PartitionAssigner) detectGapsAroundNewPartitions(ctx context.Context, 
 		if prevRange != nil && prevRange.MaxID+1 < newPartition.MinID {
 			gapStart := prevRange.MaxID + 1
 			gapEnd := newPartition.MinID - 1
-			gap := DataGap{StartID: gapStart, EndID: gapEnd}
-			gaps = append(gaps, gap)
-			pm.logger.Debugf("发现新分区 %d 前面的缺口: [%d, %d]",
-				newPartition.PartitionID, gapStart, gapEnd)
 
+			// 跳过已确认无缺口的范围
+			if !pm.shouldSkipGapDetection(gapStart, gapEnd) {
+				gap := DataGap{StartID: gapStart, EndID: gapEnd}
+				gaps = append(gaps, gap)
+				pm.logger.Debugf("发现新分区 %d 前面的缺口: [%d, %d]",
+					newPartition.PartitionID, gapStart, gapEnd)
+			}
 		}
 
 		// 检查后面的缺口
 		if nextRange != nil && newPartition.MaxID+1 < nextRange.MinID {
 			gapStart := newPartition.MaxID + 1
 			gapEnd := nextRange.MinID - 1
-			gap := DataGap{StartID: gapStart, EndID: gapEnd}
-			gaps = append(gaps, gap)
-			pm.logger.Debugf("发现新分区 %d 后面的缺口: [%d, %d]",
-				newPartition.PartitionID, gapStart, gapEnd)
+
+			// 跳过已确认无缺口的范围
+			if !pm.shouldSkipGapDetection(gapStart, gapEnd) {
+				gap := DataGap{StartID: gapStart, EndID: gapEnd}
+				gaps = append(gaps, gap)
+				pm.logger.Debugf("发现新分区 %d 后面的缺口: [%d, %d]",
+					newPartition.PartitionID, gapStart, gapEnd)
+			}
 		}
 	}
 
@@ -529,6 +612,7 @@ func (pm *PartitionAssigner) detectGapsAroundNewPartitions(ctx context.Context, 
 // findAdjacentRanges 在缓存中查找指定范围的前后相邻分区
 func (pm *PartitionAssigner) findAdjacentRanges(minID, maxID int64, currentPartitionID int) (*PartitionRange, *PartitionRange) {
 	var prevRange, nextRange *PartitionRange
+	var hasFrontOverlap, hasBackOverlap bool
 
 	for i := range pm.knownPartitionRanges {
 		r := &pm.knownPartitionRanges[i]
@@ -538,19 +622,54 @@ func (pm *PartitionAssigner) findAdjacentRanges(minID, maxID int64, currentParti
 			continue
 		}
 
-		// 查找前面最近的分区
+		// 检查是否有重叠
+		if !(r.MaxID < minID || r.MinID > maxID) {
+			// 有重叠，记录警告
+			pm.logger.Warnf("查找范围 [%d, %d] 与现有分区 %d [%d, %d] 重叠，这可能表示分区边界错误",
+				minID, maxID, r.PartitionID, r.MinID, r.MaxID)
+
+			// 检查前部分重叠：现有分区覆盖了新分区的前部分
+			if r.MinID <= minID && r.MaxID >= minID {
+				hasFrontOverlap = true
+			}
+
+			// 检查后部分重叠：现有分区覆盖了新分区的后部分
+			if r.MinID <= maxID && r.MaxID >= maxID {
+				hasBackOverlap = true
+			}
+
+			// 如果前后都有重叠，直接返回nil
+			if hasFrontOverlap && hasBackOverlap {
+				return nil, nil
+			}
+
+			// 跳过重叠的分区，不作为相邻分区
+			continue
+		}
+
+		// 查找前面最近的分区（完全在查找范围之前）
 		if r.MaxID < minID {
 			if prevRange == nil || r.MaxID > prevRange.MaxID {
 				prevRange = r
 			}
 		}
 
-		// 查找后面最近的分区
+		// 查找后面最近的分区（完全在查找范围之后）
 		if r.MinID > maxID {
 			if nextRange == nil || r.MinID < nextRange.MinID {
 				nextRange = r
 			}
 		}
+	}
+
+	// 如果前部分有重叠，前邻居设为nil
+	if hasFrontOverlap {
+		prevRange = nil
+	}
+
+	// 如果后部分有重叠，后邻居设为nil
+	if hasBackOverlap {
+		nextRange = nil
 	}
 
 	return prevRange, nextRange
@@ -575,7 +694,7 @@ func (pm *PartitionAssigner) deduplicateGaps(gaps []DataGap) []DataGap {
 	return unique
 }
 
-// createGapPartitions 为缺口创建分区（提取的公共方法）
+// createGapPartitions 为缺口创建分区
 func (pm *PartitionAssigner) createGapPartitions(ctx context.Context, gaps []DataGap, maxPartitionID int) ([]model.CreatePartitionRequest, error) {
 	// 获取分区大小，只调用一次
 	partitionSize, err := pm.GetEffectivePartitionSize(ctx)
@@ -615,11 +734,10 @@ func (pm *PartitionAssigner) detectGapsBetweenPartitions(ctx context.Context, al
 		return nil
 	}
 
-	// 简单排序分区（按MinID）
+	// 排序分区（按MinID）
 	sortedPartitions := make([]*model.PartitionInfo, len(allPartitions))
 	copy(sortedPartitions, allPartitions)
 
-	// 使用标准库的sort进行排序，效率更高
 	sort.Slice(sortedPartitions, func(i, j int) bool {
 		return sortedPartitions[i].MinID < sortedPartitions[j].MinID
 	})
@@ -636,12 +754,15 @@ func (pm *PartitionAssigner) detectGapsBetweenPartitions(ctx context.Context, al
 			gapStart := current.MaxID + 1
 			gapEnd := next.MinID - 1
 
-			gap := DataGap{
-				StartID: gapStart,
-				EndID:   gapEnd,
+			// 跳过已确认无缺口的范围
+			if !pm.shouldSkipGapDetection(gapStart, gapEnd) {
+				gap := DataGap{
+					StartID: gapStart,
+					EndID:   gapEnd,
+				}
+				gaps = append(gaps, gap)
+				pm.logger.Debugf("发现分区间数据缺口: [%d, %d]", gap.StartID, gap.EndID)
 			}
-			gaps = append(gaps, gap)
-			pm.logger.Debugf("发现分区间数据缺口: [%d, %d]", gap.StartID, gap.EndID)
 		}
 	}
 

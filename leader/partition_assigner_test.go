@@ -3,12 +3,13 @@ package leader
 import (
 	"context"
 	"fmt"
-	"github.com/iheCoder/elk_coordinator/model"
-	"github.com/iheCoder/elk_coordinator/test_utils"
-	"github.com/iheCoder/elk_coordinator/utils"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/iheCoder/elk_coordinator/model"
+	"github.com/iheCoder/elk_coordinator/test_utils"
+	"github.com/iheCoder/elk_coordinator/utils"
 )
 
 // mockPartitionPlaner 实现PartitionPlaner接口
@@ -1250,4 +1251,596 @@ func TestCalculateLookAheadRangeWithOverflow(t *testing.T) {
 	}
 
 	t.Logf("溢出保护后的探测范围: %d", rangeSize)
+}
+
+// TestCacheOptimization 测试缓存优化功能
+func TestCacheOptimization(t *testing.T) {
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	mockPlaner := &mockPartitionPlaner{
+		suggestedPartitionSize: 1000,
+		nextMaxID:              10000,
+	}
+
+	config := PartitionAssignerConfig{
+		Namespace:               "test",
+		WorkerPartitionMultiple: 3,
+	}
+
+	logger := utils.NewDefaultLogger()
+	assigner := NewPartitionAssigner(config, mockStrategy, logger, mockPlaner)
+
+	t.Run("测试初始状态", func(t *testing.T) {
+		// 验证初始状态
+		if len(assigner.knownPartitionRanges) != 0 {
+			t.Errorf("期望初始分区范围为0，得到 %d", len(assigner.knownPartitionRanges))
+		}
+
+		if assigner.lastGapDetectionID != 0 {
+			t.Errorf("期望初始检测ID为0，得到 %d", assigner.lastGapDetectionID)
+		}
+
+		if assigner.confirmedNoGapMaxID != 0 {
+			t.Errorf("期望初始确认ID为0，得到 %d", assigner.confirmedNoGapMaxID)
+		}
+	})
+
+	t.Run("测试缓存清理功能", func(t *testing.T) {
+		// 模拟添加大量分区到缓存
+		var testPartitions []*model.PartitionInfo
+		for i := 1; i <= MaxCachedRanges+200; i++ {
+			partition := &model.PartitionInfo{
+				PartitionID: i,
+				MinID:       int64((i-1)*1000 + 1),
+				MaxID:       int64(i * 1000),
+				Status:      model.StatusCompleted,
+				UpdatedAt:   time.Now(),
+			}
+			testPartitions = append(testPartitions, partition)
+		}
+
+		// 重建缓存，这应该触发清理
+		assigner.rebuildPartitionRangeCache(testPartitions)
+
+		// 验证缓存被清理了
+		cacheSize := len(assigner.knownPartitionRanges)
+		if cacheSize > MaxCachedRanges {
+			t.Errorf("缓存清理后仍然超过阈值: %d > %d", cacheSize, MaxCachedRanges)
+		}
+
+		// 验证确认无缺口的ID被更新
+		if assigner.confirmedNoGapMaxID <= 0 {
+			t.Errorf("期望确认无缺口ID大于0，得到 %d", assigner.confirmedNoGapMaxID)
+		}
+
+		t.Logf("缓存清理后: 缓存大小=%d, 确认无缺口ID=%d", cacheSize, assigner.confirmedNoGapMaxID)
+	})
+}
+
+// TestShouldSkipGapDetection 测试缺口检测跳过逻辑
+func TestShouldSkipGapDetection(t *testing.T) {
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	mockPlaner := &mockPartitionPlaner{
+		suggestedPartitionSize: 1000,
+		nextMaxID:              10000,
+	}
+
+	config := PartitionAssignerConfig{
+		Namespace:               "test",
+		WorkerPartitionMultiple: 3,
+	}
+
+	logger := utils.NewDefaultLogger()
+	assigner := NewPartitionAssigner(config, mockStrategy, logger, mockPlaner)
+
+	// 设置已确认无缺口的最大ID
+	assigner.confirmedNoGapMaxID = 5000
+
+	testCases := []struct {
+		name     string
+		startID  int64
+		endID    int64
+		expected bool
+	}{
+		{
+			name:     "完全在确认范围内",
+			startID:  1000,
+			endID:    2000,
+			expected: true,
+		},
+		{
+			name:     "边界情况-正好等于确认ID",
+			startID:  4000,
+			endID:    5000,
+			expected: true,
+		},
+		{
+			name:     "部分超出确认范围",
+			startID:  4000,
+			endID:    6000,
+			expected: false,
+		},
+		{
+			name:     "完全超出确认范围",
+			startID:  6000,
+			endID:    7000,
+			expected: false,
+		},
+		{
+			name:     "起始ID超出",
+			startID:  5001,
+			endID:    6000,
+			expected: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := assigner.shouldSkipGapDetection(tc.startID, tc.endID)
+			if result != tc.expected {
+				t.Errorf("shouldSkipGapDetection(%d, %d) = %v, 期望 %v",
+					tc.startID, tc.endID, result, tc.expected)
+			}
+		})
+	}
+}
+
+// TestCleanupOldPartitionRanges 测试旧分区范围清理
+func TestCleanupOldPartitionRanges(t *testing.T) {
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	mockPlaner := &mockPartitionPlaner{
+		suggestedPartitionSize: 1000,
+		nextMaxID:              10000,
+	}
+
+	config := PartitionAssignerConfig{
+		Namespace:               "test",
+		WorkerPartitionMultiple: 3,
+	}
+
+	logger := utils.NewDefaultLogger()
+	assigner := NewPartitionAssigner(config, mockStrategy, logger, mockPlaner)
+
+	t.Run("小于阈值时不清理", func(t *testing.T) {
+		// 添加少量分区
+		for i := 1; i <= 100; i++ {
+			assigner.knownPartitionRanges = append(assigner.knownPartitionRanges, PartitionRange{
+				PartitionID: i,
+				MinID:       int64((i-1)*1000 + 1),
+				MaxID:       int64(i * 1000),
+			})
+		}
+
+		originalCount := len(assigner.knownPartitionRanges)
+		assigner.cleanupOldPartitionRanges()
+
+		// 应该没有清理
+		if len(assigner.knownPartitionRanges) != originalCount {
+			t.Errorf("不应该清理缓存，原来 %d 个，现在 %d 个",
+				originalCount, len(assigner.knownPartitionRanges))
+		}
+	})
+
+	t.Run("超过阈值时清理", func(t *testing.T) {
+		// 清空并添加大量连续分区
+		assigner.knownPartitionRanges = nil
+		for i := 1; i <= MaxCachedRanges+100; i++ {
+			assigner.knownPartitionRanges = append(assigner.knownPartitionRanges, PartitionRange{
+				PartitionID: i,
+				MinID:       int64((i-1)*1000 + 1),
+				MaxID:       int64(i * 1000),
+			})
+		}
+
+		originalCount := len(assigner.knownPartitionRanges)
+		assigner.cleanupOldPartitionRanges()
+
+		// 应该被清理了
+		if len(assigner.knownPartitionRanges) >= originalCount {
+			t.Errorf("缓存应该被清理，原来 %d 个，现在 %d 个",
+				originalCount, len(assigner.knownPartitionRanges))
+		}
+
+		// 确认ID应该被更新
+		if assigner.confirmedNoGapMaxID <= 0 {
+			t.Errorf("确认无缺口ID应该被更新，得到 %d", assigner.confirmedNoGapMaxID)
+		}
+
+		t.Logf("清理结果: 原来 %d 个，现在 %d 个，确认无缺口ID: %d",
+			originalCount, len(assigner.knownPartitionRanges), assigner.confirmedNoGapMaxID)
+	})
+
+	t.Run("有缺口时的清理", func(t *testing.T) {
+		// 清空并添加有缺口的分区
+		assigner.knownPartitionRanges = nil
+		assigner.confirmedNoGapMaxID = 0
+
+		for i := 1; i <= MaxCachedRanges+100; i++ {
+			// 在第50个分区制造缺口
+			minID := int64((i-1)*1000 + 1)
+			if i > 50 {
+				minID += 10000 // 制造缺口
+			}
+
+			assigner.knownPartitionRanges = append(assigner.knownPartitionRanges, PartitionRange{
+				PartitionID: i,
+				MinID:       minID,
+				MaxID:       minID + 999,
+			})
+		}
+
+		originalCount := len(assigner.knownPartitionRanges)
+		assigner.cleanupOldPartitionRanges()
+
+		// 应该被清理了，但确认ID应该较小（因为有缺口）
+		if len(assigner.knownPartitionRanges) >= originalCount {
+			t.Errorf("缓存应该被清理，原来 %d 个，现在 %d 个",
+				originalCount, len(assigner.knownPartitionRanges))
+		}
+
+		// 确认ID应该只到缺口前
+		expectedMaxConfirmedID := int64(49 * 1000) // 第49个分区的MaxID
+		if assigner.confirmedNoGapMaxID > expectedMaxConfirmedID {
+			t.Errorf("确认无缺口ID不应该超过 %d，得到 %d",
+				expectedMaxConfirmedID, assigner.confirmedNoGapMaxID)
+		}
+
+		t.Logf("有缺口的清理结果: 原来 %d 个，现在 %d 个，确认无缺口ID: %d",
+			originalCount, len(assigner.knownPartitionRanges), assigner.confirmedNoGapMaxID)
+	})
+}
+
+// TestDeduplicateGaps 测试缺口去重功能
+func TestDeduplicateGaps(t *testing.T) {
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	mockPlaner := &mockPartitionPlaner{
+		suggestedPartitionSize: 1000,
+		nextMaxID:              10000,
+	}
+
+	config := PartitionAssignerConfig{
+		Namespace:               "test",
+		WorkerPartitionMultiple: 3,
+	}
+
+	logger := utils.NewDefaultLogger()
+	assigner := NewPartitionAssigner(config, mockStrategy, logger, mockPlaner)
+
+	testCases := []struct {
+		name     string
+		input    []DataGap
+		expected int
+	}{
+		{
+			name:     "空缺口列表",
+			input:    []DataGap{},
+			expected: 0,
+		},
+		{
+			name: "单个缺口",
+			input: []DataGap{
+				{StartID: 1001, EndID: 1500},
+			},
+			expected: 1,
+		},
+		{
+			name: "无重复缺口",
+			input: []DataGap{
+				{StartID: 1001, EndID: 1500},
+				{StartID: 2001, EndID: 2500},
+				{StartID: 3001, EndID: 3500},
+			},
+			expected: 3,
+		},
+		{
+			name: "有重复缺口",
+			input: []DataGap{
+				{StartID: 1001, EndID: 1500},
+				{StartID: 2001, EndID: 2500},
+				{StartID: 1001, EndID: 1500}, // 重复
+				{StartID: 3001, EndID: 3500},
+				{StartID: 2001, EndID: 2500}, // 重复
+			},
+			expected: 3,
+		},
+		{
+			name: "完全重复",
+			input: []DataGap{
+				{StartID: 1001, EndID: 1500},
+				{StartID: 1001, EndID: 1500},
+				{StartID: 1001, EndID: 1500},
+			},
+			expected: 1,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := assigner.deduplicateGaps(tc.input)
+			if len(result) != tc.expected {
+				t.Errorf("期望去重后有 %d 个缺口，得到 %d 个", tc.expected, len(result))
+			}
+
+			// 验证结果中没有重复
+			seen := make(map[DataGap]bool)
+			for _, gap := range result {
+				if seen[gap] {
+					t.Errorf("去重后仍有重复缺口: %+v", gap)
+				}
+				seen[gap] = true
+			}
+		})
+	}
+}
+
+// TestUpdatePartitionRangeCache 测试分区范围缓存更新
+func TestUpdatePartitionRangeCache(t *testing.T) {
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	mockPlaner := &mockPartitionPlaner{
+		suggestedPartitionSize: 1000,
+		nextMaxID:              10000,
+	}
+
+	config := PartitionAssignerConfig{
+		Namespace:               "test",
+		WorkerPartitionMultiple: 3,
+	}
+
+	logger := utils.NewDefaultLogger()
+	assigner := NewPartitionAssigner(config, mockStrategy, logger, mockPlaner)
+
+	t.Run("增量更新缓存", func(t *testing.T) {
+		// 添加初始分区
+		initialPartitions := []*model.PartitionInfo{
+			{
+				PartitionID: 1,
+				MinID:       1,
+				MaxID:       1000,
+				Status:      model.StatusCompleted,
+			},
+			{
+				PartitionID: 2,
+				MinID:       1001,
+				MaxID:       2000,
+				Status:      model.StatusCompleted,
+			},
+		}
+
+		assigner.updatePartitionRangeCache(initialPartitions)
+
+		if len(assigner.knownPartitionRanges) != 2 {
+			t.Errorf("期望缓存有2个分区，得到 %d 个", len(assigner.knownPartitionRanges))
+		}
+
+		// 添加新分区
+		newPartitions := []*model.PartitionInfo{
+			{
+				PartitionID: 3,
+				MinID:       2001,
+				MaxID:       3000,
+				Status:      model.StatusCompleted,
+			},
+		}
+
+		assigner.updatePartitionRangeCache(newPartitions)
+
+		if len(assigner.knownPartitionRanges) != 3 {
+			t.Errorf("期望缓存有3个分区，得到 %d 个", len(assigner.knownPartitionRanges))
+		}
+
+		// 验证排序
+		for i := 0; i < len(assigner.knownPartitionRanges)-1; i++ {
+			current := assigner.knownPartitionRanges[i]
+			next := assigner.knownPartitionRanges[i+1]
+			if current.MinID >= next.MinID {
+				t.Errorf("缓存排序错误: [%d].MinID=%d >= [%d].MinID=%d",
+					i, current.MinID, i+1, next.MinID)
+			}
+		}
+	})
+
+	t.Run("达到阈值时触发清理", func(t *testing.T) {
+		// 清空缓存
+		assigner.knownPartitionRanges = nil
+
+		// 添加接近阈值的分区
+		var partitions []*model.PartitionInfo
+		for i := 1; i <= MaxCachedRanges-10; i++ {
+			partitions = append(partitions, &model.PartitionInfo{
+				PartitionID: i,
+				MinID:       int64((i-1)*1000 + 1),
+				MaxID:       int64(i * 1000),
+				Status:      model.StatusCompleted,
+			})
+		}
+
+		assigner.updatePartitionRangeCache(partitions)
+		beforeCount := len(assigner.knownPartitionRanges)
+
+		// 添加足够的分区触发清理
+		var newPartitions []*model.PartitionInfo
+		for i := MaxCachedRanges - 9; i <= MaxCachedRanges+50; i++ {
+			newPartitions = append(newPartitions, &model.PartitionInfo{
+				PartitionID: i,
+				MinID:       int64((i-1)*1000 + 1),
+				MaxID:       int64(i * 1000),
+				Status:      model.StatusCompleted,
+			})
+		}
+
+		assigner.updatePartitionRangeCache(newPartitions)
+		afterCount := len(assigner.knownPartitionRanges)
+
+		// 验证清理被触发
+		if afterCount >= beforeCount+len(newPartitions) {
+			t.Errorf("期望清理被触发，清理前约 %d 个，应该少于 %d 个，实际 %d 个",
+				beforeCount, beforeCount+len(newPartitions), afterCount)
+		}
+
+		t.Logf("阈值触发清理: 清理前约 %d 个，清理后 %d 个",
+			beforeCount+len(newPartitions), afterCount)
+	})
+}
+
+// TestFindAdjacentRanges 测试查找相邻分区功能
+func TestFindAdjacentRanges(t *testing.T) {
+	mockStrategy := test_utils.NewMockPartitionStrategy()
+	mockPlaner := &mockPartitionPlaner{
+		suggestedPartitionSize: 1000,
+		nextMaxID:              10000,
+	}
+
+	config := PartitionAssignerConfig{
+		Namespace:               "test",
+		WorkerPartitionMultiple: 3,
+	}
+
+	logger := utils.NewDefaultLogger()
+	assigner := NewPartitionAssigner(config, mockStrategy, logger, mockPlaner)
+
+	// 设置测试分区
+	assigner.knownPartitionRanges = []PartitionRange{
+		{PartitionID: 1, MinID: 1, MaxID: 1000},
+		{PartitionID: 2, MinID: 1001, MaxID: 2000},
+		{PartitionID: 3, MinID: 3001, MaxID: 4000}, // 故意留出2001-3000的缺口
+		{PartitionID: 4, MinID: 4001, MaxID: 5000},
+		{PartitionID: 5, MinID: 6001, MaxID: 7000}, // 故意留出5001-6000的缺口
+	}
+
+	testCases := []struct {
+		name           string
+		minID          int64
+		maxID          int64
+		currentPartID  int
+		expectedPrevID int
+		expectedNextID int
+	}{
+		{
+			name:           "查找中间分区的相邻",
+			minID:          2001,
+			maxID:          3000,
+			currentPartID:  999, // 不存在的ID
+			expectedPrevID: 2,   // 分区2在前面
+			expectedNextID: 3,   // 分区3在后面
+		},
+		{
+			name:           "查找第一个分区前面",
+			minID:          500,
+			maxID:          800,
+			currentPartID:  999,
+			expectedPrevID: 0, // 被包含，返回nil
+			expectedNextID: 0, // 被包含，返回nil
+		},
+		{
+			name:           "查找完全在所有分区前面的范围",
+			minID:          -100,
+			maxID:          -1,
+			currentPartID:  999,
+			expectedPrevID: 0, // 没有前面的分区
+			expectedNextID: 1, // 分区1在后面
+		},
+		{
+			name:           "查找最后一个分区后面",
+			minID:          7001,
+			maxID:          8000,
+			currentPartID:  999,
+			expectedPrevID: 5, // 分区5在前面
+			expectedNextID: 0, // 没有后面的分区
+		},
+		{
+			name:           "跳过当前分区",
+			minID:          3001,
+			maxID:          4000,
+			currentPartID:  3, // 分区3自己
+			expectedPrevID: 2, // 分区2在前面
+			expectedNextID: 4, // 分区4在后面
+		},
+		{
+			name:           "查找完全在前面的范围",
+			minID:          -100,
+			maxID:          0,
+			currentPartID:  999,
+			expectedPrevID: 0, // 没有前面的分区
+			expectedNextID: 1, // 分区1在后面
+		},
+		{
+			name:           "前部分重叠-与分区2重叠",
+			minID:          1500,
+			maxID:          2500,
+			currentPartID:  999,
+			expectedPrevID: 0, // 前部分与分区2重叠，前邻居为nil
+			expectedNextID: 3, // 分区3在后面
+		},
+		{
+			name:           "纯前部分重叠",
+			minID:          1800,
+			maxID:          2500,
+			currentPartID:  999,
+			expectedPrevID: 0, // 前部分与分区2重叠，前邻居为nil
+			expectedNextID: 3, // 分区3在后面
+		},
+		{
+			name:           "后部分重叠-与分区2重叠",
+			minID:          900,
+			maxID:          1500,
+			currentPartID:  999,
+			expectedPrevID: 0, // 前部分与分区1重叠，前邻居为nil
+			expectedNextID: 0, // 后部分与分区2重叠，后邻居为nil
+		},
+		{
+			name:           "全部重叠",
+			minID:          500,
+			maxID:          1200,
+			currentPartID:  999,
+			expectedPrevID: 0, // 没有完全在前面的分区
+			expectedNextID: 0, // 后部分与分区1重叠，后邻居为nil
+		},
+		{
+			name:           "完全被包含-被分区2包含",
+			minID:          1100,
+			maxID:          1900,
+			currentPartID:  999,
+			expectedPrevID: 0, // 前后都重叠，返回nil
+			expectedNextID: 0, // 前后都重叠，返回nil
+		},
+		{
+			name:           "跨越两个分区-与分区2和3都重叠",
+			minID:          1800,
+			maxID:          3200,
+			currentPartID:  999,
+			expectedPrevID: 0, // 前部分与分区2重叠，前邻居为nil
+			expectedNextID: 0, // 后部分与分区3重叠，后邻居为nil
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			prevRange, nextRange := assigner.findAdjacentRanges(tc.minID, tc.maxID, tc.currentPartID)
+
+			// 检查前面的分区
+			if tc.expectedPrevID == 0 {
+				if prevRange != nil {
+					t.Errorf("期望没有前面的分区，但得到分区 %d", prevRange.PartitionID)
+				}
+			} else {
+				if prevRange == nil {
+					t.Errorf("期望前面分区ID为 %d，但得到 nil", tc.expectedPrevID)
+				} else if prevRange.PartitionID != tc.expectedPrevID {
+					t.Errorf("期望前面分区ID为 %d，得到 %d", tc.expectedPrevID, prevRange.PartitionID)
+				}
+			}
+
+			// 检查后面的分区
+			if tc.expectedNextID == 0 {
+				if nextRange != nil {
+					t.Errorf("期望没有后面的分区，但得到分区 %d", nextRange.PartitionID)
+				}
+			} else {
+				if nextRange == nil {
+					t.Errorf("期望后面分区ID为 %d，但得到 nil", tc.expectedNextID)
+				} else if nextRange.PartitionID != tc.expectedNextID {
+					t.Errorf("期望后面分区ID为 %d，得到 %d", tc.expectedNextID, nextRange.PartitionID)
+				}
+			}
+		})
+	}
 }
