@@ -570,9 +570,21 @@ func (d *RedisDataStore) DeleteCommand(ctx context.Context, namespace, commandID
 
 // ==================== 分区统计管理实现 ====================
 
-// InitPartitionStats 初始化分区统计数据
+// InitPartitionStats 初始化分区统计数据（幂等操作）
+// 只有在统计数据不存在时才会初始化，避免覆盖现有统计数据
 func (d *RedisDataStore) InitPartitionStats(ctx context.Context, statsKey string) error {
 	key := d.prefixKey(statsKey)
+
+	// 检查统计数据是否已存在
+	exists, err := d.rds.Exists(ctx, key).Result()
+	if err != nil {
+		return err
+	}
+
+	// 如果统计数据已存在，跳过初始化
+	if exists > 0 {
+		return nil
+	}
 
 	// 初始化所有统计字段为0
 	initialStats := map[string]interface{}{
