@@ -1844,3 +1844,176 @@ func TestFindAdjacentRanges(t *testing.T) {
 		})
 	}
 }
+
+// TestAllocatePartitions_PendingThresholdControl 测试积压控制功能
+func TestAllocatePartitions_PendingThresholdControl(t *testing.T) {
+	ctx := context.Background()
+	logger := test_utils.NewMockLogger(false)
+
+	testCases := []struct {
+		name                 string
+		maxPendingPartitions int
+		pendingPartitions    int
+		shouldAllocate       bool
+		description          string
+	}{
+		{
+			name:                 "正常分配_待处理分区未超过阈值",
+			maxPendingPartitions: 1000,
+			pendingPartitions:    500, // 少于阈值
+			shouldAllocate:       true,
+			description:          "当待处理分区数量未超过阈值时，应该正常分配新分区",
+		},
+		{
+			name:                 "跳过分配_待处理分区等于阈值",
+			maxPendingPartitions: 1000,
+			pendingPartitions:    1000, // 等于阈值
+			shouldAllocate:       false,
+			description:          "当待处理分区数量等于阈值时，应该跳过分配",
+		},
+		{
+			name:                 "跳过分配_待处理分区超过阈值",
+			maxPendingPartitions: 1000,
+			pendingPartitions:    1500, // 超过阈值
+			shouldAllocate:       false,
+			description:          "当待处理分区数量超过阈值时，应该跳过分配",
+		},
+		{
+			name:                 "小阈值测试_跳过分配",
+			maxPendingPartitions: 10,
+			pendingPartitions:    15,
+			shouldAllocate:       false,
+			description:          "测试小阈值情况下的积压控制",
+		},
+		{
+			name:                 "混合状态测试_pending和claimed计入总数",
+			maxPendingPartitions: 100,
+			pendingPartitions:    80, // pending 80个，加上 claimed 30个，总共110个超过阈值
+			shouldAllocate:       false,
+			description:          "测试pending和claimed状态都计入待处理分区总数",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// 为每个测试用例创建新的 mock strategy
+			mockStrategy := test_utils.NewMockPartitionStrategy()
+
+			// 创建一个模拟的 planer，设置有新数据可分配
+			planer := &mockPartitionPlaner{
+				suggestedPartitionSize: 1000,
+				nextMaxID:              int64(tc.pendingPartitions+1000) * 1000, // 设置比现有分区更大的数据ID
+			}
+
+			// 创建分区分配器，使用测试案例的配置
+			config := PartitionAssignerConfig{
+				Namespace:               "test",
+				WorkerPartitionMultiple: 5,
+				MaxPendingPartitions:    tc.maxPendingPartitions,
+			}
+			assigner := NewPartitionAssigner(config, mockStrategy, logger, planer)
+
+			// 设置模拟的分区数据来达到期望的pending数量
+			if tc.name == "混合状态测试_pending和claimed计入总数" {
+				// 特殊处理：创建80个pending + 30个claimed = 110个待处理分区
+				// 创建80个pending分区
+				for i := 1; i <= tc.pendingPartitions; i++ {
+					partition := &model.PartitionInfo{
+						PartitionID: i,
+						MinID:       int64((i-1)*1000 + 1),
+						MaxID:       int64(i * 1000),
+						Status:      model.StatusPending,
+						UpdatedAt:   time.Now(),
+						CreatedAt:   time.Now(),
+					}
+					mockStrategy.AddPartition(partition)
+				}
+				// 创建30个claimed分区
+				for i := tc.pendingPartitions + 1; i <= tc.pendingPartitions+30; i++ {
+					partition := &model.PartitionInfo{
+						PartitionID: i,
+						MinID:       int64((i-1)*1000 + 1),
+						MaxID:       int64(i * 1000),
+						Status:      model.StatusClaimed,
+						UpdatedAt:   time.Now(),
+						CreatedAt:   time.Now(),
+					}
+					mockStrategy.AddPartition(partition)
+				}
+			} else {
+				// 普通测试：创建指定数量的pending分区
+				for i := 1; i <= tc.pendingPartitions; i++ {
+					partition := &model.PartitionInfo{
+						PartitionID: i,
+						MinID:       int64((i-1)*1000 + 1),
+						MaxID:       int64(i * 1000),
+						Status:      model.StatusPending, // 设置为pending状态
+						UpdatedAt:   time.Now(),
+						CreatedAt:   time.Now(),
+					}
+					mockStrategy.AddPartition(partition)
+				}
+			}
+
+			// 添加一些其他状态的分区
+			startID := tc.pendingPartitions + 1
+			if tc.name == "混合状态测试_pending和claimed计入总数" {
+				// 对于混合状态测试，跳过claimed分区的ID范围
+				startID = tc.pendingPartitions + 31 // 跳过30个claimed分区
+			}
+
+			for i := startID; i <= startID+199; i++ { // 保持添加200个其他状态的分区
+				status := model.StatusCompleted
+				if i%2 == 0 {
+					status = model.StatusRunning
+				}
+				partition := &model.PartitionInfo{
+					PartitionID: i,
+					MinID:       int64((i-1)*1000 + 1),
+					MaxID:       int64(i * 1000),
+					Status:      status,
+					UpdatedAt:   time.Now(),
+					CreatedAt:   time.Now(),
+				}
+				mockStrategy.AddPartition(partition)
+			}
+
+			// 记录分配前的分区数量
+			initialPartitions, _ := mockStrategy.GetAllActivePartitions(ctx)
+			initialCount := len(initialPartitions)
+
+			// 模拟活跃的worker
+			activeWorkers := []string{"worker1", "worker2", "worker3"}
+
+			// 执行分区分配
+			err := assigner.AllocatePartitions(ctx, activeWorkers)
+
+			// 验证结果
+			if err != nil {
+				t.Errorf("分区分配失败: %v", err)
+				return
+			}
+
+			// 检查分配后的分区数量
+			afterPartitions, _ := mockStrategy.GetAllActivePartitions(ctx)
+			afterCount := len(afterPartitions)
+			newPartitionsCount := afterCount - initialCount
+
+			if tc.shouldAllocate {
+				// 应该分配新分区
+				if newPartitionsCount == 0 {
+					t.Errorf("%s: 期望分配新分区，但没有创建任何分区", tc.description)
+				} else {
+					t.Logf("%s: 成功分配了 %d 个新分区", tc.description, newPartitionsCount)
+				}
+			} else {
+				// 应该跳过分配
+				if newPartitionsCount > 0 {
+					t.Errorf("%s: 期望跳过分配，但创建了 %d 个分区", tc.description, newPartitionsCount)
+				} else {
+					t.Logf("%s: 成功跳过分配，符合积压控制预期", tc.description)
+				}
+			}
+		})
+	}
+}

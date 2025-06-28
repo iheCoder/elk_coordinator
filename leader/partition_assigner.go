@@ -15,8 +15,10 @@ import (
 
 const (
 	DefaultRangeSize = 1000_000
-	// 缓存清理阈值：当缓存中的范围超过这个数量时触发清理
+	// MaxCachedRanges 缓存清理阈值：当缓存中的范围超过这个数量时触发清理
 	MaxCachedRanges = 1000
+	// DefaultMaxPendingPartitions 默认的待处理分区阈值：当待处理分区超过此数量时暂停新分区分配
+	DefaultMaxPendingPartitions = 1000
 )
 
 // PartitionRange 表示分区的数据范围
@@ -30,6 +32,8 @@ type PartitionRange struct {
 type PartitionAssignerConfig struct {
 	Namespace               string
 	WorkerPartitionMultiple int64
+	// 最大待处理分区数量阈值，超过此数量时暂停新分区分配
+	MaxPendingPartitions int
 	// 可以添加其他配置参数，如超时时间、重试次数等
 	// RetryCount       int
 	// AllocationTimeout time.Duration
@@ -57,6 +61,9 @@ func NewPartitionAssigner(
 	// 设置默认值
 	if config.WorkerPartitionMultiple <= 0 {
 		config.WorkerPartitionMultiple = model.DefaultWorkerPartitionMultiple
+	}
+	if config.MaxPendingPartitions <= 0 {
+		config.MaxPendingPartitions = DefaultMaxPendingPartitions
 	}
 
 	return &PartitionAssigner{
@@ -115,6 +122,18 @@ func (pm *PartitionAssigner) AllocatePartitions(ctx context.Context, activeWorke
 	// 检查 stats 是否为 nil
 	if stats == nil {
 		return errors.New("分区统计信息为空")
+	}
+
+	// 检查待处理分区数量，如果超过阈值则跳过新分区分配
+	// 待处理分区包括：pending（未被领取）和 claimed（已领取但未开始处理）
+	toRunCount := stats.Pending + stats.Claimed
+	pm.logger.Debugf("分区统计: Total=%d, Pending=%d, Claimed=%d, 待处理总数=%d, 阈值=%d",
+		stats.Total, stats.Pending, stats.Claimed, toRunCount, pm.config.MaxPendingPartitions)
+
+	if toRunCount >= pm.config.MaxPendingPartitions {
+		pm.logger.Infof("待处理分区数量 (%d = %d pending + %d claimed) 超过阈值 (%d)，跳过分区分配和缺口检测",
+			toRunCount, stats.Pending, stats.Claimed, pm.config.MaxPendingPartitions)
+		return nil
 	}
 
 	// 更新分区总数指标
