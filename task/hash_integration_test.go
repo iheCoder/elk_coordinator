@@ -3,6 +3,11 @@ package task
 import (
 	"context"
 	"fmt"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
 	"github.com/alicebob/miniredis/v2"
 	"github.com/iheCoder/elk_coordinator/data"
 	"github.com/iheCoder/elk_coordinator/model"
@@ -12,10 +17,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
-	"sync"
-	"sync/atomic"
-	"testing"
-	"time"
 )
 
 // TestProcessor 测试用的处理器实现
@@ -340,18 +341,18 @@ func TestTaskIntegration_ConcurrentWorkers(t *testing.T) {
 
 	wg.Wait()
 
-	// 验证所有分区都被处理
-	allPartitions, err := strategy.GetAllActivePartitions(ctx)
+	// 验证所有分区都被处理并归档
+	archivedPartitions, err := strategy.GetAllArchivedPartitions(ctx)
 	assert.NoError(t, err)
 
 	completedCount := 0
-	for _, partition := range allPartitions {
+	for _, partition := range archivedPartitions {
 		if partition.Status == model.StatusCompleted {
 			completedCount++
 		}
 	}
 
-	assert.Equal(t, numPartitions, completedCount, "所有分区都应该被处理完成")
+	assert.Equal(t, numPartitions, completedCount, "所有分区都应该被处理完成并归档")
 
 	// 验证处理计数
 	totalProcessedCount := processor.GetProcessCount()

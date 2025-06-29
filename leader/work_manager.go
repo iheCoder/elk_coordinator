@@ -2,14 +2,12 @@ package leader
 
 import (
 	"context"
-	"fmt"
+	"time"
+
 	"github.com/iheCoder/elk_coordinator/data"
 	"github.com/iheCoder/elk_coordinator/metrics"
 	"github.com/iheCoder/elk_coordinator/model"
 	"github.com/iheCoder/elk_coordinator/utils"
-	"time"
-
-	"github.com/pkg/errors"
 )
 
 // WorkManager 负责管理和协调分区分配相关的工作
@@ -24,6 +22,7 @@ type WorkManagerConfig struct {
 	DataStore interface {
 		data.KeyOperations
 		data.HeartbeatOperations
+		data.WorkerRegistry
 	}
 	Logger                 utils.Logger
 	ValidHeartbeatDuration time.Duration // 有效心跳持续时间
@@ -94,40 +93,5 @@ func (wm *WorkManager) tryAllocatePartitions(ctx context.Context, pm *PartitionA
 
 // getActiveWorkers 获取活跃节点列表
 func (wm *WorkManager) getActiveWorkers(ctx context.Context) ([]string, error) {
-	pattern := fmt.Sprintf(model.HeartbeatFmtFmt, wm.config.Namespace, "*")
-	keys, err := wm.config.DataStore.GetKeys(ctx, pattern)
-	if err != nil {
-		return nil, errors.Wrap(err, "获取心跳失败")
-	}
-
-	var activeWorkers []string
-	now := time.Now()
-	validHeartbeatDuration := wm.config.ValidHeartbeatDuration
-
-	for _, key := range keys {
-		// 从key中提取节点ID
-		prefix := fmt.Sprintf(model.HeartbeatFmtFmt, wm.config.Namespace, "")
-		nodeID := key[len(prefix):]
-
-		// 获取最后心跳时间
-		lastHeartbeatStr, err := wm.config.DataStore.GetHeartbeat(ctx, key)
-		if err != nil {
-			continue // 跳过错误的心跳
-		}
-
-		lastHeartbeat, err := time.Parse(time.RFC3339, lastHeartbeatStr)
-		if err != nil {
-			continue // 跳过无效的时间格式
-		}
-
-		// 检查心跳是否有效
-		if now.Sub(lastHeartbeat) <= validHeartbeatDuration {
-			activeWorkers = append(activeWorkers, nodeID)
-		} else {
-			// 删除过期心跳
-			wm.config.DataStore.DeleteKey(ctx, key)
-		}
-	}
-
-	return activeWorkers, nil
+	return wm.config.DataStore.GetActiveWorkers(ctx)
 }

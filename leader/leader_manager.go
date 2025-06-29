@@ -3,13 +3,14 @@ package leader
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
+
 	"github.com/iheCoder/elk_coordinator/data"
 	"github.com/iheCoder/elk_coordinator/metrics"
 	"github.com/iheCoder/elk_coordinator/model"
 	"github.com/iheCoder/elk_coordinator/partition"
 	"github.com/iheCoder/elk_coordinator/utils"
-	"sync"
-	"time"
 )
 
 // LeaderManager 管理选举过程和领导者行为
@@ -79,6 +80,7 @@ type LeaderConfig struct {
 		data.HeartbeatOperations
 		data.SimplePartitionOperations
 		data.CommandOperations
+		data.WorkerRegistry
 	}
 	Logger                  utils.Logger
 	Planer                  PartitionPlaner

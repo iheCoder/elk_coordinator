@@ -271,8 +271,7 @@ func TestLeaderManager_PartitionAllocation(t *testing.T) {
 	// 模拟工作节点心跳
 	workerNodes := []string{"worker1", "worker2", "worker3"}
 	for _, nodeID := range workerNodes {
-		heartbeatKey := fmt.Sprintf(model.HeartbeatFmtFmt, "test", nodeID)
-		err := dataStore.SetHeartbeat(ctx, heartbeatKey, time.Now().Format(time.RFC3339))
+		err := dataStore.RegisterWorker(ctx, nodeID)
 		require.NoError(t, err)
 	}
 
@@ -451,20 +450,11 @@ func TestLeaderManager_ConcurrentWorkerHeartbeats(t *testing.T) {
 		go func(workerID int) {
 			defer wg.Done()
 			nodeID := fmt.Sprintf("worker%d", workerID)
-			heartbeatKey := fmt.Sprintf(model.HeartbeatFmtFmt, "test", nodeID)
-			workersKey := fmt.Sprintf(model.WorkersKeyFmt, "test")
 
-			// 首先注册工作节点
-			err := dataStore.RegisterWorker(ctx, workersKey, nodeID, heartbeatKey, time.Now().Format(time.RFC3339))
+			// 注册工作节点（新API会自动设置心跳）
+			err := dataStore.RegisterWorker(ctx, nodeID)
 			if err != nil {
 				t.Logf("Worker %s 注册失败: %v", nodeID, err)
-				return
-			}
-
-			// 发送初始心跳
-			err = dataStore.SetHeartbeat(ctx, heartbeatKey, time.Now().Format(time.RFC3339))
-			if err != nil {
-				t.Logf("Worker %s 初始心跳失败: %v", nodeID, err)
 				return
 			}
 
@@ -481,7 +471,8 @@ func TestLeaderManager_ConcurrentWorkerHeartbeats(t *testing.T) {
 				case <-stopHeartbeat:
 					return
 				case <-ticker.C:
-					err := dataStore.SetHeartbeat(ctx, heartbeatKey, time.Now().Format(time.RFC3339))
+					// 使用RefreshWorkerHeartbeat刷新心跳（更高效）
+					err := dataStore.RefreshWorkerHeartbeat(ctx, nodeID)
 					if err != nil {
 						t.Logf("Worker %s 心跳失败: %v", nodeID, err)
 					}
@@ -587,18 +578,11 @@ func TestLeaderManager_PartitionCreationWithDifferentStrategies(t *testing.T) {
 			planer.setNextMaxID(tc.nextMaxID)
 
 			// 模拟工作节点心跳和注册
-			workersKey := fmt.Sprintf(model.WorkersKeyFmt, "test")
 			for i := 0; i < tc.workerCount; i++ {
 				nodeID := fmt.Sprintf("worker%d", i)
-				heartbeatKey := fmt.Sprintf(model.HeartbeatFmtFmt, "test", nodeID)
-
-				// 注册工作节点
-				err := dataStore.RegisterWorker(ctx, workersKey, nodeID, heartbeatKey, time.Now().Format(time.RFC3339))
+				// 注册工作节点（新API会自动设置心跳）
+				err := dataStore.RegisterWorker(ctx, nodeID)
 				require.NoError(t, err, "注册工作节点失败")
-
-				// 设置心跳
-				err = dataStore.SetHeartbeat(ctx, heartbeatKey, time.Now().Format(time.RFC3339))
-				require.NoError(t, err, "设置工作节点心跳失败")
 			}
 
 			// 启动leader
@@ -760,12 +744,8 @@ func TestLeaderManager_CommandProcessing(t *testing.T) {
 
 	// 模拟工作节点心跳
 	workerNodes := []string{"worker1", "worker2"}
-	workersKey := fmt.Sprintf(model.WorkersKeyFmt, "test")
 	for _, nodeID := range workerNodes {
-		heartbeatKey := fmt.Sprintf(model.HeartbeatFmtFmt, "test", nodeID)
-		err := dataStore.RegisterWorker(ctx, workersKey, nodeID, heartbeatKey, time.Now().Format(time.RFC3339))
-		require.NoError(t, err)
-		err = dataStore.SetHeartbeat(ctx, heartbeatKey, time.Now().Format(time.RFC3339))
+		err := dataStore.RegisterWorker(ctx, nodeID)
 		require.NoError(t, err)
 	}
 
@@ -909,11 +889,7 @@ func TestLeaderManager_CommandProcessingWithInvalidCommand(t *testing.T) {
 	planer.setNextMaxID(2000)
 
 	// 模拟一个工作节点
-	workersKey := fmt.Sprintf(model.WorkersKeyFmt, "test")
-	heartbeatKey := fmt.Sprintf(model.HeartbeatFmtFmt, "test", "worker1")
-	err := dataStore.RegisterWorker(ctx, workersKey, "worker1", heartbeatKey, time.Now().Format(time.RFC3339))
-	require.NoError(t, err)
-	err = dataStore.SetHeartbeat(ctx, heartbeatKey, time.Now().Format(time.RFC3339))
+	err := dataStore.RegisterWorker(ctx, "worker1")
 	require.NoError(t, err)
 
 	// 启动leader管理器

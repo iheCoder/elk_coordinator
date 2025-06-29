@@ -316,8 +316,11 @@ type DataStore interface {
     
     // 心跳和工作节点管理
     SetHeartbeat(ctx context.Context, key string, value string) error
-    RegisterWorker(ctx context.Context, workersKey, workerID string, heartbeatKey string, heartbeatValue string) error
-    UnregisterWorker(ctx context.Context, workersKey, workerID string, heartbeatKey string) error
+    RegisterWorker(ctx context.Context, workerID string) error
+    UnregisterWorker(ctx context.Context, workerID string) error
+    GetActiveWorkers(ctx context.Context) ([]string, error)
+    GetAllWorkers(ctx context.Context) ([]string, error)
+    IsWorkerActive(ctx context.Context, workerID string) (bool, error)
     
     // 分区和状态操作
     SetPartitions(ctx context.Context, key string, value string) error

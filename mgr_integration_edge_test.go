@@ -3,12 +3,13 @@ package elk_coordinator
 import (
 	"context"
 	"fmt"
-	"github.com/iheCoder/elk_coordinator/data"
-	"github.com/iheCoder/elk_coordinator/model"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/iheCoder/elk_coordinator/data"
+	"github.com/iheCoder/elk_coordinator/model"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -166,8 +167,7 @@ func TestMgr_NetworkPartitionTolerance(t *testing.T) {
 	time.Sleep(3 * time.Second)
 
 	// 验证所有节点都注册了
-	workersKey := fmt.Sprintf(model.WorkersKeyFmt, "test-partition")
-	workers, err := dataStore.GetActiveWorkers(ctx, workersKey)
+	workers, err := dataStore.GetActiveWorkers(ctx)
 	require.NoError(t, err)
 	assert.Len(t, workers, 3, "应该有3个活跃节点")
 
@@ -220,7 +220,7 @@ func TestMgr_NetworkPartitionTolerance(t *testing.T) {
 	time.Sleep(5 * time.Second)
 
 	// 检查剩余节点状态
-	remainingWorkers, err := dataStore.GetActiveWorkers(ctx, workersKey)
+	remainingWorkers, err := dataStore.GetActiveWorkers(ctx)
 	if err == nil {
 		t.Logf("网络分区后活跃节点数: %d", len(remainingWorkers))
 		for _, workerID := range remainingWorkers {
@@ -335,8 +335,7 @@ func TestMgr_RedisFailureRecovery(t *testing.T) {
 	time.Sleep(3 * time.Second)
 
 	// 验证系统正常运行
-	workersKey := fmt.Sprintf(model.WorkersKeyFmt, "test-redis-failure")
-	workers, err := dataStore.GetActiveWorkers(ctx, workersKey)
+	workers, err := dataStore.GetActiveWorkers(ctx)
 	require.NoError(t, err, "获取工作节点失败")
 	assert.Len(t, workers, 2, "应该有2个活跃节点")
 
@@ -512,8 +511,7 @@ func TestMgr_TaskWindowDistributedEdgeCases(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// 验证所有节点都注册了
-	workersKey := fmt.Sprintf(model.WorkersKeyFmt, "test-taskwindow-edge")
-	workers, err := dataStore.GetActiveWorkers(ctx, workersKey)
+	workers, err := dataStore.GetActiveWorkers(ctx)
 	require.NoError(t, err, "获取工作节点失败")
 	assert.Len(t, workers, 4, "应该有4个活跃节点")
 
@@ -668,8 +666,7 @@ func TestMgr_HighFrequencyLeaderElectionCompetition(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// 验证所有节点都注册了
-	workersKey := fmt.Sprintf(model.WorkersKeyFmt, "test-leader-competition")
-	workers, err := dataStore.GetActiveWorkers(ctx, workersKey)
+	workers, err := dataStore.GetActiveWorkers(ctx)
 	require.NoError(t, err)
 	assert.Len(t, workers, 5, "应该有5个活跃节点")
 
@@ -862,8 +859,7 @@ func TestMgr_PartitionLockPreemptionEdgeCases(t *testing.T) {
 	time.Sleep(3 * time.Second)
 
 	// 验证所有节点都注册了
-	workersKey := fmt.Sprintf(model.WorkersKeyFmt, "test-preemption-edge")
-	workers, err := dataStore.GetActiveWorkers(ctx, workersKey)
+	workers, err := dataStore.GetActiveWorkers(ctx)
 	require.NoError(t, err)
 	assert.Len(t, workers, 4, "应该有4个活跃节点")
 
@@ -1022,8 +1018,7 @@ func TestMgr_ClockSkewAndTimeoutEdgeCases(t *testing.T) {
 	time.Sleep(5 * time.Second)
 
 	// 验证所有节点都注册了
-	workersKey := fmt.Sprintf(model.WorkersKeyFmt, "test-clock-timeout")
-	workers, err := dataStore.GetActiveWorkers(ctx, workersKey)
+	workers, err := dataStore.GetActiveWorkers(ctx)
 	require.NoError(t, err)
 	assert.Len(t, workers, 3, "应该有3个活跃节点")
 

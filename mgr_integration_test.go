@@ -3,16 +3,17 @@ package elk_coordinator
 import (
 	"context"
 	"fmt"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
 	"github.com/iheCoder/elk_coordinator/data"
 	"github.com/iheCoder/elk_coordinator/leader"
 	"github.com/iheCoder/elk_coordinator/model"
 	"github.com/iheCoder/elk_coordinator/task"
 	"github.com/iheCoder/elk_coordinator/test_utils"
 	"github.com/iheCoder/elk_coordinator/utils"
-	"sync"
-	"sync/atomic"
-	"testing"
-	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -274,14 +275,12 @@ func TestMgr_SingleNodeBasicOperation(t *testing.T) {
 	time.Sleep(3 * time.Second)
 
 	// 验证节点是否注册成功
-	workersKey := fmt.Sprintf(model.WorkersKeyFmt, "test-single")
-	workers, err := dataStore.GetActiveWorkers(ctx, workersKey)
+	workers, err := dataStore.GetActiveWorkers(ctx)
 	require.NoError(t, err, "获取工作节点列表失败")
 	assert.Contains(t, workers, mgr.ID, "节点应该已注册")
 
 	// 验证心跳是否正常
-	heartbeatKey := fmt.Sprintf(model.HeartbeatFmtFmt, "test-single", mgr.ID)
-	heartbeat, err := dataStore.GetKey(ctx, heartbeatKey)
+	heartbeat, err := dataStore.GetWorkerHeartbeat(ctx, mgr.ID)
 	require.NoError(t, err, "获取心跳失败")
 	assert.NotEmpty(t, heartbeat, "心跳应该存在")
 
@@ -356,15 +355,13 @@ func TestMgr_MultiNodeDistributedOperation(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	// 验证所有节点都注册了
-	workersKey := fmt.Sprintf(model.WorkersKeyFmt, "test-multi")
-	workers, err := dataStore.GetActiveWorkers(ctx, workersKey)
+	workers, err := dataStore.GetActiveWorkers(ctx)
 	require.NoError(t, err, "获取工作节点列表失败")
 	assert.Equal(t, nodeCount, len(workers), "应该有%d个节点注册", nodeCount)
 
 	// 验证所有节点的心跳
 	for _, mgr := range mgrs {
-		heartbeatKey := fmt.Sprintf(model.HeartbeatFmtFmt, "test-multi", mgr.ID)
-		heartbeat, err := dataStore.GetKey(ctx, heartbeatKey)
+		heartbeat, err := dataStore.GetWorkerHeartbeat(ctx, mgr.ID)
 		require.NoError(t, err, "获取节点%s心跳失败", mgr.ID)
 		assert.NotEmpty(t, heartbeat, "节点%s心跳应该存在", mgr.ID)
 	}
@@ -474,8 +471,7 @@ func TestMgr_HighConcurrencyStressTest(t *testing.T) {
 	time.Sleep(3 * time.Second)
 
 	// 验证所有节点注册
-	workersKey := fmt.Sprintf(model.WorkersKeyFmt, "test-stress")
-	workers, err := dataStore.GetActiveWorkers(ctx, workersKey)
+	workers, err := dataStore.GetActiveWorkers(ctx)
 	require.NoError(t, err, "获取工作节点列表失败")
 	assert.Equal(t, nodeCount, len(workers), "应该有%d个节点注册", nodeCount)
 
@@ -664,8 +660,7 @@ func TestMgr_LeaderFailoverScenario(t *testing.T) {
 		"故障转移后应该继续处理任务")
 
 	// 验证剩余节点都在正常工作
-	workersKey := fmt.Sprintf(model.WorkersKeyFmt, "test-failover")
-	workers, err := dataStore.GetActiveWorkers(ctx, workersKey)
+	workers, err := dataStore.GetActiveWorkers(ctx)
 	require.NoError(t, err, "获取工作节点列表失败")
 
 	activeNodes := 0

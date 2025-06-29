@@ -2,7 +2,6 @@ package elk_coordinator
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -172,8 +171,7 @@ func (m *Mgr) heartbeatKeeper(ctx context.Context) {
 			m.Logger.Infof("心跳维护任务停止 (心跳上下文取消)")
 			return
 		case <-ticker.C:
-			heartbeatKey := fmt.Sprintf(model.HeartbeatFmtFmt, m.Namespace, m.ID)
-			err := m.DataStore.SetHeartbeat(ctx, heartbeatKey, time.Now().Format(time.RFC3339))
+			err := m.DataStore.RefreshWorkerHeartbeat(ctx, m.ID)
 			if err != nil {
 				m.Logger.Warnf("发送心跳失败: %v", err)
 				// 记录心跳错误指标
@@ -192,17 +190,8 @@ func (m *Mgr) heartbeatKeeper(ctx context.Context) {
 
 // registerNode 注册节点到系统
 func (m *Mgr) registerNode(ctx context.Context) error {
-	heartbeatKey := fmt.Sprintf(model.HeartbeatFmtFmt, m.Namespace, m.ID)
-	workersKey := fmt.Sprintf(model.WorkersKeyFmt, m.Namespace)
-
-	err := m.DataStore.RegisterWorker(
-		ctx,
-		workersKey,
-		m.ID,
-		heartbeatKey,
-		time.Now().Format(time.RFC3339),
-	)
-
+	// 注册到workers集合并设置初始心跳
+	err := m.DataStore.RegisterWorker(ctx, m.ID)
 	if err != nil {
 		return errors.Wrap(err, "注册节点失败")
 	}

@@ -5,14 +5,15 @@ import (
 	"context"
 	"crypto/md5"
 	"fmt"
-	"github.com/iheCoder/elk_coordinator/data"
-	"github.com/iheCoder/elk_coordinator/model"
-	"github.com/iheCoder/elk_coordinator/utils"
 	"math"
 	"sort"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/iheCoder/elk_coordinator/data"
+	"github.com/iheCoder/elk_coordinator/model"
+	"github.com/iheCoder/elk_coordinator/utils"
 
 	"github.com/pkg/errors"
 )
@@ -29,6 +30,7 @@ type TaskConsistentHash struct {
 	dataStore interface {
 		data.HeartbeatOperations
 		data.KeyOperations
+		data.WorkerRegistry
 	}
 
 	// 心跳配置
@@ -52,6 +54,7 @@ type TaskConsistentHashConfig struct {
 	DataStore interface {
 		data.HeartbeatOperations
 		data.KeyOperations
+		data.WorkerRegistry
 	}
 	ValidHeartbeatDuration time.Duration // 有效心跳持续时间
 	UpdateTTL              time.Duration // hash环更新间隔，默认30秒
@@ -193,43 +196,8 @@ func (tch *TaskConsistentHash) updateHashRing(ctx context.Context) error {
 }
 
 // getActiveWorkers 获取活跃工作节点列表
-// 基于leader/work_manager.go中的getActiveWorkers逻辑实现
 func (tch *TaskConsistentHash) getActiveWorkers(ctx context.Context) ([]string, error) {
-	pattern := fmt.Sprintf(model.HeartbeatFmtFmt, tch.namespace, "*")
-	keys, err := tch.dataStore.GetKeys(ctx, pattern)
-	if err != nil {
-		return nil, errors.Wrap(err, "获取心跳键失败")
-	}
-
-	var activeWorkers []string
-	now := time.Now()
-
-	for _, key := range keys {
-		// 从key中提取节点ID
-		prefix := fmt.Sprintf(model.HeartbeatFmtFmt, tch.namespace, "")
-		if len(key) <= len(prefix) {
-			continue
-		}
-		nodeID := key[len(prefix):]
-
-		// 获取最后心跳时间
-		lastHeartbeatStr, err := tch.dataStore.GetHeartbeat(ctx, key)
-		if err != nil {
-			continue // 跳过错误的心跳
-		}
-
-		lastHeartbeat, err := time.Parse(time.RFC3339, lastHeartbeatStr)
-		if err != nil {
-			continue // 跳过无效的时间格式
-		}
-
-		// 检查心跳是否有效
-		if now.Sub(lastHeartbeat) <= tch.validHeartbeatDuration {
-			activeWorkers = append(activeWorkers, nodeID)
-		}
-	}
-
-	return activeWorkers, nil
+	return tch.dataStore.GetActiveWorkers(ctx)
 }
 
 // workersEqual 检查两个工作节点列表是否相等

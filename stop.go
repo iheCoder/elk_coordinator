@@ -3,12 +3,13 @@ package elk_coordinator
 import (
 	"context"
 	"fmt"
-	"github.com/iheCoder/elk_coordinator/model"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/iheCoder/elk_coordinator/model"
 )
 
 // Stop 停止管理器，协调各组件的优雅关闭
@@ -37,15 +38,12 @@ func (m *Mgr) Stop() {
 	}
 
 	// 4. 最后删除心跳和节点注册（允许其他节点快速感知到节点离线）
-	heartbeatKey := fmt.Sprintf(model.HeartbeatFmtFmt, m.Namespace, m.ID)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		m.DataStore.DeleteKey(ctx, heartbeatKey)
 
-		// 注销节点
-		workersKey := fmt.Sprintf(model.WorkersKeyFmt, m.Namespace)
-		m.DataStore.UnregisterWorker(ctx, workersKey, m.ID, heartbeatKey)
+		// 注销节点（只删除心跳）
+		m.DataStore.UnregisterWorker(ctx, m.ID)
 	}()
 
 	m.Logger.Infof("管理器 %s 已通知停止", m.ID)

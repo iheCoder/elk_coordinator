@@ -210,16 +210,16 @@ func TestRedisDataStore_Heartbeat(t *testing.T) {
 	value := "heartbeat_value"
 
 	// 设置心跳
-	err := store.SetHeartbeat(ctx, key, value)
+	err := store.SetWorkerHeartbeat(ctx, key, value)
 	assert.NoError(t, err)
 
 	// 获取心跳
-	gotValue, err := store.GetHeartbeat(ctx, key)
+	gotValue, err := store.GetWorkerHeartbeat(ctx, key)
 	assert.NoError(t, err)
 	assert.Equal(t, value, gotValue)
 
 	// 尝试获取不存在的心跳
-	_, err = store.GetHeartbeat(ctx, "non_existent_heartbeat")
+	_, err = store.GetWorkerHeartbeat(ctx, "non_existent_heartbeat")
 	assert.Error(t, err)
 	assert.Equal(t, redis.Nil, err)
 }
@@ -233,7 +233,7 @@ func TestRedisDataStore_GetKeys(t *testing.T) {
 	// 设置多个键
 	keys := []string{"key1", "key2", "other_key", "key3"}
 	for _, key := range keys {
-		err := store.SetHeartbeat(ctx, key, "value")
+		err := store.SetKey(ctx, key, "value", time.Hour)
 		assert.NoError(t, err)
 	}
 
@@ -252,11 +252,11 @@ func TestRedisDataStore_DeleteKey(t *testing.T) {
 	value := "value"
 
 	// 设置一个键
-	err := store.SetHeartbeat(ctx, key, value)
+	err := store.SetKey(ctx, key, value, time.Hour)
 	assert.NoError(t, err)
 
 	// 确认键存在
-	gotValue, err := store.GetHeartbeat(ctx, key)
+	gotValue, err := store.GetKey(ctx, key)
 	assert.NoError(t, err)
 	assert.Equal(t, value, gotValue)
 
@@ -265,7 +265,7 @@ func TestRedisDataStore_DeleteKey(t *testing.T) {
 	assert.NoError(t, err)
 
 	// 确认键已删除
-	_, err = store.GetHeartbeat(ctx, key)
+	_, err = store.GetKey(ctx, key)
 	assert.Error(t, err)
 	assert.Equal(t, redis.Nil, err)
 }
@@ -311,36 +311,33 @@ func TestRedisDataStore_Worker(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	workersKey := "workers"
 	workerID := "worker1"
-	heartbeatKey := "worker_heartbeat"
-	heartbeatValue := time.Now().Format(time.RFC3339)
 
 	// 注册工作节点
-	err := store.RegisterWorker(ctx, workersKey, workerID, heartbeatKey, heartbeatValue)
+	err := store.RegisterWorker(ctx, workerID)
 	assert.NoError(t, err)
 
 	// 确认工作节点已注册
-	workers, err := store.GetActiveWorkers(ctx, workersKey)
+	workers, err := store.GetActiveWorkers(ctx)
 	assert.NoError(t, err)
 	assert.Contains(t, workers, workerID)
 
 	// 确认心跳存在
-	active, err := store.IsWorkerActive(ctx, heartbeatKey)
+	active, err := store.IsWorkerActive(ctx, workerID)
 	assert.NoError(t, err)
 	assert.True(t, active)
 
 	// 注销工作节点
-	err = store.UnregisterWorker(ctx, workersKey, workerID, heartbeatKey)
+	err = store.UnregisterWorker(ctx, workerID)
 	assert.NoError(t, err)
 
-	// 确认工作节点已注销
-	workers, err = store.GetActiveWorkers(ctx, workersKey)
+	// 确认工作节点已注销（心跳删除，但仍在workers集合中）
+	workers, err = store.GetActiveWorkers(ctx)
 	assert.NoError(t, err)
 	assert.NotContains(t, workers, workerID)
 
 	// 确认心跳已删除
-	active, err = store.IsWorkerActive(ctx, heartbeatKey)
+	active, err = store.IsWorkerActive(ctx, workerID)
 	assert.NoError(t, err)
 	assert.False(t, active)
 }
@@ -549,14 +546,14 @@ func TestRedisDataStore_IntegrationScenario(t *testing.T) {
 	}
 
 	// 1. 两个工作节点注册
-	err := store.RegisterWorker(ctx, "workers", "worker1", "heartbeat:worker1", time.Now().Format(time.RFC3339))
+	err := store.RegisterWorker(ctx, "worker1")
 	assert.NoError(t, err)
 
-	err = store.RegisterWorker(ctx, "workers", "worker2", "heartbeat:worker2", time.Now().Format(time.RFC3339))
+	err = store.RegisterWorker(ctx, "worker2")
 	assert.NoError(t, err)
 
 	// 2. 检查工作节点已注册
-	workers, err := store.GetActiveWorkers(ctx, "workers")
+	workers, err := store.GetActiveWorkers(ctx)
 	assert.NoError(t, err)
 	assert.ElementsMatch(t, []string{"worker1", "worker2"}, workers)
 
@@ -614,11 +611,11 @@ func TestRedisDataStore_IntegrationScenario(t *testing.T) {
 	assert.NoError(t, err)
 
 	// 9. worker1 注销
-	err = store.UnregisterWorker(ctx, "workers", "worker1", "heartbeat:worker1")
+	err = store.UnregisterWorker(ctx, "worker1")
 	assert.NoError(t, err)
 
 	// 10. 检查最终状态
-	workers, err = store.GetActiveWorkers(ctx, "workers")
+	workers, err = store.GetActiveWorkers(ctx)
 	assert.NoError(t, err)
 	assert.ElementsMatch(t, []string{"worker2"}, workers)
 

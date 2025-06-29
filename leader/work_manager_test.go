@@ -3,11 +3,12 @@ package leader
 import (
 	"context"
 	"fmt"
-	"github.com/iheCoder/elk_coordinator/model"
-	"github.com/iheCoder/elk_coordinator/test_utils"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/iheCoder/elk_coordinator/model"
+	"github.com/iheCoder/elk_coordinator/test_utils"
 )
 
 // TestGetActiveWorkers 测试获取活跃节点列表
@@ -29,9 +30,9 @@ func TestGetActiveWorkers(t *testing.T) {
 	expiredHeartbeat := now.Add(-time.Minute).Format(time.RFC3339) // 过期的心跳
 
 	// 添加测试数据
-	mockStore.Heartbeats[fmt.Sprintf(model.HeartbeatFmtFmt, "test", "node1")] = validHeartbeat
-	mockStore.Heartbeats[fmt.Sprintf(model.HeartbeatFmtFmt, "test", "node2")] = validHeartbeat
-	mockStore.Heartbeats[fmt.Sprintf(model.HeartbeatFmtFmt, "test", "node3")] = expiredHeartbeat // 过期的
+	mockStore.Heartbeats[fmt.Sprintf("%s:%s", model.HeartbeatKeyPrefix, "node1")] = validHeartbeat
+	mockStore.Heartbeats[fmt.Sprintf("%s:%s", model.HeartbeatKeyPrefix, "node2")] = validHeartbeat
+	mockStore.Heartbeats[fmt.Sprintf("%s:%s", model.HeartbeatKeyPrefix, "node3")] = expiredHeartbeat // 过期的
 
 	// 测试获取活跃节点
 	activeWorkers, err := workManager.getActiveWorkers(ctx)
@@ -67,7 +68,7 @@ func TestGetActiveWorkers(t *testing.T) {
 	}
 
 	// 检查过期节点是否被清理
-	if _, exists := mockStore.Heartbeats[fmt.Sprintf(model.HeartbeatFmtFmt, "test", "node3")]; exists {
+	if _, exists := mockStore.Heartbeats[fmt.Sprintf("%s:%s", model.HeartbeatKeyPrefix, "node3")]; exists {
 		t.Error("过期节点心跳未被清理")
 	}
 }
@@ -95,7 +96,7 @@ func TestTryAllocatePartitions(t *testing.T) {
 	// 设置一个有效的心跳
 	now := time.Now()
 	validHeartbeat := now.Format(time.RFC3339)
-	mockStore.Heartbeats[fmt.Sprintf(model.HeartbeatFmtFmt, "test", "node1")] = validHeartbeat
+	mockStore.Heartbeats[fmt.Sprintf("%s:%s", model.HeartbeatKeyPrefix, "node1")] = validHeartbeat
 
 	// 测试 tryAllocatePartitions
 	workManager.tryAllocatePartitions(ctx, partitionMgr)
@@ -110,7 +111,7 @@ func TestTryAllocatePartitions(t *testing.T) {
 	}
 
 	// 测试没有活跃节点的情况
-	delete(mockStore.Heartbeats, fmt.Sprintf(model.HeartbeatFmtFmt, "test", "node1"))
+	delete(mockStore.Heartbeats, fmt.Sprintf("%s:%s", model.HeartbeatKeyPrefix, "node1"))
 
 	// 先清除已有分区数据
 	mockStrategy.Partitions = make(map[int]*model.PartitionInfo)
@@ -149,7 +150,7 @@ func TestRunPartitionAllocationLoop(t *testing.T) {
 	// 设置一个有效的心跳
 	now := time.Now()
 	validHeartbeat := now.Format(time.RFC3339)
-	mockStore.Heartbeats[fmt.Sprintf(model.HeartbeatFmtFmt, "test", "node1")] = validHeartbeat
+	mockStore.Heartbeats[fmt.Sprintf("%s:%s", model.HeartbeatKeyPrefix, "node1")] = validHeartbeat
 
 	// 创建一个短时间的上下文和主动取消的leader上下文
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)

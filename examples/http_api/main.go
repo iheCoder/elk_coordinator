@@ -202,19 +202,23 @@ func (m *MockDataStore) GetSyncStatus(ctx context.Context, key string) (string, 
 }
 
 // 实现WorkerRegistry
-func (m *MockDataStore) RegisterWorker(ctx context.Context, workersKey, workerID string, heartbeatKey string, heartbeatValue string) error {
+func (m *MockDataStore) RegisterWorker(ctx context.Context, workerID string) error {
 	return nil
 }
 
-func (m *MockDataStore) UnregisterWorker(ctx context.Context, workersKey, workerID string, heartbeatKey string) error {
+func (m *MockDataStore) UnregisterWorker(ctx context.Context, workerID string) error {
 	return nil
 }
 
-func (m *MockDataStore) GetActiveWorkers(ctx context.Context, workersKey string) ([]string, error) {
+func (m *MockDataStore) GetActiveWorkers(ctx context.Context) ([]string, error) {
 	return []string{}, nil
 }
 
-func (m *MockDataStore) IsWorkerActive(ctx context.Context, heartbeatKey string) (bool, error) {
+func (m *MockDataStore) GetAllWorkers(ctx context.Context) ([]string, error) {
+	return []string{}, nil
+}
+
+func (m *MockDataStore) IsWorkerActive(ctx context.Context, workerID string) (bool, error) {
 	return true, nil
 }
 
@@ -229,6 +233,31 @@ func (m *MockDataStore) SetCounter(ctx context.Context, counterKey string, value
 
 func (m *MockDataStore) GetCounter(ctx context.Context, counterKey string) (int64, error) {
 	return 0, nil
+}
+
+// 实现PartitionStatsOperations
+func (m *MockDataStore) InitPartitionStats(ctx context.Context, statsKey string) error {
+	return nil
+}
+
+func (m *MockDataStore) GetPartitionStatsData(ctx context.Context, statsKey string) (map[string]string, error) {
+	return map[string]string{}, nil
+}
+
+func (m *MockDataStore) UpdatePartitionStatsOnCreate(ctx context.Context, statsKey string, partitionID int, dataID int64) error {
+	return nil
+}
+
+func (m *MockDataStore) UpdatePartitionStatsOnStatusChange(ctx context.Context, statsKey string, oldStatus, newStatus string) error {
+	return nil
+}
+
+func (m *MockDataStore) UpdatePartitionStatsOnDelete(ctx context.Context, statsKey string, status string) error {
+	return nil
+}
+
+func (m *MockDataStore) RebuildPartitionStats(ctx context.Context, statsKey string, activePartitionsKey, archivedPartitionsKey string) error {
+	return nil
 }
 
 // 实现AdvancedOperations
@@ -263,4 +292,21 @@ func (m *MockDataStore) RemoveFromQueue(ctx context.Context, queueKey string, it
 
 func (m *MockDataStore) GetQueueLength(ctx context.Context, queueKey string) (int64, error) {
 	return 0, nil
+}
+
+func (m *MockDataStore) RefreshHeartbeat(ctx context.Context, key string) error {
+	return nil
+}
+
+// 实现WorkerHeartbeatOperations
+func (m *MockDataStore) SetWorkerHeartbeat(ctx context.Context, workerID string, value string) error {
+	return nil
+}
+
+func (m *MockDataStore) RefreshWorkerHeartbeat(ctx context.Context, workerID string) error {
+	return nil
+}
+
+func (m *MockDataStore) GetWorkerHeartbeat(ctx context.Context, workerID string) (string, error) {
+	return "alive", nil
 }

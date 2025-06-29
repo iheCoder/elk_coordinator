@@ -3,9 +3,12 @@ package data
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/iheCoder/elk_coordinator/model"
 	"github.com/iheCoder/elk_coordinator/utils"
 
 	"github.com/pkg/errors"
@@ -113,15 +116,22 @@ func (d *RedisDataStore) GetLockOwner(ctx context.Context, key string) (string, 
 	return d.rds.Get(ctx, d.prefixKey(key)).Result()
 }
 
-// SetHeartbeat sets a heartbeat with default expiry
-func (d *RedisDataStore) SetHeartbeat(ctx context.Context, key string, value string) error {
-	// Set heartbeat with 3 minute expiry
-	return d.rds.Set(ctx, d.prefixKey(key), value, 3*time.Minute).Err()
+// SetWorkerHeartbeat sets a worker heartbeat with default expiry
+func (d *RedisDataStore) SetWorkerHeartbeat(ctx context.Context, workerID string, value string) error {
+	heartbeatKey := d.buildHeartbeatKey(workerID)
+	return d.rds.Set(ctx, d.prefixKey(heartbeatKey), value, 3*time.Minute).Err()
 }
 
-// GetHeartbeat gets a heartbeat value
-func (d *RedisDataStore) GetHeartbeat(ctx context.Context, key string) (string, error) {
-	return d.rds.Get(ctx, d.prefixKey(key)).Result()
+// RefreshWorkerHeartbeat refreshes worker heartbeat expiration time (more efficient)
+func (d *RedisDataStore) RefreshWorkerHeartbeat(ctx context.Context, workerID string) error {
+	heartbeatKey := d.buildHeartbeatKey(workerID)
+	return d.rds.Expire(ctx, d.prefixKey(heartbeatKey), 3*time.Minute).Err()
+}
+
+// GetWorkerHeartbeat gets a worker heartbeat value
+func (d *RedisDataStore) GetWorkerHeartbeat(ctx context.Context, workerID string) (string, error) {
+	heartbeatKey := d.buildHeartbeatKey(workerID)
+	return d.rds.Get(ctx, d.prefixKey(heartbeatKey)).Result()
 }
 
 // GetKeys gets keys matching a pattern
@@ -179,42 +189,75 @@ func (d *RedisDataStore) GetSyncStatus(ctx context.Context, key string) (string,
 	return d.rds.Get(ctx, d.prefixKey(key)).Result()
 }
 
-// RegisterWorker registers a worker and its heartbeat
-func (d *RedisDataStore) RegisterWorker(ctx context.Context, workersKey, workerID string, heartbeatKey string, heartbeatValue string) error {
+// buildHeartbeatKey 构建心跳key，使用model中的常量
+func (d *RedisDataStore) buildHeartbeatKey(workerID string) string {
+	return fmt.Sprintf("%s:%s", model.HeartbeatKeyPrefix, workerID)
+}
+
+// buildWorkersKey 构建workers set key，使用model中的常量
+func (d *RedisDataStore) buildWorkersKey() string {
+	return model.WorkersKey
+}
+
+// RegisterWorker registers a worker to workers set and sets initial heartbeat
+func (d *RedisDataStore) RegisterWorker(ctx context.Context, workerID string) error {
 	pipe := d.rds.Pipeline()
 
-	// Add to workers set
+	workersKey := d.buildWorkersKey()
+	heartbeatKey := d.buildHeartbeatKey(workerID)
+
+	// Add to workers set (no expiry - permanent record of all workers)
 	pipe.SAdd(ctx, d.prefixKey(workersKey), workerID)
-	pipe.Expire(ctx, d.prefixKey(workersKey), d.opts.DefaultExpiry)
 
-	// Set heartbeat
-	pipe.Set(ctx, d.prefixKey(heartbeatKey), heartbeatValue, 3*time.Minute)
-
-	_, err := pipe.Exec(ctx)
-	return err
-}
-
-// UnregisterWorker unregisters a worker and removes its heartbeat
-func (d *RedisDataStore) UnregisterWorker(ctx context.Context, workersKey, workerID string, heartbeatKey string) error {
-	pipe := d.rds.Pipeline()
-
-	// Remove from workers set
-	pipe.SRem(ctx, d.prefixKey(workersKey), workerID)
-
-	// Delete heartbeat
-	pipe.Del(ctx, d.prefixKey(heartbeatKey))
+	// Set initial heartbeat with 3 minute expiry
+	pipe.Set(ctx, d.prefixKey(heartbeatKey), time.Now().Format(time.RFC3339), 3*time.Minute)
 
 	_, err := pipe.Exec(ctx)
 	return err
 }
 
-// GetActiveWorkers gets all workers in the workers set
-func (d *RedisDataStore) GetActiveWorkers(ctx context.Context, workersKey string) ([]string, error) {
+// UnregisterWorker removes a worker's heartbeat (worker remains in workers set as historical record)
+func (d *RedisDataStore) UnregisterWorker(ctx context.Context, workerID string) error {
+	heartbeatKey := d.buildHeartbeatKey(workerID)
+	// Only delete heartbeat - keep worker in workers set for historical record
+	return d.rds.Del(ctx, d.prefixKey(heartbeatKey)).Err()
+}
+
+// GetActiveWorkers gets all workers that have active heartbeats (simple existence check)
+func (d *RedisDataStore) GetActiveWorkers(ctx context.Context) ([]string, error) {
+	// Build pattern with proper prefix
+	heartbeatPattern := fmt.Sprintf("%s:*", model.HeartbeatKeyPrefix)
+	keys, err := d.GetKeys(ctx, heartbeatPattern)
+	if err != nil {
+		return nil, err
+	}
+
+	// Extract worker IDs from heartbeat keys
+	var activeWorkers []string
+	heartbeatPrefix := model.HeartbeatKeyPrefix + ":"
+
+	for _, key := range keys {
+		// Keys returned by GetKeys already have prefix removed, so we work with clean keys
+		if strings.HasPrefix(key, heartbeatPrefix) {
+			workerID := strings.TrimPrefix(key, heartbeatPrefix)
+			if workerID != "" {
+				activeWorkers = append(activeWorkers, workerID)
+			}
+		}
+	}
+
+	return activeWorkers, nil
+}
+
+// GetAllWorkers gets all workers in the workers set (including inactive/offline workers)
+func (d *RedisDataStore) GetAllWorkers(ctx context.Context) ([]string, error) {
+	workersKey := d.buildWorkersKey()
 	return d.rds.SMembers(ctx, d.prefixKey(workersKey)).Result()
 }
 
 // IsWorkerActive checks if a worker's heartbeat exists
-func (d *RedisDataStore) IsWorkerActive(ctx context.Context, heartbeatKey string) (bool, error) {
+func (d *RedisDataStore) IsWorkerActive(ctx context.Context, workerID string) (bool, error) {
+	heartbeatKey := d.buildHeartbeatKey(workerID)
 	exists, err := d.rds.Exists(ctx, d.prefixKey(heartbeatKey)).Result()
 	if err != nil {
 		return false, err

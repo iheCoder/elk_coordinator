@@ -37,10 +37,12 @@ type KeyOperations interface {
 
 // HeartbeatOperations 定义心跳操作的接口
 type HeartbeatOperations interface {
-	// 设置心跳
-	SetHeartbeat(ctx context.Context, key string, value string) error
-	// 获取心跳
-	GetHeartbeat(ctx context.Context, key string) (string, error)
+	// 设置工作节点心跳
+	SetWorkerHeartbeat(ctx context.Context, workerID string, value string) error
+	// 刷新工作节点心跳（只重置过期时间，更高效）
+	RefreshWorkerHeartbeat(ctx context.Context, workerID string) error
+	// 获取工作节点心跳
+	GetWorkerHeartbeat(ctx context.Context, workerID string) (string, error)
 }
 
 // SimplePartitionOperations 定义简单分区操作的接口
@@ -93,14 +95,16 @@ type StatusOperations interface {
 
 // WorkerRegistry 定义工作节点注册的接口
 type WorkerRegistry interface {
-	// 注册工作节点
-	RegisterWorker(ctx context.Context, workersKey, workerID string, heartbeatKey string, heartbeatValue string) error
-	// 注销工作节点
-	UnregisterWorker(ctx context.Context, workersKey, workerID string, heartbeatKey string) error
-	// 获取活跃工作节点
-	GetActiveWorkers(ctx context.Context, workersKey string) ([]string, error)
+	// 注册工作节点到workers集合
+	RegisterWorker(ctx context.Context, workerID string) error
+	// 从workers集合注销工作节点
+	UnregisterWorker(ctx context.Context, workerID string) error
+	// 获取活跃工作节点（通过heartbeat存在性发现）
+	GetActiveWorkers(ctx context.Context) ([]string, error)
+	// 获取所有工作节点（包括已下线的）
+	GetAllWorkers(ctx context.Context) ([]string, error)
 	// 检查工作节点是否活跃
-	IsWorkerActive(ctx context.Context, heartbeatKey string) (bool, error)
+	IsWorkerActive(ctx context.Context, workerID string) (bool, error)
 }
 
 // CounterOperations 定义计数器操作的接口

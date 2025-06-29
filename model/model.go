@@ -40,6 +40,12 @@ const (
 	ExitingNodeFmt      = "%s:exiting:%s" // 标记节点正在退出的键格式
 )
 
+// Redis键名常量（用于prefixKey场景下的简化key）
+const (
+	HeartbeatKeyPrefix = "heartbeat"
+	WorkersKey         = "workers"
+)
+
 // 系统错误定义
 var (
 	ErrMaxRetriesExceeded     = errors.New("maximum retry attempts exceeded")

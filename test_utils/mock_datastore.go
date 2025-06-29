@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/iheCoder/elk_coordinator/model"
 
 	"github.com/iheCoder/elk_coordinator/data"
 )
@@ -88,19 +91,25 @@ func (m *MockDataStore) ReleaseLock(ctx context.Context, key string, value strin
 	return nil
 }
 
-// 实现SetHeartbeat方法
-func (m *MockDataStore) SetHeartbeat(ctx context.Context, key string, value string) error {
+// 实现SetWorkerHeartbeat方法
+func (m *MockDataStore) SetWorkerHeartbeat(ctx context.Context, workerID string, value string) error {
 	m.HeartbeatMutex.Lock()
 	defer m.HeartbeatMutex.Unlock()
-	m.Heartbeats[key] = value
+	m.Heartbeats[workerID] = value
 	return nil
 }
 
-// 实现GetHeartbeat方法
-func (m *MockDataStore) GetHeartbeat(ctx context.Context, key string) (string, error) {
+// 实现RefreshWorkerHeartbeat方法
+func (m *MockDataStore) RefreshWorkerHeartbeat(ctx context.Context, workerID string) error {
+	// 在mock中，只是简单返回nil，实际实现中会刷新过期时间
+	return nil
+}
+
+// 实现GetWorkerHeartbeat方法
+func (m *MockDataStore) GetWorkerHeartbeat(ctx context.Context, workerID string) (string, error) {
 	m.HeartbeatMutex.RLock()
 	defer m.HeartbeatMutex.RUnlock()
-	value, exists := m.Heartbeats[key]
+	value, exists := m.Heartbeats[workerID]
 	if !exists {
 		return "", fmt.Errorf("heartbeat not found")
 	}
@@ -215,7 +224,10 @@ var workersData = make(map[string]map[string]bool) // 存储 workersKey -> {work
 var workersDataMutex sync.RWMutex
 
 // 实现RegisterWorker方法
-func (m *MockDataStore) RegisterWorker(ctx context.Context, workersKey, workerID string, heartbeatKey string, heartbeatValue string) error {
+func (m *MockDataStore) RegisterWorker(ctx context.Context, workerID string) error {
+	workersKey := "workers"
+	heartbeatKey := fmt.Sprintf("%s:%s", model.HeartbeatKeyPrefix, workerID)
+
 	// 确保map已初始化
 	if _, exists := workersData[workersKey]; !exists {
 		workersData[workersKey] = make(map[string]bool)
@@ -227,19 +239,16 @@ func (m *MockDataStore) RegisterWorker(ctx context.Context, workersKey, workerID
 	// 设置心跳（使用线程安全方式）
 	m.HeartbeatMutex.Lock()
 	defer m.HeartbeatMutex.Unlock()
-	m.Heartbeats[heartbeatKey] = heartbeatValue
+	m.Heartbeats[heartbeatKey] = time.Now().Format(time.RFC3339)
 
 	return nil
 }
 
 // 实现UnregisterWorker方法
-func (m *MockDataStore) UnregisterWorker(ctx context.Context, workersKey, workerID string, heartbeatKey string) error {
-	// 从工作节点列表中删除
-	if workers, exists := workersData[workersKey]; exists {
-		delete(workers, workerID)
-	}
+func (m *MockDataStore) UnregisterWorker(ctx context.Context, workerID string) error {
+	heartbeatKey := fmt.Sprintf("%s:%s", model.HeartbeatKeyPrefix, workerID)
 
-	// 删除心跳（使用线程安全方式）
+	// 删除心跳（使用线程安全方式）- 保留workers集合中的记录
 	m.HeartbeatMutex.Lock()
 	defer m.HeartbeatMutex.Unlock()
 	delete(m.Heartbeats, heartbeatKey)
@@ -248,27 +257,96 @@ func (m *MockDataStore) UnregisterWorker(ctx context.Context, workersKey, worker
 }
 
 // 实现GetActiveWorkers方法
-func (m *MockDataStore) GetActiveWorkers(ctx context.Context, workersKey string) ([]string, error) {
+func (m *MockDataStore) GetActiveWorkers(ctx context.Context) ([]string, error) {
+	// 通过心跳存在性判断活跃工作节点
+	m.HeartbeatMutex.Lock()
+	defer m.HeartbeatMutex.Unlock()
+
+	var activeWorkers []string
+	heartbeatPrefix := model.HeartbeatKeyPrefix + ":"
+	now := time.Now()
+
+	// 遍历所有心跳，检查是否过期
+	keysToDelete := make([]string, 0)
+
+	for heartbeatKey, heartbeatValue := range m.Heartbeats {
+		if strings.HasPrefix(heartbeatKey, heartbeatPrefix) {
+			workerID := strings.TrimPrefix(heartbeatKey, heartbeatPrefix)
+			if workerID != "" {
+				// 解析心跳时间
+				heartbeatTime, err := time.Parse(time.RFC3339, heartbeatValue)
+				if err != nil {
+					// 如果解析失败，认为心跳无效，删除它
+					keysToDelete = append(keysToDelete, heartbeatKey)
+					continue
+				}
+
+				// 检查是否过期（使用30秒作为默认过期时间，符合测试预期）
+				if now.Sub(heartbeatTime) > 30*time.Second {
+					// 过期，标记删除
+					keysToDelete = append(keysToDelete, heartbeatKey)
+				} else {
+					// 未过期，添加到活跃列表
+					activeWorkers = append(activeWorkers, workerID)
+				}
+			}
+		}
+	}
+
+	// 删除过期的心跳
+	for _, key := range keysToDelete {
+		delete(m.Heartbeats, key)
+	}
+
+	return activeWorkers, nil
+}
+
+// 实现GetAllWorkers方法
+func (m *MockDataStore) GetAllWorkers(ctx context.Context) ([]string, error) {
+	workersKey := "workers"
 	workers, exists := workersData[workersKey]
 	if !exists {
 		return []string{}, nil
 	}
 
 	// 将map的keys转为slice
-	activeWorkers := make([]string, 0, len(workers))
+	allWorkers := make([]string, 0, len(workers))
 	for workerID := range workers {
-		activeWorkers = append(activeWorkers, workerID)
+		allWorkers = append(allWorkers, workerID)
 	}
 
-	return activeWorkers, nil
+	return allWorkers, nil
 }
 
 // 实现IsWorkerActive方法
-func (m *MockDataStore) IsWorkerActive(ctx context.Context, heartbeatKey string) (bool, error) {
-	m.HeartbeatMutex.RLock()
-	defer m.HeartbeatMutex.RUnlock()
-	_, exists := m.Heartbeats[heartbeatKey]
-	return exists, nil
+func (m *MockDataStore) IsWorkerActive(ctx context.Context, workerID string) (bool, error) {
+	heartbeatKey := fmt.Sprintf("%s:%s", model.HeartbeatKeyPrefix, workerID)
+	m.HeartbeatMutex.Lock()
+	defer m.HeartbeatMutex.Unlock()
+
+	heartbeatValue, exists := m.Heartbeats[heartbeatKey]
+	if !exists {
+		return false, nil
+	}
+
+	// 解析心跳时间并检查是否过期
+	heartbeatTime, err := time.Parse(time.RFC3339, heartbeatValue)
+	if err != nil {
+		// 如果解析失败，认为心跳无效，删除它
+		delete(m.Heartbeats, heartbeatKey)
+		return false, nil
+	}
+
+	// 检查是否过期（使用30秒作为默认过期时间，符合测试预期）
+	now := time.Now()
+	if now.Sub(heartbeatTime) > 30*time.Second {
+		// 过期，删除心跳
+		delete(m.Heartbeats, heartbeatKey)
+		return false, nil
+	}
+
+	// 未过期，worker是活跃的
+	return true, nil
 }
 
 // 计数器数据
@@ -904,4 +982,16 @@ func (m *MockDataStore) RebuildPartitionStats(ctx context.Context, statsKey stri
 
 	partitionStatsData[statsKey] = stats
 	return nil
+}
+
+// 实现RefreshHeartbeat方法
+func (m *MockDataStore) RefreshHeartbeat(ctx context.Context, key string) error {
+	m.HeartbeatMutex.Lock()
+	defer m.HeartbeatMutex.Unlock()
+	// 如果心跳存在，就刷新它（不改变值）
+	if _, exists := m.Heartbeats[key]; exists {
+		// 在mock中，我们只需要确保key还存在即可
+		return nil
+	}
+	return fmt.Errorf("heartbeat not found")
 }

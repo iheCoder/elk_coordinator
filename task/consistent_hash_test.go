@@ -38,7 +38,7 @@ func TestTaskConsistentHash_Basic(t *testing.T) {
 
 	workers := []string{"worker1", "worker2", "worker3"}
 	for _, worker := range workers {
-		heartbeatKey := fmt.Sprintf(model.HeartbeatFmtFmt, "test", worker)
+		heartbeatKey := fmt.Sprintf("%s:%s", model.HeartbeatKeyPrefix, worker)
 		mockStore.Heartbeats[heartbeatKey] = heartbeatTime
 	}
 
@@ -89,7 +89,7 @@ func TestTaskConsistentHash_Distribution(t *testing.T) {
 
 	workers := []string{"worker1", "worker2", "worker3", "worker4"}
 	for _, worker := range workers {
-		heartbeatKey := fmt.Sprintf(model.HeartbeatFmtFmt, "test", worker)
+		heartbeatKey := fmt.Sprintf("%s:%s", model.HeartbeatKeyPrefix, worker)
 		mockStore.Heartbeats[heartbeatKey] = heartbeatTime
 	}
 
@@ -182,7 +182,7 @@ func TestTaskConsistentHash_IncrementalUpdate(t *testing.T) {
 	heartbeatTime := now.Format(time.RFC3339)
 
 	for _, worker := range []string{"worker1", "worker2"} {
-		heartbeatKey := fmt.Sprintf(model.HeartbeatFmtFmt, "test", worker)
+		heartbeatKey := fmt.Sprintf("%s:%s", model.HeartbeatKeyPrefix, worker)
 		mockStore.Heartbeats[heartbeatKey] = heartbeatTime
 	}
 
@@ -207,7 +207,7 @@ func TestTaskConsistentHash_IncrementalUpdate(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// 阶段2：添加worker3（模拟节点扩容）
-	heartbeatKey3 := fmt.Sprintf(model.HeartbeatFmtFmt, "test", "worker3")
+	heartbeatKey3 := fmt.Sprintf("%s:%s", model.HeartbeatKeyPrefix, "worker3")
 	mockStore.Heartbeats[heartbeatKey3] = time.Now().Format(time.RFC3339)
 
 	// 第二次获取分区分布
@@ -278,7 +278,7 @@ func TestTaskConsistentHash_NodeRemoval(t *testing.T) {
 
 	workers := []string{"worker1", "worker2", "worker3"}
 	for _, worker := range workers {
-		heartbeatKey := fmt.Sprintf(model.HeartbeatFmtFmt, "test", worker)
+		heartbeatKey := fmt.Sprintf("%s:%s", model.HeartbeatKeyPrefix, worker)
 		mockStore.Heartbeats[heartbeatKey] = heartbeatTime
 	}
 
@@ -301,7 +301,7 @@ func TestTaskConsistentHash_NodeRemoval(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// 阶段2：删除worker3（模拟节点下线）
-	heartbeatKey3 := fmt.Sprintf(model.HeartbeatFmtFmt, "test", "worker3")
+	heartbeatKey3 := fmt.Sprintf("%s:%s", model.HeartbeatKeyPrefix, "worker3")
 	delete(mockStore.Heartbeats, heartbeatKey3)
 
 	// 获取删除后的分布
@@ -338,7 +338,7 @@ func TestTaskConsistentHash_Consistency(t *testing.T) {
 
 	workers := []string{"worker1", "worker2", "worker3"}
 	for _, worker := range workers {
-		heartbeatKey := fmt.Sprintf(model.HeartbeatFmtFmt, "test", worker)
+		heartbeatKey := fmt.Sprintf("%s:%s", model.HeartbeatKeyPrefix, worker)
 		mockStore.Heartbeats[heartbeatKey] = heartbeatTime
 	}
 
@@ -449,7 +449,7 @@ func TestTaskConsistentHash_QualityScore(t *testing.T) {
 
 	workers := []string{"worker1", "worker2", "worker3"}
 	for _, worker := range workers {
-		heartbeatKey := fmt.Sprintf(model.HeartbeatFmtFmt, "test", worker)
+		heartbeatKey := fmt.Sprintf("%s:%s", model.HeartbeatKeyPrefix, worker)
 		mockStore.Heartbeats[heartbeatKey] = heartbeatTime
 	}
 
