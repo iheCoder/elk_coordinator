@@ -70,6 +70,13 @@ const (
 	DefaultTaskWindowSize = 3 // 默认任务窗口大小
 )
 
+// WorkerInfo 表示worker信息，用于ZSET存储
+type WorkerInfo struct {
+	WorkerID     string     `json:"worker_id"`
+	RegisterTime time.Time  `json:"register_time"`
+	StopTime     *time.Time `json:"stop_time,omitempty"` // nil表示worker仍然活跃
+}
+
 // StrategyType 定义分区策略类型的枚举
 type StrategyType int32
 

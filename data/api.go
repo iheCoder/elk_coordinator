@@ -3,6 +3,8 @@ package data
 import (
 	"context"
 	"time"
+
+	"github.com/iheCoder/elk_coordinator/model"
 )
 
 const (
@@ -101,8 +103,8 @@ type WorkerRegistry interface {
 	UnregisterWorker(ctx context.Context, workerID string) error
 	// 获取活跃工作节点（通过heartbeat存在性发现）
 	GetActiveWorkers(ctx context.Context) ([]string, error)
-	// 获取所有工作节点（包括已下线的）
-	GetAllWorkers(ctx context.Context) ([]string, error)
+	// 获取所有工作节点（包括已下线的），返回WorkerInfo结构
+	GetAllWorkers(ctx context.Context) ([]*model.WorkerInfo, error)
 	// 检查工作节点是否活跃
 	IsWorkerActive(ctx context.Context, workerID string) (bool, error)
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	elkhttp "github.com/iheCoder/elk_coordinator/http"
+	"github.com/iheCoder/elk_coordinator/model"
 	"github.com/iheCoder/elk_coordinator/utils"
 )
 
@@ -214,8 +215,8 @@ func (m *MockDataStore) GetActiveWorkers(ctx context.Context) ([]string, error) 
 	return []string{}, nil
 }
 
-func (m *MockDataStore) GetAllWorkers(ctx context.Context) ([]string, error) {
-	return []string{}, nil
+func (m *MockDataStore) GetAllWorkers(ctx context.Context) ([]*model.WorkerInfo, error) {
+	return []*model.WorkerInfo{}, nil
 }
 
 func (m *MockDataStore) IsWorkerActive(ctx context.Context, workerID string) (bool, error) {

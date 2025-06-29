@@ -199,28 +199,83 @@ func (d *RedisDataStore) buildWorkersKey() string {
 	return model.WorkersKey
 }
 
-// RegisterWorker registers a worker to workers set and sets initial heartbeat
+// buildWorkerInfo 构建WorkerInfo对象
+func (d *RedisDataStore) buildWorkerInfo(workerID string, registerTime time.Time, stopTime *time.Time) *model.WorkerInfo {
+	return &model.WorkerInfo{
+		WorkerID:     workerID,
+		RegisterTime: registerTime,
+		StopTime:     stopTime,
+	}
+}
+
+// RegisterWorker registers a worker to workers ZSET with WorkerInfo JSON and sets initial heartbeat
 func (d *RedisDataStore) RegisterWorker(ctx context.Context, workerID string) error {
+	registerTime := time.Now()
+	workerInfo := d.buildWorkerInfo(workerID, registerTime, nil)
+
+	// 序列化WorkerInfo为JSON
+	workerInfoJSON, err := json.Marshal(workerInfo)
+	if err != nil {
+		return fmt.Errorf("failed to marshal worker info: %w", err)
+	}
+
+	// 计算score
+	score := utils.CalculateWorkerScore(workerID, registerTime)
+
 	pipe := d.rds.Pipeline()
 
 	workersKey := d.buildWorkersKey()
 	heartbeatKey := d.buildHeartbeatKey(workerID)
 
-	// Add to workers set (no expiry - permanent record of all workers)
-	pipe.SAdd(ctx, d.prefixKey(workersKey), workerID)
+	// Add to workers ZSET with WorkerInfo JSON as member and timestamp+hash as score
+	pipe.ZAdd(ctx, d.prefixKey(workersKey), redis.Z{
+		Score:  score,
+		Member: string(workerInfoJSON),
+	})
 
 	// Set initial heartbeat with 3 minute expiry
 	pipe.Set(ctx, d.prefixKey(heartbeatKey), time.Now().Format(time.RFC3339), 3*time.Minute)
 
-	_, err := pipe.Exec(ctx)
+	_, err = pipe.Exec(ctx)
 	return err
 }
 
-// UnregisterWorker removes a worker's heartbeat (worker remains in workers set as historical record)
+// UnregisterWorker updates worker's stop time in ZSET and removes heartbeat
 func (d *RedisDataStore) UnregisterWorker(ctx context.Context, workerID string) error {
+	workersKey := d.buildWorkersKey()
 	heartbeatKey := d.buildHeartbeatKey(workerID)
-	// Only delete heartbeat - keep worker in workers set for historical record
-	return d.rds.Del(ctx, d.prefixKey(heartbeatKey)).Err()
+	stopTime := time.Now()
+
+	// 使用Lua脚本原子性地更新worker信息
+	script := `
+		-- 获取所有ZSET成员和分数
+		local workers = redis.call('ZRANGE', KEYS[1], 0, -1, 'WITHSCORES')
+		for i = 1, #workers, 2 do
+			local member = workers[i]
+			local score = workers[i + 1]
+			
+			-- 解析JSON
+			local success, decoded = pcall(cjson.decode, member)
+			if success and decoded.worker_id == ARGV[1] then
+				-- 更新stop_time
+				decoded.stop_time = ARGV[2]
+				local updatedJSON = cjson.encode(decoded)
+				
+				-- 移除旧成员，添加新成员（保持相同score）
+				redis.call('ZREM', KEYS[1], member)
+				redis.call('ZADD', KEYS[1], score, updatedJSON)
+				break
+			end
+		end
+		
+		-- 删除heartbeat
+		redis.call('DEL', KEYS[2])
+		return 'OK'
+	`
+
+	stopTimeISO := stopTime.Format(time.RFC3339)
+	_, err := d.rds.Eval(ctx, script, []string{d.prefixKey(workersKey), d.prefixKey(heartbeatKey)}, workerID, stopTimeISO).Result()
+	return err
 }
 
 // GetActiveWorkers gets all workers that have active heartbeats (simple existence check)
@@ -249,10 +304,27 @@ func (d *RedisDataStore) GetActiveWorkers(ctx context.Context) ([]string, error)
 	return activeWorkers, nil
 }
 
-// GetAllWorkers gets all workers in the workers set (including inactive/offline workers)
-func (d *RedisDataStore) GetAllWorkers(ctx context.Context) ([]string, error) {
+// GetAllWorkers gets all workers from the workers ZSET (including inactive/offline workers)
+func (d *RedisDataStore) GetAllWorkers(ctx context.Context) ([]*model.WorkerInfo, error) {
 	workersKey := d.buildWorkersKey()
-	return d.rds.SMembers(ctx, d.prefixKey(workersKey)).Result()
+
+	// 获取所有ZSET成员
+	members, err := d.rds.ZRange(ctx, d.prefixKey(workersKey), 0, -1).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	var workerInfos []*model.WorkerInfo
+	for _, member := range members {
+		var workerInfo model.WorkerInfo
+		if err := json.Unmarshal([]byte(member), &workerInfo); err != nil {
+			// 跳过无效的JSON，但记录错误
+			continue
+		}
+		workerInfos = append(workerInfos, &workerInfo)
+	}
+
+	return workerInfos, nil
 }
 
 // IsWorkerActive checks if a worker's heartbeat exists

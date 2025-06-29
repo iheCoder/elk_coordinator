@@ -302,20 +302,26 @@ func (m *MockDataStore) GetActiveWorkers(ctx context.Context) ([]string, error) 
 }
 
 // 实现GetAllWorkers方法
-func (m *MockDataStore) GetAllWorkers(ctx context.Context) ([]string, error) {
+func (m *MockDataStore) GetAllWorkers(ctx context.Context) ([]*model.WorkerInfo, error) {
 	workersKey := "workers"
 	workers, exists := workersData[workersKey]
 	if !exists {
-		return []string{}, nil
+		return []*model.WorkerInfo{}, nil
 	}
 
-	// 将map的keys转为slice
-	allWorkers := make([]string, 0, len(workers))
+	// 将map的keys转为WorkerInfo slice
+	allWorkerInfos := make([]*model.WorkerInfo, 0, len(workers))
 	for workerID := range workers {
-		allWorkers = append(allWorkers, workerID)
+		// 创建WorkerInfo，使用当前时间作为注册时间
+		workerInfo := &model.WorkerInfo{
+			WorkerID:     workerID,
+			RegisterTime: time.Now(),
+			StopTime:     nil, // Mock中假设所有worker都是活跃的
+		}
+		allWorkerInfos = append(allWorkerInfos, workerInfo)
 	}
 
-	return allWorkers, nil
+	return allWorkerInfos, nil
 }
 
 // 实现IsWorkerActive方法

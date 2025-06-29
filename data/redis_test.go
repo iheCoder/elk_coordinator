@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/iheCoder/elk_coordinator/model"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -2401,4 +2402,78 @@ func TestPartitionStatsOperations_IntegrationScenario(t *testing.T) {
 
 	assert.Equal(t, 0.25, completionRate) // 1/4 = 25%
 	assert.Equal(t, 0.75, workloadRate)   // 3/4 = 75%
+}
+
+func TestRedisDataStore_GetAllWorkers(t *testing.T) {
+	store, _, cleanup := setupRedisTest(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// 测试空集合
+	workers, err := store.GetAllWorkers(ctx)
+	assert.NoError(t, err)
+	assert.Empty(t, workers)
+
+	// 注册多个工作节点
+	workerIDs := []string{"worker1", "worker2", "worker3"}
+
+	// 记录注册时间（近似）
+	startTime := time.Now()
+	for _, workerID := range workerIDs {
+		err := store.RegisterWorker(ctx, workerID)
+		assert.NoError(t, err)
+	}
+	endTime := time.Now()
+
+	// 获取所有工作节点
+	allWorkers, err := store.GetAllWorkers(ctx)
+	assert.NoError(t, err)
+	assert.Len(t, allWorkers, 3)
+
+	// 验证所有工作节点都存在
+	workerIDMap := make(map[string]*model.WorkerInfo)
+	for _, worker := range allWorkers {
+		workerIDMap[worker.WorkerID] = worker
+	}
+
+	for _, expectedWorkerID := range workerIDs {
+		foundWorker, exists := workerIDMap[expectedWorkerID]
+		assert.True(t, exists, "Worker %s should exist", expectedWorkerID)
+		assert.Equal(t, expectedWorkerID, foundWorker.WorkerID)
+
+		// 验证注册时间在合理范围内
+		assert.True(t, foundWorker.RegisterTime.After(startTime.Add(-time.Second)),
+			"RegisterTime should be after start time")
+		assert.True(t, foundWorker.RegisterTime.Before(endTime.Add(time.Second)),
+			"RegisterTime should be before end time")
+
+		assert.Nil(t, foundWorker.StopTime) // 新注册的worker应该没有停止时间
+	}
+
+	// 注销一个工作节点
+	err = store.UnregisterWorker(ctx, "worker2")
+	assert.NoError(t, err)
+
+	// 再次获取所有工作节点，应该仍然包含已注销的工作节点（但StopTime不为nil）
+	allWorkersAfterUnregister, err := store.GetAllWorkers(ctx)
+	assert.NoError(t, err)
+	assert.Len(t, allWorkersAfterUnregister, 3) // 仍然应该有3个，因为注销不删除记录
+
+	// 验证worker2的StopTime已被设置
+	for _, worker := range allWorkersAfterUnregister {
+		if worker.WorkerID == "worker2" {
+			assert.NotNil(t, worker.StopTime, "Unregistered worker should have StopTime set")
+		} else {
+			assert.Nil(t, worker.StopTime, "Active worker should not have StopTime set")
+		}
+	}
+
+	// 测试获取活跃工作节点与GetAllWorkers的区别
+	activeWorkers, err := store.GetActiveWorkers(ctx)
+	assert.NoError(t, err)
+	assert.Len(t, activeWorkers, 2) // 只有2个活跃的
+	assert.Contains(t, activeWorkers, "worker1")
+	assert.Contains(t, activeWorkers, "worker3")
+	assert.NotContains(t, activeWorkers, "worker2")
 }
