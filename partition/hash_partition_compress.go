@@ -3,6 +3,7 @@ package partition
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/iheCoder/elk_coordinator/data"
 	"github.com/iheCoder/elk_coordinator/model"
 )
 
@@ -18,36 +20,76 @@ import (
 type WorkerIDManager struct {
 	mapping map[string]uint16 // workerID -> 压缩ID
 	reverse map[uint16]string // 压缩ID -> workerID
-	nextID  uint16            // 下一个可用ID
-	mutex   sync.RWMutex      // 并发安全
+	rds     data.WorkerRegistry
+	mutex   sync.RWMutex // 并发安全
 }
 
-// NewWorkerIDManager 创建新的WorkerID管理器
-func NewWorkerIDManager() *WorkerIDManager {
-	return &WorkerIDManager{
+// NewWorkerIDManager 创建新的WorkerID管理器，立即从Redis构建缓存
+func NewWorkerIDManager(rds data.WorkerRegistry) (*WorkerIDManager, error) {
+	wm := &WorkerIDManager{
 		mapping: make(map[string]uint16),
 		reverse: make(map[uint16]string),
-		nextID:  1, // 从1开始，0保留给空值
+		rds:     rds,
 	}
+
+	// 立即构建缓存
+	if err := wm.rebuildCacheFromRedis(); err != nil {
+		return nil, err
+	}
+
+	return wm, nil
 }
 
-// GetOrCreateMapping 获取或创建WorkerID映射
-func (wm *WorkerIDManager) GetOrCreateMapping(workerID string) uint16 {
+// GetMapping 获取WorkerID映射，找不到则重建缓存后再查找，仍找不到返回错误
+func (wm *WorkerIDManager) GetMapping(workerID string) (uint16, error) {
+	wm.mutex.RLock()
+	// 如果已存在映射，直接返回
+	if id, exists := wm.mapping[workerID]; exists {
+		wm.mutex.RUnlock()
+		return id, nil
+	}
+	wm.mutex.RUnlock()
+
+	// 如果不存在，重建缓存后再查找
+	if wm.rds != nil {
+		if err := wm.rebuildCacheFromRedis(); err != nil {
+			return 0, fmt.Errorf("failed to rebuild cache for worker %s: %w", workerID, err)
+		}
+		wm.mutex.RLock()
+		if id, exists := wm.mapping[workerID]; exists {
+			wm.mutex.RUnlock()
+			return id, nil
+		}
+		wm.mutex.RUnlock()
+	}
+
+	// 找不到返回错误
+	return 0, fmt.Errorf("%w: worker ID %s", ErrWorkerMappingNotFound, workerID)
+}
+
+// rebuildCacheFromRedis 从Redis重建缓存映射
+func (wm *WorkerIDManager) rebuildCacheFromRedis() error {
+	ctx := context.Background()
+	allWorkers, err := wm.rds.GetAllWorkers(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrWorkerCacheRebuildFailed, err)
+	}
+
 	wm.mutex.Lock()
 	defer wm.mutex.Unlock()
 
-	// 如果已存在映射，直接返回
-	if id, exists := wm.mapping[workerID]; exists {
-		return id
+	// 清空现有映射
+	wm.mapping = make(map[string]uint16)
+	wm.reverse = make(map[uint16]string)
+
+	// 按score顺序构建映射
+	for i, worker := range allWorkers {
+		compressedID := uint16(i + 1) // 从1开始编号
+		wm.mapping[worker.WorkerID] = compressedID
+		wm.reverse[compressedID] = worker.WorkerID
 	}
 
-	// 创建新映射
-	newID := wm.nextID
-	wm.nextID++
-	wm.mapping[workerID] = newID
-	wm.reverse[newID] = workerID
-
-	return newID
+	return nil
 }
 
 // GetWorkerID 通过压缩ID获取原始WorkerID
@@ -94,18 +136,11 @@ func codeToStatus(code uint8) model.PartitionStatus {
 
 // CompressedBatch 压缩批次结构
 type CompressedBatch struct {
-	BaseTimestamp        int64           `json:"base_timestamp"`        // 基准时间戳
-	CompressedData       []byte          `json:"compressed_data"`       // gzip压缩的批量分区数据
-	PartitionCount       int             `json:"partition_count"`       // 批次中的分区数量
-	CompressionAlgorithm string          `json:"compression_algorithm"` // 压缩算法
-	Version              int             `json:"version"`               // 压缩格式版本号
-	WorkerMappings       []WorkerMapping `json:"worker_mappings"`       // 批次使用的WorkerID映射
-}
-
-// WorkerMapping WorkerID映射项
-type WorkerMapping struct {
-	CompressedID uint16 `json:"compressed_id"`
-	WorkerID     string `json:"worker_id"`
+	BaseTimestamp        int64  `json:"base_timestamp"`        // 基准时间戳
+	CompressedData       []byte `json:"compressed_data"`       // gzip压缩的批量分区数据
+	PartitionCount       int    `json:"partition_count"`       // 批次中的分区数量
+	CompressionAlgorithm string `json:"compression_algorithm"` // 压缩算法
+	Version              int    `json:"version"`               // 压缩格式版本号
 }
 
 // PartitionEncoder 分区编码器
@@ -115,6 +150,25 @@ type PartitionEncoder struct {
 	workerMgr *WorkerIDManager
 }
 
+// PartitionCompressor 分区压缩器
+type PartitionCompressor struct {
+	workerMgr *WorkerIDManager
+	encoder   *PartitionEncoder // 复用编码器，提升性能
+}
+
+// NewPartitionCompressor 创建新的分区压缩器，传入redis以构建WorkerID缓存
+func NewPartitionCompressor(rds data.WorkerRegistry) (*PartitionCompressor, error) {
+	workerMgr, err := NewWorkerIDManager(rds)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create worker ID manager: %w", err)
+	}
+
+	return &PartitionCompressor{
+		workerMgr: workerMgr,
+		encoder:   NewPartitionEncoder(0, workerMgr), // 初始化时baseTime为0，使用时会reset
+	}, nil
+}
+
 // NewPartitionEncoder 创建新的分区编码器
 func NewPartitionEncoder(baseTime int64, workerMgr *WorkerIDManager) *PartitionEncoder {
 	return &PartitionEncoder{
@@ -122,6 +176,17 @@ func NewPartitionEncoder(baseTime int64, workerMgr *WorkerIDManager) *PartitionE
 		baseTime:  baseTime,
 		workerMgr: workerMgr,
 	}
+}
+
+// Reset 重置编码器状态以复用
+func (pe *PartitionEncoder) Reset(baseTime int64) {
+	pe.buffer.Reset()
+	pe.baseTime = baseTime
+}
+
+// Bytes 返回编码后的字节数据
+func (pe *PartitionEncoder) Bytes() []byte {
+	return pe.buffer.Bytes()
 }
 
 // EncodePartition 编码单个分区
@@ -141,7 +206,10 @@ func (pe *PartitionEncoder) EncodePartition(p *model.PartitionInfo) error {
 	}
 
 	// WorkerID压缩编码
-	workerCompressed := pe.workerMgr.GetOrCreateMapping(p.WorkerID)
+	workerCompressed, err := pe.workerMgr.GetMapping(p.WorkerID)
+	if err != nil {
+		return fmt.Errorf("failed to get worker mapping for %s: %w", p.WorkerID, err)
+	}
 	if err := binary.Write(pe.buffer, binary.LittleEndian, workerCompressed); err != nil {
 		return err
 	}
@@ -199,7 +267,7 @@ func calculateBaseTimestamp(partitions []*model.PartitionInfo) int64 {
 }
 
 // CompressPartitionBatch 压缩分区批次
-func CompressPartitionBatch(partitions []*model.PartitionInfo, workerMgr *WorkerIDManager) (*CompressedBatch, error) {
+func (c *PartitionCompressor) CompressPartitionBatch(partitions []*model.PartitionInfo) (*CompressedBatch, error) {
 	if len(partitions) == 0 {
 		return nil, fmt.Errorf("empty partition list")
 	}
@@ -207,29 +275,26 @@ func CompressPartitionBatch(partitions []*model.PartitionInfo, workerMgr *Worker
 	// 1. 计算基准时间戳
 	baseTime := calculateBaseTimestamp(partitions)
 
-	// 2. 初始化编码器
-	encoder := NewPartitionEncoder(baseTime, workerMgr)
+	// 2. 重置复用编码器
+	c.encoder.Reset(baseTime)
 
 	// 3. 逐个编码分区
 	for _, partition := range partitions {
-		if err := encoder.EncodePartition(partition); err != nil {
+		if err := c.encoder.EncodePartition(partition); err != nil {
 			return nil, fmt.Errorf("encode partition %d failed: %w",
 				partition.PartitionID, err)
 		}
 	}
 
-	// 4. gzip压缩
+	// 5. gzip压缩
 	var compressedBuf bytes.Buffer
 	gzipWriter := gzip.NewWriter(&compressedBuf)
-	if _, err := gzipWriter.Write(encoder.buffer.Bytes()); err != nil {
+	if _, err := gzipWriter.Write(c.encoder.Bytes()); err != nil {
 		return nil, fmt.Errorf("gzip compression failed: %w", err)
 	}
 	if err := gzipWriter.Close(); err != nil {
 		return nil, fmt.Errorf("gzip close failed: %w", err)
 	}
-
-	// 5. 收集WorkerID映射
-	workerMappings := extractWorkerMappings(workerMgr, partitions)
 
 	// 6. 构建压缩批次
 	batch := &CompressedBatch{
@@ -238,44 +303,14 @@ func CompressPartitionBatch(partitions []*model.PartitionInfo, workerMgr *Worker
 		PartitionCount:       len(partitions),
 		CompressionAlgorithm: "gzip",
 		Version:              1,
-		WorkerMappings:       workerMappings,
 	}
 
 	return batch, nil
 }
 
-// extractWorkerMappings 提取批次中使用的WorkerID映射
-func extractWorkerMappings(workerMgr *WorkerIDManager, partitions []*model.PartitionInfo) []WorkerMapping {
-	usedWorkers := make(map[string]bool)
-	for _, p := range partitions {
-		usedWorkers[p.WorkerID] = true
-	}
-
-	var mappings []WorkerMapping
-	for workerID := range usedWorkers {
-		compressedID := workerMgr.GetOrCreateMapping(workerID)
-		mappings = append(mappings, WorkerMapping{
-			CompressedID: compressedID,
-			WorkerID:     workerID,
-		})
-	}
-
-	return mappings
-}
-
 // DecompressPartitionBatch 解压分区批次
-func DecompressPartitionBatch(batch *CompressedBatch) ([]*model.PartitionInfo, error) {
-	// 1. 重建WorkerID映射
-	workerMgr := NewWorkerIDManager()
-	for _, mapping := range batch.WorkerMappings {
-		workerMgr.mapping[mapping.WorkerID] = mapping.CompressedID
-		workerMgr.reverse[mapping.CompressedID] = mapping.WorkerID
-		if mapping.CompressedID >= workerMgr.nextID {
-			workerMgr.nextID = mapping.CompressedID + 1
-		}
-	}
-
-	// 2. gzip解压
+func (c *PartitionCompressor) DecompressPartitionBatch(batch *CompressedBatch) ([]*model.PartitionInfo, error) {
+	// 1. gzip解压
 	gzipReader, err := gzip.NewReader(bytes.NewReader(batch.CompressedData))
 	if err != nil {
 		return nil, fmt.Errorf("gzip decompression failed: %w", err)
@@ -287,12 +322,12 @@ func DecompressPartitionBatch(batch *CompressedBatch) ([]*model.PartitionInfo, e
 		return nil, fmt.Errorf("read decompressed data failed: %w", err)
 	}
 
-	// 3. 二进制解码
+	// 2. 二进制解码
 	partitions := make([]*model.PartitionInfo, 0, batch.PartitionCount)
 	reader := bytes.NewReader(decompressedData)
 
 	for i := 0; i < batch.PartitionCount; i++ {
-		partition, err := decodePartition(reader, batch.BaseTimestamp, workerMgr)
+		partition, err := decodePartition(reader, batch.BaseTimestamp, c.workerMgr)
 		if err != nil {
 			return nil, fmt.Errorf("decode partition %d failed: %w", i, err)
 		}
@@ -371,7 +406,7 @@ type CompressionStats struct {
 }
 
 // CalculateCompressionStats 计算压缩统计信息
-func CalculateCompressionStats(partitions []*model.PartitionInfo) (*CompressionStats, error) {
+func (c *PartitionCompressor) CalculateCompressionStats(partitions []*model.PartitionInfo) (*CompressionStats, error) {
 	if len(partitions) == 0 {
 		return nil, fmt.Errorf("empty partition list")
 	}
@@ -386,23 +421,14 @@ func CalculateCompressionStats(partitions []*model.PartitionInfo) (*CompressionS
 		originalSize += int64(len(jsonData))
 	}
 
-	// 2. 压缩并计算大小
-	workerMgr := NewWorkerIDManager()
-	compressedBatch, err := CompressPartitionBatch(partitions, workerMgr)
+	// 2. 压缩并计算大小 (重用已有方法，避免重复逻辑)
+	compressedBatch, err := c.CompressPartitionBatch(partitions)
 	if err != nil {
 		return nil, fmt.Errorf("compress batch failed: %w", err)
 	}
 
-	// 3. 计算二进制编码大小（未压缩前）
-	baseTime := calculateBaseTimestamp(partitions)
-	encoder := NewPartitionEncoder(baseTime, workerMgr)
-	for _, partition := range partitions {
-		if err := encoder.EncodePartition(partition); err != nil {
-			return nil, fmt.Errorf("encode partition for stats failed: %w", err)
-		}
-	}
-	binarySize := int64(encoder.buffer.Len())
-
+	// 3. 计算二进制编码大小（复用编码器状态）
+	binarySize := int64(c.encoder.buffer.Len())
 	compressedSize := int64(len(compressedBatch.CompressedData))
 	compressionRatio := 1.0 - float64(compressedSize)/float64(originalSize)
 
@@ -414,3 +440,28 @@ func CalculateCompressionStats(partitions []*model.PartitionInfo) (*CompressionS
 		PartitionCount:   len(partitions),
 	}, nil
 }
+
+// 使用示例：
+// 1. 创建压缩器（会自动从Redis构建WorkerID缓存）
+// compresser, err := NewPartitionCompresser(redisDataStore)
+// if err != nil {
+//     return fmt.Errorf("failed to create compresser: %w", err)
+// }
+//
+// 2. 压缩分区 (所有WorkerID映射错误都会返回)
+// batch, err := compresser.CompressPartitionBatch(partitions)
+// if err != nil {
+//     return fmt.Errorf("failed to compress partitions: %w", err)
+// }
+//
+// 3. 解压分区 (使用同一个压缩器，映射已存在)
+// decompressedPartitions, err := compresser.DecompressPartitionBatch(batch)
+// if err != nil {
+//     return fmt.Errorf("failed to decompress partitions: %w", err)
+// }
+//
+// 4. 计算压缩统计
+// stats, err := compresser.CalculateCompressionStats(partitions)
+// if err != nil {
+//     return fmt.Errorf("failed to calculate compression stats: %w", err)
+// }

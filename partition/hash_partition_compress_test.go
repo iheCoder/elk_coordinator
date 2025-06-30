@@ -1,6 +1,7 @@
 package partition
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -8,6 +9,94 @@ import (
 
 	"github.com/iheCoder/elk_coordinator/model"
 )
+
+// mockWorkerRegistry 为测试提供的mock WorkerRegistry实现
+type mockWorkerRegistry struct {
+	workers map[string]*model.WorkerInfo
+}
+
+func newMockWorkerRegistry() *mockWorkerRegistry {
+	// 创建一些测试用的WorkerInfo数据
+	now := time.Now()
+	workers := map[string]*model.WorkerInfo{
+		"elk-coordinator-worker-5d4d557bdc-j4xvf-1-08f3e2fa": {
+			WorkerID:     "elk-coordinator-worker-5d4d557bdc-j4xvf-1-08f3e2fa",
+			RegisterTime: now.Add(-time.Hour),
+			StopTime:     nil, // 活跃worker
+		},
+		"elk-coordinator-worker-7f8g9h0i1j-k2lm3n-2-15a6b7c8": {
+			WorkerID:     "elk-coordinator-worker-7f8g9h0i1j-k2lm3n-2-15a6b7c8",
+			RegisterTime: now.Add(-2 * time.Hour),
+			StopTime:     nil, // 活跃worker
+		},
+		"elk-coordinator-worker-9e2d3c4b5a-p6q7r8-3-27d8e9f0": {
+			WorkerID:     "elk-coordinator-worker-9e2d3c4b5a-p6q7r8-3-27d8e9f0",
+			RegisterTime: now.Add(-30 * time.Minute),
+			StopTime:     nil, // 活跃worker
+		},
+		"elk-coordinator-worker-1a2b3c4d5e-s9t0u1-4-39f0a1b2": {
+			WorkerID:     "elk-coordinator-worker-1a2b3c4d5e-s9t0u1-4-39f0a1b2",
+			RegisterTime: now.Add(-3 * time.Hour),
+			StopTime:     nil, // 活跃worker
+		},
+		"elk-coordinator-worker-6f7g8h9i0j-v2w3x4-5-4b2c3d4e": {
+			WorkerID:     "elk-coordinator-worker-6f7g8h9i0j-v2w3x4-5-4b2c3d4e",
+			RegisterTime: now.Add(-4 * time.Hour),
+			StopTime:     nil, // 活跃worker
+		},
+		"elk-coordinator-worker-2c3d4e5f6g-y5z6a7-6-5d4e5f6g": {
+			WorkerID:     "elk-coordinator-worker-2c3d4e5f6g-y5z6a7-6-5d4e5f6g",
+			RegisterTime: now.Add(-5 * time.Hour),
+			StopTime:     &now, // 已停止的worker
+		},
+	}
+
+	return &mockWorkerRegistry{workers: workers}
+}
+
+func (m *mockWorkerRegistry) RegisterWorker(ctx context.Context, workerID string) error {
+	if _, exists := m.workers[workerID]; !exists {
+		m.workers[workerID] = &model.WorkerInfo{
+			WorkerID:     workerID,
+			RegisterTime: time.Now(),
+			StopTime:     nil,
+		}
+	}
+	return nil
+}
+
+func (m *mockWorkerRegistry) UnregisterWorker(ctx context.Context, workerID string) error {
+	if worker, exists := m.workers[workerID]; exists {
+		now := time.Now()
+		worker.StopTime = &now
+	}
+	return nil
+}
+
+func (m *mockWorkerRegistry) GetActiveWorkers(ctx context.Context) ([]string, error) {
+	var activeWorkers []string
+	for workerID, worker := range m.workers {
+		if worker.StopTime == nil { // 活跃的worker没有停止时间
+			activeWorkers = append(activeWorkers, workerID)
+		}
+	}
+	return activeWorkers, nil
+}
+
+func (m *mockWorkerRegistry) GetAllWorkers(ctx context.Context) ([]*model.WorkerInfo, error) {
+	var workers []*model.WorkerInfo
+	for _, worker := range m.workers {
+		workers = append(workers, worker)
+	}
+	return workers, nil
+}
+
+func (m *mockWorkerRegistry) IsWorkerActive(ctx context.Context, workerID string) (bool, error) {
+	if worker, exists := m.workers[workerID]; exists {
+		return worker.StopTime == nil, nil // 没有停止时间则为活跃
+	}
+	return false, nil
+}
 
 // createRealisticTestPartitions 创建真实场景的测试分区数据
 // seed参数确保相同输入产生相同的测试数据，保证对比的一致性
@@ -148,9 +237,15 @@ func TestSinglePartitionCompression(t *testing.T) {
 	fmt.Printf("原始JSON数据: %s\n", string(originalJSON))
 	fmt.Printf("原始JSON大小: %d bytes\n", len(originalJSON))
 
-	// 压缩单个分区
-	workerMgr := NewWorkerIDManager()
-	stats, err := CalculateCompressionStats([]*model.PartitionInfo{partition})
+	// 创建压缩器实例
+	mockRegistry := newMockWorkerRegistry()
+	compressor, err := NewPartitionCompressor(mockRegistry)
+	if err != nil {
+		t.Fatalf("Failed to create partition compressor: %v", err)
+	}
+
+	// 计算压缩统计信息
+	stats, err := compressor.CalculateCompressionStats([]*model.PartitionInfo{partition})
 	if err != nil {
 		t.Fatalf("Calculate compression stats failed: %v", err)
 	}
@@ -161,12 +256,12 @@ func TestSinglePartitionCompression(t *testing.T) {
 	fmt.Printf("二进制编码压缩比: %.2f%%\n", (1.0-float64(stats.BinarySize)/float64(stats.OriginalSize))*100)
 
 	// 验证压缩和解压的正确性
-	compressedBatch, err := CompressPartitionBatch([]*model.PartitionInfo{partition}, workerMgr)
+	compressedBatch, err := compressor.CompressPartitionBatch([]*model.PartitionInfo{partition})
 	if err != nil {
 		t.Fatalf("Compress partition batch failed: %v", err)
 	}
 
-	decompressedPartitions, err := DecompressPartitionBatch(compressedBatch)
+	decompressedPartitions, err := compressor.DecompressPartitionBatch(compressedBatch)
 	if err != nil {
 		t.Fatalf("Decompress partition batch failed: %v", err)
 	}
@@ -192,6 +287,23 @@ func TestSinglePartitionCompression(t *testing.T) {
 	if decompressed.Status != partition.Status {
 		t.Errorf("Status mismatch: expected %s, got %s", partition.Status, decompressed.Status)
 	}
+	if decompressed.Error != partition.Error {
+		t.Errorf("Error mismatch: expected %s, got %s", partition.Error, decompressed.Error)
+	}
+
+	// 验证时间戳字段 - 注意压缩过程中会有精度损失，只比较到秒级
+	if decompressed.UpdatedAt.Unix() != partition.UpdatedAt.Unix() {
+		t.Errorf("UpdatedAt mismatch: expected %v, got %v",
+			partition.UpdatedAt.Unix(), decompressed.UpdatedAt.Unix())
+	}
+	// CreatedAt在当前实现中使用UpdatedAt作为近似值
+	if decompressed.CreatedAt.Unix() != decompressed.UpdatedAt.Unix() {
+		t.Errorf("CreatedAt should be approximately equal to UpdatedAt: got %v vs %v",
+			decompressed.CreatedAt.Unix(), decompressed.UpdatedAt.Unix())
+	}
+
+	// 验证Version字段 - 当前实现中没有保存Version，应该为0或默认值
+	fmt.Printf("原始Version: %d, 解压后Version: %d\n", partition.Version, decompressed.Version)
 
 	fmt.Printf("✓ 数据完整性验证通过\n\n")
 }
@@ -209,7 +321,14 @@ func TestPartitionWithErrorCompression(t *testing.T) {
 	fmt.Printf("原始JSON大小: %d bytes\n", len(originalJSON))
 	fmt.Printf("错误信息: %s\n", partition.Error)
 
-	stats, err := CalculateCompressionStats([]*model.PartitionInfo{partition})
+	// 创建压缩器实例
+	mockRegistry := newMockWorkerRegistry()
+	compressor, err := NewPartitionCompressor(mockRegistry)
+	if err != nil {
+		t.Fatalf("Failed to create partition compressor: %v", err)
+	}
+
+	stats, err := compressor.CalculateCompressionStats([]*model.PartitionInfo{partition})
 	if err != nil {
 		t.Fatalf("Calculate compression stats failed: %v", err)
 	}
@@ -218,13 +337,12 @@ func TestPartitionWithErrorCompression(t *testing.T) {
 	fmt.Printf("压缩比: %.2f%%\n", stats.CompressionRatio*100)
 
 	// 验证错误信息是否正确还原
-	workerMgr := NewWorkerIDManager()
-	compressedBatch, err := CompressPartitionBatch([]*model.PartitionInfo{partition}, workerMgr)
+	compressedBatch, err := compressor.CompressPartitionBatch([]*model.PartitionInfo{partition})
 	if err != nil {
 		t.Fatalf("Compress partition batch failed: %v", err)
 	}
 
-	decompressedPartitions, err := DecompressPartitionBatch(compressedBatch)
+	decompressedPartitions, err := compressor.DecompressPartitionBatch(compressedBatch)
 	if err != nil {
 		t.Fatalf("Decompress partition batch failed: %v", err)
 	}
@@ -246,10 +364,17 @@ func TestBatchCompression(t *testing.T) {
 	fmt.Printf("%-10s %-15s %-15s %-15s %-12s %-15s\n",
 		"--------", "------------", "-------------", "-------------", "--------", "---------------")
 
+	// 创建压缩器实例
+	mockRegistry := newMockWorkerRegistry()
+	compressor, err := NewPartitionCompressor(mockRegistry)
+	if err != nil {
+		t.Fatalf("Failed to create partition compressor: %v", err)
+	}
+
 	for _, batchSize := range batchSizes {
 		partitions := createBatchPartitions(batchSize)
 
-		stats, err := CalculateCompressionStats(partitions)
+		stats, err := compressor.CalculateCompressionStats(partitions)
 		if err != nil {
 			t.Fatalf("Calculate compression stats for batch size %d failed: %v", batchSize, err)
 		}
@@ -273,6 +398,13 @@ func TestCompressionRatioComparison(t *testing.T) {
 	// 测试不同数量的分区
 	partitionCounts := []int{1, 10, 100, 1000}
 
+	// 创建压缩器实例
+	mockRegistry := newMockWorkerRegistry()
+	compressor, err := NewPartitionCompressor(mockRegistry)
+	if err != nil {
+		t.Fatalf("Failed to create partition compressor: %v", err)
+	}
+
 	fmt.Printf("%-12s %-15s %-15s %-15s %-15s\n",
 		"分区数量", "原始JSON(KB)", "新方案(KB)", "压缩比(%)", "内存节省")
 	fmt.Printf("%-12s %-15s %-15s %-15s %-15s\n",
@@ -281,7 +413,7 @@ func TestCompressionRatioComparison(t *testing.T) {
 	for _, count := range partitionCounts {
 		partitions := createBatchPartitions(count)
 
-		stats, err := CalculateCompressionStats(partitions)
+		stats, err := compressor.CalculateCompressionStats(partitions)
 		if err != nil {
 			t.Fatalf("Calculate compression stats failed: %v", err)
 		}
@@ -310,7 +442,10 @@ func TestCompressionRatioComparison(t *testing.T) {
 
 	// 基于单个分区的平均大小来估算
 	singlePartition := createSamplePartition()
-	singleStats, _ := CalculateCompressionStats([]*model.PartitionInfo{singlePartition})
+	singleStats, err := compressor.CalculateCompressionStats([]*model.PartitionInfo{singlePartition})
+	if err != nil {
+		t.Fatalf("Calculate single partition stats failed: %v", err)
+	}
 	avgOriginalSize := float64(singleStats.OriginalSize)
 	avgCompressedSize := float64(singleStats.CompressedSize)
 
@@ -364,24 +499,28 @@ func TestWorkerIDMapping(t *testing.T) {
 		},
 	}
 
-	workerMgr := NewWorkerIDManager()
+	// 创建压缩器实例
+	mockRegistry := newMockWorkerRegistry()
+	compressor, err := NewPartitionCompressor(mockRegistry)
+	if err != nil {
+		t.Fatalf("Failed to create partition compressor: %v", err)
+	}
 
 	// 压缩和解压
-	compressedBatch, err := CompressPartitionBatch(partitions, workerMgr)
+	compressedBatch, err := compressor.CompressPartitionBatch(partitions)
 	if err != nil {
 		t.Fatalf("Compress failed: %v", err)
 	}
 
-	decompressedPartitions, err := DecompressPartitionBatch(compressedBatch)
+	decompressedPartitions, err := compressor.DecompressPartitionBatch(compressedBatch)
 	if err != nil {
 		t.Fatalf("Decompress failed: %v", err)
 	}
 
-	// 验证WorkerID映射
-	fmt.Printf("WorkerID映射数量: %d\n", len(compressedBatch.WorkerMappings))
-	for _, mapping := range compressedBatch.WorkerMappings {
-		fmt.Printf("  压缩ID %d -> WorkerID: %s\n", mapping.CompressedID, mapping.WorkerID)
-	}
+	// 验证WorkerID映射 - 检查压缩数据的基本信息
+	fmt.Printf("压缩数据大小: %d bytes\n", len(compressedBatch.CompressedData))
+	fmt.Printf("分区数量: %d\n", compressedBatch.PartitionCount)
+	fmt.Printf("压缩算法: %s\n", compressedBatch.CompressionAlgorithm)
 
 	// 验证解压后的WorkerID正确性
 	for i, original := range partitions {
@@ -398,11 +537,17 @@ func TestWorkerIDMapping(t *testing.T) {
 // BenchmarkCompression 压缩性能基准测试
 func BenchmarkCompression(b *testing.B) {
 	partitions := createBatchPartitions(100)
-	workerMgr := NewWorkerIDManager()
+
+	// 创建压缩器实例
+	mockRegistry := newMockWorkerRegistry()
+	compressor, err := NewPartitionCompressor(mockRegistry)
+	if err != nil {
+		b.Fatalf("Failed to create partition compressor: %v", err)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := CompressPartitionBatch(partitions, workerMgr)
+		_, err := compressor.CompressPartitionBatch(partitions)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -412,16 +557,22 @@ func BenchmarkCompression(b *testing.B) {
 // BenchmarkDecompression 解压性能基准测试
 func BenchmarkDecompression(b *testing.B) {
 	partitions := createBatchPartitions(100)
-	workerMgr := NewWorkerIDManager()
 
-	compressedBatch, err := CompressPartitionBatch(partitions, workerMgr)
+	// 创建压缩器实例
+	mockRegistry := newMockWorkerRegistry()
+	compressor, err := NewPartitionCompressor(mockRegistry)
+	if err != nil {
+		b.Fatalf("Failed to create partition compressor: %v", err)
+	}
+
+	compressedBatch, err := compressor.CompressPartitionBatch(partitions)
 	if err != nil {
 		b.Fatal(err)
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := DecompressPartitionBatch(compressedBatch)
+		_, err := compressor.DecompressPartitionBatch(compressedBatch)
 		if err != nil {
 			b.Fatal(err)
 		}
