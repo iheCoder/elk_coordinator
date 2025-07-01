@@ -193,6 +193,10 @@ func (m *MockDataStore) HDeletePartition(ctx context.Context, key string, field 
 	return nil
 }
 
+func (m *MockDataStore) HLen(ctx context.Context, key string) (int64, error) {
+	return 0, nil
+}
+
 // 实现StatusOperations
 func (m *MockDataStore) SetSyncStatus(ctx context.Context, key string, value string) error {
 	return nil

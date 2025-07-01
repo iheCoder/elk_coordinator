@@ -143,6 +143,16 @@ func (m *MockHashPartitionOperations) HDeletePartition(ctx context.Context, key,
 	return nil
 }
 
+func (m *MockHashPartitionOperations) HLen(ctx context.Context, key string) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if partitions, exists := m.partitions[key]; exists {
+		return int64(len(partitions)), nil
+	}
+	return 0, nil
+}
+
 func (m *MockHashPartitionOperations) HUpdatePartitionWithVersion(ctx context.Context, key, field, value string, expectedVersion int64) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

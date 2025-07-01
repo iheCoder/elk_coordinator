@@ -648,6 +648,17 @@ func (m *MockDataStore) HGetAllPartitions(ctx context.Context, key string) (map[
 	return result, nil
 }
 
+// 实现HLen方法
+func (m *MockDataStore) HLen(ctx context.Context, key string) (int64, error) {
+	hashPartitionMutex.RLock()
+	defer hashPartitionMutex.RUnlock()
+
+	if hashPartitionsData[key] == nil {
+		return 0, nil
+	}
+	return int64(len(hashPartitionsData[key])), nil
+}
+
 // 实现HDeletePartition方法
 func (m *MockDataStore) HDeletePartition(ctx context.Context, key, field string) error {
 	hashPartitionMutex.Lock()

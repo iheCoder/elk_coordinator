@@ -37,6 +37,7 @@ type HashPartitionStrategy struct {
 	store          HashPartitionStoreInterface // 分区存储接口，支持分区操作和统计操作
 	logger         utils.Logger                // 日志记录器
 	staleThreshold time.Duration               // 分区被认为过时的心跳阈值，用于抢占判断
+	compressor     *PartitionCompressor        // 分区压缩器，用于归档压缩
 }
 
 // NewHashPartitionStrategy 创建一个新的 Hash 分区策略实例。
@@ -53,10 +54,22 @@ func NewHashPartitionStrategy(store HashPartitionStoreInterface, logger utils.Lo
 	if logger == nil {
 		panic("logger cannot be nil") // 日志记录器不能为空
 	}
+
+	// 尝试初始化压缩器，如果store实现了WorkerRegistry接口
+	var compressor *PartitionCompressor
+	if workerRegistry, ok := store.(data.WorkerRegistry); ok {
+		if c, err := NewPartitionCompressor(workerRegistry); err != nil {
+			logger.Warnf("初始化分区压缩器失败: %v", err)
+		} else {
+			compressor = c
+		}
+	}
+
 	strategy := &HashPartitionStrategy{
 		store:          store,
 		logger:         logger,
 		staleThreshold: 5 * time.Minute, // 默认5分钟心跳超时阈值
+		compressor:     compressor,
 	}
 
 	// 初始化统计数据
@@ -84,10 +97,22 @@ func NewHashPartitionStrategyWithConfig(store HashPartitionStoreInterface, logge
 	if staleThreshold <= 0 {
 		staleThreshold = 5 * time.Minute // 默认值
 	}
+
+	// 尝试初始化压缩器，如果store实现了WorkerRegistry接口
+	var compressor *PartitionCompressor
+	if workerRegistry, ok := store.(data.WorkerRegistry); ok {
+		if c, err := NewPartitionCompressor(workerRegistry); err != nil {
+			logger.Warnf("初始化分区压缩器失败: %v", err)
+		} else {
+			compressor = c
+		}
+	}
+
 	strategy := &HashPartitionStrategy{
 		store:          store,
 		logger:         logger,
 		staleThreshold: staleThreshold,
+		compressor:     compressor,
 	}
 
 	// 初始化统计数据

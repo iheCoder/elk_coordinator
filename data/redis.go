@@ -639,6 +639,11 @@ func (d *RedisDataStore) HDeletePartition(ctx context.Context, key string, field
 	return d.rds.HDel(ctx, d.prefixKey(key), field).Err()
 }
 
+// HLen 获取Redis Hash中字段的数量
+func (d *RedisDataStore) HLen(ctx context.Context, key string) (int64, error) {
+	return d.rds.HLen(ctx, d.prefixKey(key)).Result()
+}
+
 // CommandOperations implementation
 
 // SubmitCommand 提交命令到Redis

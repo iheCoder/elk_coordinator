@@ -63,6 +63,8 @@ type HashPartitionOperations interface {
 	HGetPartition(ctx context.Context, key string, field string) (string, error)
 	// HGetAllPartitions 获取所有哈希分区字段
 	HGetAllPartitions(ctx context.Context, key string) (map[string]string, error)
+	// HLen 获取哈希字段数量
+	HLen(ctx context.Context, key string) (int64, error)
 	// HUpdatePartitionWithVersion 版本化更新哈希分区字段
 	HUpdatePartitionWithVersion(ctx context.Context, key string, field string, value string, version int64) (bool, error)
 	// HSetPartitionsInTx 事务中批量设置哈希分区
