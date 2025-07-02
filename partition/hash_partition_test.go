@@ -408,6 +408,66 @@ func (m *MockHashPartitionOperations) RebuildPartitionStats(ctx context.Context,
 	return nil
 }
 
+// HSetPartitionsWithStatsInTx 原子性批量创建分区并更新统计数据
+func (m *MockHashPartitionOperations) HSetPartitionsWithStatsInTx(ctx context.Context, partitionKey string, statsKey string, partitions map[string]string, stats *model.PartitionStats) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// 参数验证
+	if stats == nil {
+		return fmt.Errorf("stats参数不能为nil")
+	}
+
+	// 检查统计数据键是否存在
+	if m.stats[statsKey] == nil {
+		return fmt.Errorf("ERR stats key does not exist: %s", statsKey)
+	}
+
+	// 初始化分区数据
+	if m.partitions[partitionKey] == nil {
+		m.partitions[partitionKey] = make(map[string]string)
+	}
+
+	// 模拟原子性操作：同时设置分区和更新统计
+	partitionCount := len(partitions)
+	for field, value := range partitions {
+		// 设置分区数据
+		m.partitions[partitionKey][field] = value
+
+		// 如果没有版本，设置为1，否则保持当前版本
+		if m.versions[field] == 0 {
+			m.versions[field] = 1
+		}
+	}
+
+	// 更新分区数量统计（新创建的分区默认都是pending状态）
+	if partitionCount > 0 {
+		currentTotal, _ := strconv.Atoi(m.stats[statsKey]["total"])
+		m.stats[statsKey]["total"] = strconv.Itoa(currentTotal + partitionCount)
+
+		currentPending, _ := strconv.Atoi(m.stats[statsKey]["pending"])
+		m.stats[statsKey]["pending"] = strconv.Itoa(currentPending + partitionCount)
+	}
+
+	// 使用预计算的统计数据更新max_partition_id
+	if stats.MaxPartitionID > 0 {
+		currentMaxPartitionID, _ := strconv.ParseInt(m.stats[statsKey]["max_partition_id"], 10, 64)
+		if int64(stats.MaxPartitionID) > currentMaxPartitionID {
+			m.stats[statsKey]["max_partition_id"] = strconv.Itoa(stats.MaxPartitionID)
+		}
+	}
+
+	// 使用预计算的统计数据更新last_allocated_id
+	if stats.LastAllocatedID > 0 {
+		currentLastAllocatedID, _ := strconv.ParseInt(m.stats[statsKey]["last_allocated_id"], 10, 64)
+		if stats.LastAllocatedID > currentLastAllocatedID {
+			m.stats[statsKey]["last_allocated_id"] = strconv.FormatInt(stats.LastAllocatedID, 10)
+		}
+	}
+
+	return nil
+}
+
 // 测试助手函数
 func createTestRepository() (*HashPartitionStrategy, *MockHashPartitionOperations, *MockLogger) {
 	mockStore := NewMockHashPartitionOperations()
