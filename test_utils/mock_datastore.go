@@ -729,25 +729,18 @@ func (m *MockDataStore) HSetPartitionsWithStatsInTx(ctx context.Context, partiti
 		return fmt.Errorf("stats参数不能为nil")
 	}
 
+	// 检查统计数据键是否存在，不存在则报错（与Redis版本保持一致）
+	if partitionStatsData[statsKey] == nil {
+		return fmt.Errorf("ERR stats key does not exist: %s", statsKey)
+	}
+
 	// 初始化分区数据
 	if hashPartitionsData[partitionKey] == nil {
 		hashPartitionsData[partitionKey] = make(map[string]string)
 	}
 
-	// 初始化统计数据
-	if partitionStatsData[statsKey] == nil {
-		partitionStatsData[statsKey] = make(map[string]string)
-		// 初始化默认统计值
-		partitionStatsData[statsKey]["total"] = "0"
-		partitionStatsData[statsKey]["pending"] = "0"
-		partitionStatsData[statsKey]["processing"] = "0"
-		partitionStatsData[statsKey]["completed"] = "0"
-		partitionStatsData[statsKey]["failed"] = "0"
-		partitionStatsData[statsKey]["max_partition_id"] = "0"
-		partitionStatsData[statsKey]["last_allocated_id"] = "0"
-	}
-
 	// 模拟原子性操作：同时设置分区和更新统计
+	partitionCount := len(partitions)
 	for field, value := range partitions {
 		// 设置分区数据
 		hashPartitionsData[partitionKey][field] = value
@@ -756,6 +749,15 @@ func (m *MockDataStore) HSetPartitionsWithStatsInTx(ctx context.Context, partiti
 		if hashPartitionVersions[field] == 0 {
 			hashPartitionVersions[field] = 1
 		}
+	}
+
+	// 更新分区数量统计（新创建的分区默认都是pending状态）
+	if partitionCount > 0 {
+		currentTotal, _ := strconv.Atoi(partitionStatsData[statsKey]["total"])
+		partitionStatsData[statsKey]["total"] = strconv.Itoa(currentTotal + partitionCount)
+
+		currentPending, _ := strconv.Atoi(partitionStatsData[statsKey]["pending"])
+		partitionStatsData[statsKey]["pending"] = strconv.Itoa(currentPending + partitionCount)
 	}
 
 	// 使用预计算的统计数据更新max_partition_id

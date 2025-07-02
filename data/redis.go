@@ -654,11 +654,17 @@ func (d *RedisDataStore) HSetPartitionsWithStatsInTx(ctx context.Context, partit
 		local statsKey = KEYS[2]
 		local maxPartitionID = tonumber(ARGV[1])
 		local maxAllocatedID = tonumber(ARGV[2])
+		local partitionCount = tonumber(ARGV[3])
+		
+		-- 检查统计数据键是否存在
+		if redis.call('EXISTS', statsKey) == 0 then
+			return redis.error_reply('ERR stats key does not exist: ' .. statsKey)
+		end
 		
 		-- 批量设置分区数据（使用Redis HSET的可变参数特性）
-		-- ARGV[3]开始是分区数据：field1, value1, field2, value2, ...
+		-- ARGV[4]开始是分区数据：field1, value1, field2, value2, ...
 		local hsetArgs = {}
-		for i = 3, #ARGV do
+		for i = 4, #ARGV do
 			table.insert(hsetArgs, ARGV[i])
 		end
 		
@@ -666,13 +672,17 @@ func (d *RedisDataStore) HSetPartitionsWithStatsInTx(ctx context.Context, partit
 			redis.call('HSET', partitionKey, unpack(hsetArgs))
 		end
 		
-		-- 确保统计数据键存在（初始化为0如果不存在）
-		if redis.call('EXISTS', statsKey) == 0 then
-			redis.call('HSET', statsKey, 'max_partition_id', '0', 'last_allocated_id', '0')
-		end
-		
-		-- 原子性更新统计数据（仅在需要时更新）
+		-- 原子性更新统计数据
 		local statsUpdates = {}
+		
+		-- 更新分区数量统计（新创建的分区默认都是pending状态）
+		if partitionCount > 0 then
+			table.insert(statsUpdates, 'total')
+			table.insert(statsUpdates, tostring(tonumber(redis.call('HGET', statsKey, 'total') or 0) + partitionCount))
+			
+			table.insert(statsUpdates, 'pending')
+			table.insert(statsUpdates, tostring(tonumber(redis.call('HGET', statsKey, 'pending') or 0) + partitionCount))
+		end
 		
 		-- 更新max_partition_id
 		if maxPartitionID > 0 then
@@ -702,9 +712,10 @@ func (d *RedisDataStore) HSetPartitionsWithStatsInTx(ctx context.Context, partit
 		return 'OK'
 	`
 
-	// 准备Lua脚本参数：[maxPartitionID, maxAllocatedID, field1, value1, field2, value2, ...]
-	args := make([]interface{}, 0, 2+len(partitions)*2)
-	args = append(args, int64(stats.MaxPartitionID), stats.LastAllocatedID)
+	// 准备Lua脚本参数：[maxPartitionID, maxAllocatedID, partitionCount, field1, value1, field2, value2, ...]
+	partitionCount := len(partitions)
+	args := make([]interface{}, 0, 3+len(partitions)*2)
+	args = append(args, int64(stats.MaxPartitionID), stats.LastAllocatedID, partitionCount)
 
 	// 添加分区数据
 	for field, value := range partitions {

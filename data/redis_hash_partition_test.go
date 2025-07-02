@@ -77,6 +77,10 @@ func TestHSetPartitionsWithStatsInTx(t *testing.T) {
 		// 清理之前的测试数据
 		store.rds.FlushAll(ctx)
 
+		// 初始化统计数据（模拟正常业务场景）
+		err := store.InitPartitionStats(ctx, statsKey)
+		assert.NoError(t, err)
+
 		// 准备测试分区数据
 		partitions := map[string]string{
 			"1": `{"partition_id":1,"status":"pending","worker_id":"worker1","created_at":"2024-01-01T00:00:00Z"}`,
@@ -109,6 +113,15 @@ func TestHSetPartitionsWithStatsInTx(t *testing.T) {
 		lastAllocatedIDResult, err := store.rds.HGet(ctx, store.prefixKey(statsKey), "last_allocated_id").Result()
 		assert.NoError(t, err)
 		assert.Equal(t, "5", lastAllocatedIDResult) // last_allocated_id应该是5
+
+		// 验证 total 和 pending 计数
+		totalResult, err := store.rds.HGet(ctx, store.prefixKey(statsKey), "total").Result()
+		assert.NoError(t, err)
+		assert.Equal(t, "3", totalResult) // 总数应该是3
+
+		pendingResult, err := store.rds.HGet(ctx, store.prefixKey(statsKey), "pending").Result()
+		assert.NoError(t, err)
+		assert.Equal(t, "3", pendingResult) // pending数应该是3（新创建的分区默认都是pending状态）
 	})
 
 	t.Run("EmptyPartitions", func(t *testing.T) {
@@ -139,6 +152,10 @@ func TestHSetPartitionsWithStatsInTx(t *testing.T) {
 		// 清理之前的测试数据
 		store.rds.FlushAll(ctx)
 
+		// 初始化统计数据
+		err := store.InitPartitionStats(ctx, statsKey)
+		assert.NoError(t, err)
+
 		// 准备测试分区数据
 		partitions := map[string]string{
 			"2": `{"partition_id":2,"status":"pending","worker_id":"worker1"}`,
@@ -158,6 +175,10 @@ func TestHSetPartitionsWithStatsInTx(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, "4", maxPartitionID1)
 
+		totalResult1, err := store.rds.HGet(ctx, store.prefixKey(statsKey), "total").Result()
+		assert.NoError(t, err)
+		assert.Equal(t, "2", totalResult1)
+
 		// 第二次调用相同的分区（幂等性测试）
 		err = store.HSetPartitionsWithStatsInTx(ctx, partitionKey, statsKey, partitions, stats)
 		assert.NoError(t, err)
@@ -169,15 +190,23 @@ func TestHSetPartitionsWithStatsInTx(t *testing.T) {
 		assert.Equal(t, partitions["2"], allPartitions["2"])
 		assert.Equal(t, partitions["4"], allPartitions["4"])
 
-		// 验证统计数据保持一致
+		// 验证统计数据增加了（因为重复创建会累加计数）
 		maxPartitionID2, err := store.rds.HGet(ctx, store.prefixKey(statsKey), "max_partition_id").Result()
 		assert.NoError(t, err)
 		assert.Equal(t, "4", maxPartitionID2)
+
+		totalResult2, err := store.rds.HGet(ctx, store.prefixKey(statsKey), "total").Result()
+		assert.NoError(t, err)
+		assert.Equal(t, "4", totalResult2) // 第二次调用会再次增加计数
 	})
 
 	t.Run("IncrementalUpdate", func(t *testing.T) {
 		// 清理之前的测试数据
 		store.rds.FlushAll(ctx)
+
+		// 初始化统计数据
+		err := store.InitPartitionStats(ctx, statsKey)
+		assert.NoError(t, err)
 
 		// 第一批分区
 		firstBatch := map[string]string{
@@ -195,6 +224,10 @@ func TestHSetPartitionsWithStatsInTx(t *testing.T) {
 		maxPartitionIDResult1, err := store.rds.HGet(ctx, store.prefixKey(statsKey), "max_partition_id").Result()
 		assert.NoError(t, err)
 		assert.Equal(t, "3", maxPartitionIDResult1)
+
+		totalResult1, err := store.rds.HGet(ctx, store.prefixKey(statsKey), "total").Result()
+		assert.NoError(t, err)
+		assert.Equal(t, "2", totalResult1)
 
 		// 第二批分区（包含更大的partition_id）
 		secondBatch := map[string]string{
@@ -221,6 +254,14 @@ func TestHSetPartitionsWithStatsInTx(t *testing.T) {
 		lastAllocatedIDResult, err := store.rds.HGet(ctx, store.prefixKey(statsKey), "last_allocated_id").Result()
 		assert.NoError(t, err)
 		assert.Equal(t, "7", lastAllocatedIDResult)
+
+		totalResult2, err := store.rds.HGet(ctx, store.prefixKey(statsKey), "total").Result()
+		assert.NoError(t, err)
+		assert.Equal(t, "4", totalResult2) // 总数应该是4
+
+		pendingResult2, err := store.rds.HGet(ctx, store.prefixKey(statsKey), "pending").Result()
+		assert.NoError(t, err)
+		assert.Equal(t, "4", pendingResult2) // pending数应该是4
 	})
 
 	t.Run("InvalidJSON", func(t *testing.T) {
@@ -254,6 +295,10 @@ func TestHSetPartitionsWithStatsInTx(t *testing.T) {
 		// 清理之前的测试数据
 		store.rds.FlushAll(ctx)
 
+		// 初始化统计数据
+		err := store.InitPartitionStats(ctx, statsKey)
+		assert.NoError(t, err)
+
 		// 包含缺少partition_id的分区数据
 		invalidPartitions := map[string]string{
 			"1": `{"partition_id":1,"status":"pending"}`,
@@ -277,6 +322,10 @@ func TestHSetPartitionsWithStatsInTx(t *testing.T) {
 	t.Run("ConcurrentUpdate", func(t *testing.T) {
 		// 清理之前的测试数据
 		store.rds.FlushAll(ctx)
+
+		// 初始化统计数据
+		err := store.InitPartitionStats(ctx, statsKey)
+		assert.NoError(t, err)
 
 		numWorkers := 5
 		partitionsPerWorker := 10
@@ -340,6 +389,10 @@ func TestHSetPartitionsWithStatsInTx(t *testing.T) {
 		// 清理之前的测试数据
 		store.rds.FlushAll(ctx)
 
+		// 初始化统计数据
+		err := store.InitPartitionStats(ctx, statsKey)
+		assert.NoError(t, err)
+
 		// 测试单个分区
 		singlePartition := map[string]string{
 			"42": `{"partition_id":42,"status":"pending","worker_id":"worker1","metadata":{"key":"value"}}`,
@@ -370,6 +423,10 @@ func TestHSetPartitionsWithStatsInTx(t *testing.T) {
 		// 清理之前的测试数据
 		store.rds.FlushAll(ctx)
 
+		// 初始化统计数据
+		err := store.InitPartitionStats(ctx, statsKey)
+		assert.NoError(t, err)
+
 		// 测试partition_id为0的情况
 		zeroPartition := map[string]string{
 			"0": `{"partition_id":0,"status":"pending"}`,
@@ -390,5 +447,28 @@ func TestHSetPartitionsWithStatsInTx(t *testing.T) {
 		lastAllocatedID, err := store.rds.HGet(ctx, store.prefixKey(statsKey), "last_allocated_id").Result()
 		assert.NoError(t, err)
 		assert.Equal(t, "1", lastAllocatedID)
+	})
+
+	t.Run("StatsKeyNotExists", func(t *testing.T) {
+		// 清理之前的测试数据
+		store.rds.FlushAll(ctx)
+
+		// 准备测试分区数据
+		partitions := map[string]string{
+			"1": `{"partition_id":1,"status":"pending"}`,
+		}
+
+		stats, err := calculateStatsFromPartitions(partitions)
+		assert.NoError(t, err)
+
+		// 不初始化统计键，直接调用批量创建方法应该报错
+		err = store.HSetPartitionsWithStatsInTx(ctx, partitionKey, statsKey, partitions, stats)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "stats key does not exist")
+
+		// 验证没有分区被创建
+		allPartitions, err := store.HGetAllPartitions(ctx, partitionKey)
+		assert.NoError(t, err)
+		assert.Equal(t, 0, len(allPartitions))
 	})
 }
