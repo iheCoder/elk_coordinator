@@ -596,9 +596,6 @@ func (d *RedisDataStore) HSetPartitionsInTx(ctx context.Context, key string, par
 				pipe.HSet(ctx, prefixedKey, field, value)
 			}
 
-			// 设置过期时间
-			pipe.Expire(ctx, prefixedKey, d.opts.DefaultExpiry)
-
 			// 执行事务
 			_, err := pipe.Exec(ctx)
 			return err
@@ -657,12 +654,11 @@ func (d *RedisDataStore) HSetPartitionsWithStatsInTx(ctx context.Context, partit
 		local statsKey = KEYS[2]
 		local maxPartitionID = tonumber(ARGV[1])
 		local maxAllocatedID = tonumber(ARGV[2])
-		local expiry = tonumber(ARGV[3])
 		
 		-- 批量设置分区数据（使用Redis HSET的可变参数特性）
-		-- ARGV[4]开始是分区数据：field1, value1, field2, value2, ...
+		-- ARGV[3]开始是分区数据：field1, value1, field2, value2, ...
 		local hsetArgs = {}
-		for i = 4, #ARGV do
+		for i = 3, #ARGV do
 			table.insert(hsetArgs, ARGV[i])
 		end
 		
@@ -701,15 +697,14 @@ func (d *RedisDataStore) HSetPartitionsWithStatsInTx(ctx context.Context, partit
 			redis.call('HSET', statsKey, unpack(statsUpdates))
 		end
 		
-		-- 设置过期时间
-		redis.call('EXPIRE', partitionKey, expiry)
+		-- 分区数据是持久化的核心数据，不设置过期时间
 		
 		return 'OK'
 	`
 
-	// 准备Lua脚本参数：[maxPartitionID, maxAllocatedID, expiry, field1, value1, field2, value2, ...]
-	args := make([]interface{}, 0, 3+len(partitions)*2)
-	args = append(args, int64(stats.MaxPartitionID), stats.LastAllocatedID, int(d.opts.DefaultExpiry.Seconds()))
+	// 准备Lua脚本参数：[maxPartitionID, maxAllocatedID, field1, value1, field2, value2, ...]
+	args := make([]interface{}, 0, 2+len(partitions)*2)
+	args = append(args, int64(stats.MaxPartitionID), stats.LastAllocatedID)
 
 	// 添加分区数据
 	for field, value := range partitions {
