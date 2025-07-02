@@ -124,9 +124,11 @@ func (s *HashPartitionStrategy) createPartitionsBatch(ctx context.Context, reque
 		return []*model.PartitionInfo{}, nil
 	}
 
-	// 准备批量数据
+	// 准备批量数据并预计算统计信息
 	partitionsData := make(map[string]string, len(requests))
 	partitionInfos := make([]*model.PartitionInfo, 0, len(requests))
+	maxPartitionID := int64(0)
+	maxAllocatedID := int64(0)
 
 	now := time.Now()
 	for _, req := range requests {
@@ -151,21 +153,28 @@ func (s *HashPartitionStrategy) createPartitionsBatch(ctx context.Context, reque
 
 		partitionsData[strconv.Itoa(req.PartitionID)] = string(partitionJson)
 		partitionInfos = append(partitionInfos, newPartition)
-	}
 
-	// 使用事务批量创建
-	err := s.store.HSetPartitionsInTx(ctx, partitionHashKey, partitionsData)
-	if err != nil {
-		s.logger.Errorf("批量创建分区事务失败: %v", err)
-		return nil, fmt.Errorf("批量创建分区事务失败: %w", err)
-	}
-
-	// 批量更新统计数据
-	for _, partition := range partitionInfos {
-		if err := s.store.UpdatePartitionStatsOnCreate(ctx, statsKey, partition.PartitionID, partition.MaxID); err != nil {
-			s.logger.Errorf("创建分区 %d 后更新统计失败: %v", partition.PartitionID, err)
-			// 不返回错误，因为分区已经创建成功
+		// 预计算统计数据（避免在Redis中重复解析JSON）
+		if int64(req.PartitionID) > maxPartitionID {
+			maxPartitionID = int64(req.PartitionID)
 		}
+		if req.MaxID > maxAllocatedID {
+			maxAllocatedID = req.MaxID
+		}
+	}
+
+	// 使用原子性事务批量创建分区并更新统计数据
+	// 这确保分区创建和统计更新的原子性，解决Pod崩溃导致的数据不一致问题
+	// 传入预计算的统计数据，避免在Redis中重复解析JSON，提升性能
+	batchStats := &model.PartitionStats{
+		MaxPartitionID:  int(maxPartitionID), // 转换为int类型以匹配PartitionStats
+		LastAllocatedID: maxAllocatedID,
+		// 其他字段使用默认值（批量创建时我们只关心这两个字段）
+	}
+	err := s.store.HSetPartitionsWithStatsInTx(ctx, partitionHashKey, statsKey, partitionsData, batchStats)
+	if err != nil {
+		s.logger.Errorf("原子性批量创建分区和更新统计失败: %v", err)
+		return nil, fmt.Errorf("原子性批量创建分区和更新统计失败: %w", err)
 	}
 
 	s.logger.Infof("成功批量创建 %d 个分区", len(partitionInfos))
