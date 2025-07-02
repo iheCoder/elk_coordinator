@@ -103,8 +103,9 @@ func (m *mockWorkerRegistry) IsWorkerActive(ctx context.Context, workerID string
 func createRealisticTestPartitions(count int, seed int64) []*model.PartitionInfo {
 	partitions := make([]*model.PartitionInfo, count)
 
-	// 固定的基准时间，确保测试一致性
-	baseTime := time.Date(2025, 6, 24, 10, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	// 固定的基准创建时间，确保测试一致性
+	// 以创建时间为基准更符合业务逻辑：分区先创建，后更新
+	baseCreatedTime := time.Date(2025, 6, 24, 10, 0, 0, 0, time.FixedZone("CST", 8*3600))
 
 	// 模拟真实的WorkerID池 - 真实长度的K8s Pod名称
 	workerIDPool := []string{
@@ -150,10 +151,12 @@ func createRealisticTestPartitions(count int, seed int64) []*model.PartitionInfo
 		minID := int64(1000000) + int64(i)*rangeVariation
 		maxID := minID + rangeVariation - 1
 
-		// 时间戳变化 - 模拟不同完成时间
-		timeOffset := time.Duration(nextRand()%86400) * time.Second // 一天内的随机时间
-		updatedAt := baseTime.Add(timeOffset)
-		createdAt := updatedAt.Add(-time.Duration(300+nextRand()%1800) * time.Second) // 5-35分钟前创建
+		// 时间戳变化 - 以创建时间为基准，更符合业务逻辑
+		createdTimeOffset := time.Duration(nextRand()%86400) * time.Second // 一天内的随机创建时间
+		createdAt := baseCreatedTime.Add(createdTimeOffset)
+		// 更新时间在创建时间之后，模拟处理时长（5-35分钟）
+		processingDuration := time.Duration(300+nextRand()%1800) * time.Second // 5-35分钟处理时间
+		updatedAt := createdAt.Add(processingDuration)
 
 		// 状态确定性分布
 		var status model.PartitionStatus
@@ -296,10 +299,9 @@ func TestSinglePartitionCompression(t *testing.T) {
 		t.Errorf("UpdatedAt mismatch: expected %v, got %v",
 			partition.UpdatedAt.Unix(), decompressed.UpdatedAt.Unix())
 	}
-	// CreatedAt在当前实现中使用UpdatedAt作为近似值
-	if decompressed.CreatedAt.Unix() != decompressed.UpdatedAt.Unix() {
-		t.Errorf("CreatedAt should be approximately equal to UpdatedAt: got %v vs %v",
-			decompressed.CreatedAt.Unix(), decompressed.UpdatedAt.Unix())
+	if decompressed.CreatedAt.Unix() != partition.CreatedAt.Unix() {
+		t.Errorf("CreatedAt mismatch: expected %v, got %v",
+			partition.CreatedAt.Unix(), decompressed.CreatedAt.Unix())
 	}
 
 	// 验证Version字段 - 当前实现中没有保存Version，应该为0或默认值

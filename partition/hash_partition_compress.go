@@ -220,9 +220,14 @@ func (pe *PartitionEncoder) EncodePartition(p *model.PartitionInfo) error {
 		return err
 	}
 
-	// 只保留UpdatedAt时间戳
+	// 编码UpdatedAt和CreatedAt时间戳
 	updatedAt := encodeRelativeTimestamp(p.UpdatedAt, pe.baseTime)
 	if err := binary.Write(pe.buffer, binary.LittleEndian, updatedAt); err != nil {
+		return err
+	}
+
+	createdAt := encodeRelativeTimestamp(p.CreatedAt, pe.baseTime)
+	if err := binary.Write(pe.buffer, binary.LittleEndian, createdAt); err != nil {
 		return err
 	}
 
@@ -251,16 +256,18 @@ func encodeRelativeTimestamp(timestamp time.Time, baseTime int64) uint32 {
 }
 
 // calculateBaseTimestamp 计算基准时间戳
+// 使用批次中最早的CreatedAt作为基准，这样可以获得更好的压缩效果
+// 因为CreatedAt通常比UpdatedAt更早且更集中
 func calculateBaseTimestamp(partitions []*model.PartitionInfo) int64 {
 	if len(partitions) == 0 {
 		return time.Now().Unix()
 	}
 
-	// 选择批次中最早的UpdatedAt作为基准
-	minTime := partitions[0].UpdatedAt.Unix()
+	// 选择批次中最早的CreatedAt作为基准
+	minTime := partitions[0].CreatedAt.Unix()
 	for _, p := range partitions {
-		if p.UpdatedAt.Unix() < minTime {
-			minTime = p.UpdatedAt.Unix()
+		if p.CreatedAt.Unix() < minTime {
+			minTime = p.CreatedAt.Unix()
 		}
 	}
 	return minTime
@@ -348,6 +355,7 @@ func decodePartition(reader *bytes.Reader, baseTime int64, workerMgr *WorkerIDMa
 	var workerCompressed uint16
 	var statusCode uint8
 	var updatedAt uint32
+	var createdAt uint32
 
 	if err := binary.Read(reader, binary.LittleEndian, &partitionID); err != nil {
 		return nil, err
@@ -367,6 +375,9 @@ func decodePartition(reader *bytes.Reader, baseTime int64, workerMgr *WorkerIDMa
 	if err := binary.Read(reader, binary.LittleEndian, &updatedAt); err != nil {
 		return nil, err
 	}
+	if err := binary.Read(reader, binary.LittleEndian, &createdAt); err != nil {
+		return nil, err
+	}
 
 	// 设置基本字段
 	partition.PartitionID = int(partitionID)
@@ -377,7 +388,7 @@ func decodePartition(reader *bytes.Reader, baseTime int64, workerMgr *WorkerIDMa
 
 	// 还原时间戳
 	partition.UpdatedAt = time.Unix(baseTime+int64(updatedAt), 0)
-	partition.CreatedAt = partition.UpdatedAt // 使用UpdatedAt作为CreatedAt的近似值
+	partition.CreatedAt = time.Unix(baseTime+int64(createdAt), 0)
 	// LastHeartbeat对completed分区无意义，设为零值
 
 	// 解码错误信息

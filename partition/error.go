@@ -12,6 +12,9 @@ var (
 	ErrOptimisticLockFailed   = errors.New("optimistic lock failed: version mismatch")
 	ErrPartitionAlreadyExists = errors.New("partition already exists")
 
+	// 归档相关错误
+	ErrArchivedPartitionNotFound = errors.New("archived partition not found")
+
 	ErrWorkerCacheRebuildFailed = errors.New("worker ID cache rebuild failed")
 	ErrWorkerMappingNotFound    = errors.New("worker ID mapping not found")
 )
