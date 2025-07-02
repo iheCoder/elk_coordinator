@@ -719,6 +719,64 @@ func (m *MockDataStore) HSetPartitionsInTx(ctx context.Context, key string, part
 	return nil
 }
 
+// 实现HSetPartitionsWithStatsInTx方法
+func (m *MockDataStore) HSetPartitionsWithStatsInTx(ctx context.Context, partitionKey string, statsKey string, partitions map[string]string, stats *model.PartitionStats) error {
+	hashPartitionMutex.Lock()
+	defer hashPartitionMutex.Unlock()
+
+	// 参数验证
+	if stats == nil {
+		return fmt.Errorf("stats参数不能为nil")
+	}
+
+	// 初始化分区数据
+	if hashPartitionsData[partitionKey] == nil {
+		hashPartitionsData[partitionKey] = make(map[string]string)
+	}
+
+	// 初始化统计数据
+	if partitionStatsData[statsKey] == nil {
+		partitionStatsData[statsKey] = make(map[string]string)
+		// 初始化默认统计值
+		partitionStatsData[statsKey]["total"] = "0"
+		partitionStatsData[statsKey]["pending"] = "0"
+		partitionStatsData[statsKey]["processing"] = "0"
+		partitionStatsData[statsKey]["completed"] = "0"
+		partitionStatsData[statsKey]["failed"] = "0"
+		partitionStatsData[statsKey]["max_partition_id"] = "0"
+		partitionStatsData[statsKey]["last_allocated_id"] = "0"
+	}
+
+	// 模拟原子性操作：同时设置分区和更新统计
+	for field, value := range partitions {
+		// 设置分区数据
+		hashPartitionsData[partitionKey][field] = value
+
+		// 如果没有版本，设置为1，否则保持当前版本
+		if hashPartitionVersions[field] == 0 {
+			hashPartitionVersions[field] = 1
+		}
+	}
+
+	// 使用预计算的统计数据更新max_partition_id
+	if stats.MaxPartitionID > 0 {
+		currentMaxPartitionID, _ := strconv.ParseInt(partitionStatsData[statsKey]["max_partition_id"], 10, 64)
+		if int64(stats.MaxPartitionID) > currentMaxPartitionID {
+			partitionStatsData[statsKey]["max_partition_id"] = strconv.Itoa(stats.MaxPartitionID)
+		}
+	}
+
+	// 使用预计算的统计数据更新last_allocated_id
+	if stats.LastAllocatedID > 0 {
+		currentLastAllocatedID, _ := strconv.ParseInt(partitionStatsData[statsKey]["last_allocated_id"], 10, 64)
+		if stats.LastAllocatedID > currentLastAllocatedID {
+			partitionStatsData[statsKey]["last_allocated_id"] = strconv.FormatInt(stats.LastAllocatedID, 10)
+		}
+	}
+
+	return nil
+}
+
 // CommandOperations implementation for MockDataStore
 
 // SubmitCommand 提交命令到模拟存储

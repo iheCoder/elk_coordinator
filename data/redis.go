@@ -634,6 +634,118 @@ func (d *RedisDataStore) HSetPartitionsInTx(ctx context.Context, key string, par
 	return errors.New("达到最大重试次数，仍未能成功更新分区")
 }
 
+// HSetPartitionsWithStatsInTx 原子性批量创建分区并更新统计数据
+// 使用单个Lua脚本确保分区创建和统计更新的原子性，解决Pod崩溃导致的数据不一致问题
+// 调用方预先计算统计数据，避免在Lua脚本中重复解析JSON
+func (d *RedisDataStore) HSetPartitionsWithStatsInTx(ctx context.Context, partitionKey string, statsKey string, partitions map[string]string, stats *model.PartitionStats) error {
+	// 如果没有分区数据，直接返回
+	if len(partitions) == 0 {
+		return nil
+	}
+
+	// 参数验证
+	if stats == nil {
+		return errors.New("stats参数不能为nil")
+	}
+
+	prefixedPartitionKey := d.prefixKey(partitionKey)
+	prefixedStatsKey := d.prefixKey(statsKey)
+
+	// 高性能Lua脚本：直接使用预计算的统计数据，无JSON解析和循环
+	script := `
+		local partitionKey = KEYS[1]
+		local statsKey = KEYS[2]
+		local maxPartitionID = tonumber(ARGV[1])
+		local maxAllocatedID = tonumber(ARGV[2])
+		local expiry = tonumber(ARGV[3])
+		
+		-- 批量设置分区数据（使用Redis HSET的可变参数特性）
+		-- ARGV[4]开始是分区数据：field1, value1, field2, value2, ...
+		local hsetArgs = {}
+		for i = 4, #ARGV do
+			table.insert(hsetArgs, ARGV[i])
+		end
+		
+		if #hsetArgs > 0 then
+			redis.call('HSET', partitionKey, unpack(hsetArgs))
+		end
+		
+		-- 确保统计数据键存在（初始化为0如果不存在）
+		if redis.call('EXISTS', statsKey) == 0 then
+			redis.call('HSET', statsKey, 'max_partition_id', '0', 'last_allocated_id', '0')
+		end
+		
+		-- 原子性更新统计数据（仅在需要时更新）
+		local statsUpdates = {}
+		
+		-- 更新max_partition_id
+		if maxPartitionID > 0 then
+			local currentMaxPartitionID = tonumber(redis.call('HGET', statsKey, 'max_partition_id') or 0)
+			if maxPartitionID > currentMaxPartitionID then
+				table.insert(statsUpdates, 'max_partition_id')
+				table.insert(statsUpdates, tostring(maxPartitionID))
+			end
+		end
+		
+		-- 更新last_allocated_id
+		if maxAllocatedID > 0 then
+			local currentLastAllocatedID = tonumber(redis.call('HGET', statsKey, 'last_allocated_id') or 0)
+			if maxAllocatedID > currentLastAllocatedID then
+				table.insert(statsUpdates, 'last_allocated_id')
+				table.insert(statsUpdates, tostring(maxAllocatedID))
+			end
+		end
+		
+		-- 批量更新统计数据
+		if #statsUpdates > 0 then
+			redis.call('HSET', statsKey, unpack(statsUpdates))
+		end
+		
+		-- 设置过期时间
+		redis.call('EXPIRE', partitionKey, expiry)
+		
+		return 'OK'
+	`
+
+	// 准备Lua脚本参数：[maxPartitionID, maxAllocatedID, expiry, field1, value1, field2, value2, ...]
+	args := make([]interface{}, 0, 3+len(partitions)*2)
+	args = append(args, int64(stats.MaxPartitionID), stats.LastAllocatedID, int(d.opts.DefaultExpiry.Seconds()))
+
+	// 添加分区数据
+	for field, value := range partitions {
+		args = append(args, field, value)
+	}
+
+	// 执行原子性操作（带重试机制）
+	maxRetries := d.opts.MaxRetries
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		_, err := d.rds.Eval(ctx, script, []string{prefixedPartitionKey, prefixedStatsKey}, args...).Result()
+		if err == nil {
+			return nil
+		}
+
+		// 如果不是事务冲突错误，直接返回
+		if err != redis.TxFailedErr {
+			return errors.Wrap(err, "执行原子性批量创建分区失败")
+		}
+
+		// 事务冲突，使用指数退避策略
+		backoff := d.opts.RetryDelay << uint(attempt)
+		if backoff > d.opts.MaxRetryDelay {
+			backoff = d.opts.MaxRetryDelay
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+			// 等待后继续重试
+		}
+	}
+
+	return errors.New("达到最大重试次数，仍未能成功更新分区")
+}
+
 // HDeletePartition 删除Redis Hash中的特定分区字段
 func (d *RedisDataStore) HDeletePartition(ctx context.Context, key string, field string) error {
 	return d.rds.HDel(ctx, d.prefixKey(key), field).Err()

@@ -67,6 +67,8 @@ type HashPartitionOperations interface {
 	HUpdatePartitionWithVersion(ctx context.Context, key string, field string, value string, version int64) (bool, error)
 	// HSetPartitionsInTx 事务中批量设置哈希分区
 	HSetPartitionsInTx(ctx context.Context, key string, partitions map[string]string) error
+	// HSetPartitionsWithStatsInTx 原子性批量创建分区并更新统计数据
+	HSetPartitionsWithStatsInTx(ctx context.Context, partitionKey string, statsKey string, partitions map[string]string, stats *model.PartitionStats) error
 	// HDeletePartition 删除哈希分区字段
 	HDeletePartition(ctx context.Context, key string, field string) error
 }
