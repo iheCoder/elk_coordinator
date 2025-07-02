@@ -14,6 +14,9 @@ ELK Coordinator 是一个高性能、可扩展的分布式任务处理框架，�
 ### 分区策略
 - **SimpleStrategy**: 基于分布式锁的简单分区策略，适用于中小规模场景
 - **HashPartitionStrategy**: 基于Redis Hash的高性能分区策略，支持更高并发和更细粒度的控制
+  - **分离式归档**: 已完成分区自动归档到独立存储层，避免内存积压
+  - **智能压缩**: 超过10万分区时自动压缩归档，大幅节省存储空间
+  - **跨层查询**: 统一接口查询活跃和归档分区，对用户透明
 
 ### 可靠性保障
 - **熔断保护**: 内置熔断器机制，防止系统过载并提高稳定性
@@ -27,6 +30,12 @@ ELK Coordinator 是一个高性能、可扩展的分布式任务处理框架，�
 - **多维度指标**: Leader 视角、Worker 视角、分区处理、错误统计等全面监控
 - **一键启动监控栈**: 提供 Docker Compose 配置，快速搭建完整监控环境
 - **Gap检测**: 智能检测和处理数据处理中的间隙
+
+### HTTP API 管理接口
+- **RESTful API**: 提供完整的HTTP API接口，支持分区管理和系统监控
+- **失败分区重试**: 通过API重试失败分区，无需重启系统
+- **分布式协调**: API操作自动在所有节点间同步，保证数据一致性
+- **客户端SDK**: 提供Go语言客户端SDK和使用示例
 
 ### 灵活性
 - **可扩展接口**: 提供灵活的接口允许自定义处理逻辑和分区规划
@@ -52,10 +61,11 @@ import (
     "time"
     
     "github.com/redis/go-redis/v9"
-    "github.com/yourusername/elk_coordinator"
-    "github.com/yourusername/elk_coordinator/data"
-    "github.com/yourusername/elk_coordinator/leader"
-    "github.com/yourusername/elk_coordinator/model"
+    "github.com/iheCoder/elk_coordinator"
+    "github.com/iheCoder/elk_coordinator/data"
+    "github.com/iheCoder/elk_coordinator/leader"
+    "github.com/iheCoder/elk_coordinator/model"
+    "github.com/iheCoder/elk_coordinator/utils"
 )
 
 // 自定义任务处理器实现
@@ -111,6 +121,8 @@ func main() {
         elk_coordinator.WithTaskWindow(5),     // 启用任务窗口并设置大小（并行处理5个分区）
         elk_coordinator.WithHeartbeatInterval(5*time.Second), // 自定义心跳间隔
         elk_coordinator.WithAllowPreemption(true), // 允许分区抢占
+        elk_coordinator.WithMetricsEnabled(true),      // 启用监控和HTTP API
+        elk_coordinator.WithMetricsAddr(":8080"),        // 监控和API服务器地址
     )
     
     // 创建上下文（可以通过取消此上下文来停止服务）
@@ -162,6 +174,10 @@ func main() {
 - 基于Redis Hash实现，性能更高
 - 支持更高并发和更细粒度的控制
 - 提供更丰富的统计和查询功能
+- **分离式归档架构**: 采用三层存储架构（Active Layer, Archive Layer, Statistics Layer）
+- **智能压缩**: 当归档分区超过10万时自动压缩，节省90%+存储空间
+- **跨层查询**: 统一接口查询所有分区，无论是否被归档或压缩
+- **原子性操作**: 支持批量创建分区并更新统计数据的原子性操作
 - 策略类型：`model.StrategyTypeHash`（推荐）
 
 ### Leader选举
@@ -220,6 +236,11 @@ mgr := elk_coordinator.NewMgr(
     elk_coordinator.WithTaskWindow(5),                   // 任务窗口大小
     elk_coordinator.WithAllowPreemption(true),           // 启用分区抢占
     elk_coordinator.WithAllocationInterval(2*time.Minute), // 分区分配检查间隔
+    
+    // 监控与API配置
+    elk_coordinator.WithMetricsEnabled(true),              // 启用监控和HTTP API
+    elk_coordinator.WithMetricsAddr(":8080"),              // 监控和API服务器地址
+    elk_coordinator.WithLogLevel(utils.InfoLevel),         // 设置日志等级
 )
 ```
 
@@ -233,8 +254,11 @@ mgr := elk_coordinator.NewMgr(
 | `LeaderLockExpiry` | `time.Duration` | 30秒 | Leader锁的过期时间 |
 | `WorkerPartitionMultiple` | `int64` | 5 | 每个工作节点分配的分区倍数 |
 | `TaskWindowSize` | `int` | 1 | 任务窗口大小（并行处理的分区数） |
-| `AllowPreemption` | `bool` | false | 是否允许抢占其他节点的分区 |
+| `AllowPreemption` | `bool` | `true` | 是否允许抢占其他节点的分区 |
 | `AllocationInterval` | `time.Duration` | 2分钟 | 分区分配检查间隔 |
+| `MetricsEnabled` | `bool` | `true` | 是否启用监控和HTTP API服务器 |
+| `MetricsAddr` | `string` | `":8080"` | 监控和HTTP API服务器监听地址 |
+| `LogLevel` | `utils.LogLevel` | `WarnLevel` | 日志输出等级 |
 
 ## 核心接口
 
