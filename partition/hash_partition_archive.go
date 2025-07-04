@@ -18,13 +18,27 @@ const (
 	archivedPartitionsKey = "elk_archived" // 归档分区独立存储
 	// 压缩归档的存储键
 	compressedArchiveKey = "elk_compressed_archive" // 压缩归档独立存储
-	// 压缩阈值：当归档分区数量超过此值时进行压缩
-	archiveCompressionThreshold = 100000
-	// 压缩批次大小：每次压缩的分区数量
-	compressionBatchSize = 50000
-	// 批次键格式：时间戳_批次号，确保唯一性
-	batchKeyFormat = "batch_%d_%d"
+	// 默认压缩阈值
+	defaultArchiveCompressionThreshold = 100000
+	// 默认压缩批次大小
+	defaultCompressionBatchSize = 50000
 )
+
+// ArchiveConfig 归档配置
+type ArchiveConfig struct {
+	// CompressionThreshold 压缩阈值：当归档分区数量超过此值时进行压缩
+	CompressionThreshold int
+	// CompressionBatchSize 压缩批次大小：每次压缩处理的分区数量
+	CompressionBatchSize int
+}
+
+// DefaultArchiveConfig 返回默认的归档配置
+func DefaultArchiveConfig() *ArchiveConfig {
+	return &ArchiveConfig{
+		CompressionThreshold: defaultArchiveCompressionThreshold,
+		CompressionBatchSize: defaultCompressionBatchSize,
+	}
+}
 
 // ==================== 分离式归档策略实现 ====================
 
@@ -164,7 +178,7 @@ func (s *HashPartitionStrategy) tryGetCompressedPartitions(ctx context.Context) 
 	}
 
 	// 第四步：预估总分区数，做内存预分配优化
-	estimatedPartitionCount := int(compressedCount) * compressionBatchSize / 2 // 保守估计
+	estimatedPartitionCount := int(compressedCount) * s.archiveConfig.CompressionBatchSize / 2 // 保守估计
 	allPartitions := make([]*model.PartitionInfo, 0, estimatedPartitionCount)
 
 	// 第五步：解压缩所有批次，添加错误恢复机制
@@ -373,7 +387,7 @@ func (s *HashPartitionStrategy) tryCompressArchive(ctx context.Context) error {
 	}
 
 	// 检查是否达到压缩阈值
-	if count < archiveCompressionThreshold {
+	if count < s.archiveConfig.CompressionThreshold {
 		return nil // 未达到压缩阈值，无需压缩
 	}
 
@@ -388,7 +402,7 @@ func (s *HashPartitionStrategy) tryCompressArchive(ctx context.Context) error {
 }
 
 // compressArchiveBatches 将归档分区按批次进行压缩
-// 新策略：超过100000时，以50000为批次进行压缩，直到不超过100000为止
+// 新策略：超过配置阈值时，以配置的批次大小进行压缩，直到不超过阈值为止
 // 优化版本：添加性能监控和资源管理
 func (s *HashPartitionStrategy) compressArchiveBatches(ctx context.Context, partitions []*model.PartitionInfo) error {
 	totalPartitions := len(partitions)
@@ -397,19 +411,19 @@ func (s *HashPartitionStrategy) compressArchiveBatches(ctx context.Context, part
 	}
 
 	// 计算需要压缩多少个分区才能降到阈值以下
-	excessCount := totalPartitions - archiveCompressionThreshold
+	excessCount := totalPartitions - s.archiveConfig.CompressionThreshold
 	if excessCount <= 0 {
 		return nil // 已经在阈值以下，无需压缩
 	}
 
 	// 计算需要压缩的批次数量
-	batchesToCompress := (excessCount + compressionBatchSize - 1) / compressionBatchSize // 向上取整
-	if batchesToCompress*compressionBatchSize < excessCount {
+	batchesToCompress := (excessCount + s.archiveConfig.CompressionBatchSize - 1) / s.archiveConfig.CompressionBatchSize // 向上取整
+	if batchesToCompress*s.archiveConfig.CompressionBatchSize < excessCount {
 		batchesToCompress++ // 确保能压缩足够的分区
 	}
 
 	s.logger.Infof("开始压缩归档：总分区数=%d，超出阈值=%d，需要压缩批次数=%d，预计压缩后剩余=%d",
-		totalPartitions, excessCount, batchesToCompress, totalPartitions-batchesToCompress*compressionBatchSize)
+		totalPartitions, excessCount, batchesToCompress, totalPartitions-batchesToCompress*s.archiveConfig.CompressionBatchSize)
 
 	// 性能监控
 	compressionStartTime := time.Now()
@@ -418,8 +432,8 @@ func (s *HashPartitionStrategy) compressArchiveBatches(ctx context.Context, part
 
 	batchIndex := 0
 	for batch := 0; batch < batchesToCompress; batch++ {
-		start := batch * compressionBatchSize
-		end := start + compressionBatchSize
+		start := batch * s.archiveConfig.CompressionBatchSize
+		end := start + s.archiveConfig.CompressionBatchSize
 		if end > totalPartitions {
 			end = totalPartitions
 		}
@@ -479,8 +493,11 @@ func (s *HashPartitionStrategy) compressAndStoreArchiveBatch(ctx context.Context
 		return fmt.Errorf("序列化压缩批次失败: %w", err)
 	}
 
-	// 使用时间戳和批次索引确保唯一性
-	batchKey := fmt.Sprintf(batchKeyFormat, compressedBatch.BaseTimestamp, batchIndex)
+	// 使用Redis原子计数器+时间戳确保全局唯一性
+	batchKey, err := s.generateUniqueBatchKey(ctx)
+	if err != nil {
+		return fmt.Errorf("生成唯一批次键失败: %w", err)
+	}
 	err = s.store.HSetPartition(ctx, compressedArchiveKey, batchKey, string(batchJson))
 	if err != nil {
 		return fmt.Errorf("存储压缩批次失败: %w", err)
@@ -561,7 +578,7 @@ func (s *HashPartitionStrategy) GetArchiveStats(ctx context.Context) (*ArchiveSt
 			s.logger.Warnf("获取压缩批次数量失败: %v", err)
 		} else if compressedBatchCount > 0 {
 			// 估算压缩分区数量（避免全部解压）
-			compressedPartitionCount = int(compressedBatchCount) * compressionBatchSize
+			compressedPartitionCount = int(compressedBatchCount) * s.archiveConfig.CompressionBatchSize
 		}
 	}
 
@@ -582,3 +599,68 @@ type ArchiveStats struct {
 	TotalEstimatedPartitions      int  `json:"total_estimated_partitions"`
 	CompressionEnabled            bool `json:"compression_enabled"`
 }
+
+// generateUniqueBatchKey 使用随机字符串+批次ID生成唯一的批次键
+func (s *HashPartitionStrategy) generateUniqueBatchKey(ctx context.Context) (string, error) {
+	// 生成简单的随机字符串
+	randomStr := s.generateRandomString(8)
+
+	// 使用毫秒时间戳作为批次ID
+	batchID := time.Now().UnixMilli()
+
+	// 组合生成唯一键，添加压缩前缀标识
+	batchKey := fmt.Sprintf("compressed_batch_%s_%d", randomStr, batchID)
+
+	return batchKey, nil
+}
+
+// generateRandomString 生成指定长度的随机字符串
+func (s *HashPartitionStrategy) generateRandomString(length int) string {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	result := make([]byte, length)
+	now := time.Now().UnixNano()
+
+	for i := range result {
+		// 使用时间戳加索引作为种子生成随机索引
+		seed := now + int64(i*1000)
+		result[i] = charset[seed%int64(len(charset))]
+	}
+
+	return string(result)
+}
+
+// generateUniqueBatchKeyWithUUID 使用UUID生成唯一批次键的备选方案
+// 如果需要不依赖Redis的唯一性保证，可以使用此方法
+/*
+func (s *HashPartitionStrategy) generateUniqueBatchKeyWithUUID() string {
+	// 生成UUID v4
+	uuid := generateUUID()
+	timestamp := time.Now().UnixNano() / 1000000
+	return fmt.Sprintf("batch_%d_%s", timestamp, uuid)
+}
+
+// generateUUID 生成简单的UUID v4
+func generateUUID() string {
+	// 生成16个随机字节
+	b := make([]byte, 16)
+	for i := range b {
+		b[i] = byte(time.Now().UnixNano() + int64(i))
+	}
+
+	// 设置版本号和变体
+	b[6] = (b[6] & 0x0f) | 0x40 // Version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // Variant 10
+
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+*/
+
+// generateUniqueBatchKeyWithRandom 使用高精度时间戳+随机数的方案
+// 如果需要更高性能但略低唯一性保证的方案，可以使用此方法
+/*
+func (s *HashPartitionStrategy) generateUniqueBatchKeyWithRandom() string {
+	timestamp := time.Now().UnixNano() // 纳秒精度
+	random := time.Now().UnixNano() % 1000000 // 简单随机数
+	return fmt.Sprintf("batch_%d_%d", timestamp, random)
+}
+*/

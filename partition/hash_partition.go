@@ -38,6 +38,7 @@ type HashPartitionStrategy struct {
 	logger         utils.Logger                // 日志记录器
 	staleThreshold time.Duration               // 分区被认为过时的心跳阈值，用于抢占判断
 	compressor     *PartitionCompressor        // 分区压缩器，用于归档压缩
+	archiveConfig  *ArchiveConfig              // 归档配置
 }
 
 // NewHashPartitionStrategy 创建一个新的 Hash 分区策略实例。
@@ -51,8 +52,27 @@ type HashPartitionStrategy struct {
 //
 // 注意: 如果 logger 为空会 panic
 func NewHashPartitionStrategy(store HashPartitionStoreInterface, logger utils.Logger) *HashPartitionStrategy {
+	return NewHashPartitionStrategyWithConfig(store, logger, DefaultArchiveConfig())
+}
+
+// NewHashPartitionStrategyWithConfig 创建一个带自定义归档配置的 Hash 分区策略实例。
+//
+// 参数:
+//   - store: 分区存储接口，必须实现 HashPartitionStoreInterface
+//   - logger: 日志记录器，不能为空
+//   - archiveConfig: 归档配置，如果为 nil 则使用默认配置
+//
+// 返回:
+//   - *HashPartitionStrategy: 配置完成的策略实例
+//
+// 注意: 如果 logger 为空会 panic
+func NewHashPartitionStrategyWithConfig(store HashPartitionStoreInterface, logger utils.Logger, archiveConfig *ArchiveConfig) *HashPartitionStrategy {
 	if logger == nil {
 		panic("logger cannot be nil") // 日志记录器不能为空
+	}
+
+	if archiveConfig == nil {
+		archiveConfig = DefaultArchiveConfig()
 	}
 
 	// 尝试初始化压缩器，如果store实现了WorkerRegistry接口
@@ -70,6 +90,7 @@ func NewHashPartitionStrategy(store HashPartitionStoreInterface, logger utils.Lo
 		logger:         logger,
 		staleThreshold: 5 * time.Minute, // 默认5分钟心跳超时阈值
 		compressor:     compressor,
+		archiveConfig:  archiveConfig,
 	}
 
 	// 初始化统计数据
@@ -81,7 +102,7 @@ func NewHashPartitionStrategy(store HashPartitionStoreInterface, logger utils.Lo
 	return strategy
 }
 
-// NewHashPartitionStrategyWithConfig 创建带配置的 Hash 分区策略实例
+// NewHashPartitionStrategyWithStaleThreshold 创建带配置的 Hash 分区策略实例
 //
 // 参数:
 //   - store: 分区存储接口，必须实现 HashPartitionStoreInterface
@@ -90,7 +111,7 @@ func NewHashPartitionStrategy(store HashPartitionStoreInterface, logger utils.Lo
 //
 // 返回:
 //   - *HashPartitionStrategy: 配置完成的策略实例
-func NewHashPartitionStrategyWithConfig(store HashPartitionStoreInterface, logger utils.Logger, staleThreshold time.Duration) *HashPartitionStrategy {
+func NewHashPartitionStrategyWithStaleThreshold(store HashPartitionStoreInterface, logger utils.Logger, staleThreshold time.Duration) *HashPartitionStrategy {
 	if logger == nil {
 		panic("logger cannot be nil") // 日志记录器不能为空
 	}
@@ -113,6 +134,7 @@ func NewHashPartitionStrategyWithConfig(store HashPartitionStoreInterface, logge
 		logger:         logger,
 		staleThreshold: staleThreshold,
 		compressor:     compressor,
+		archiveConfig:  DefaultArchiveConfig(), // 使用默认归档配置
 	}
 
 	// 初始化统计数据

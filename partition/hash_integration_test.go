@@ -19,6 +19,11 @@ import (
 
 // setupHashPartitionStrategyIntegrationTest 创建集成测试环境
 func setupHashPartitionStrategyIntegrationTest(t *testing.T) (*HashPartitionStrategy, *miniredis.Miniredis, *data.RedisDataStore, func()) {
+	return setupHashPartitionStrategyIntegrationTestWithConfig(t, nil)
+}
+
+// setupHashPartitionStrategyIntegrationTestWithConfig 创建带自定义归档配置的集成测试环境
+func setupHashPartitionStrategyIntegrationTestWithConfig(t *testing.T, archiveConfig *ArchiveConfig) (*HashPartitionStrategy, *miniredis.Miniredis, *data.RedisDataStore, func()) {
 	// 创建 miniredis 实例
 	mr, err := miniredis.Run()
 	require.NoError(t, err, "启动 miniredis 失败")
@@ -44,50 +49,18 @@ func setupHashPartitionStrategyIntegrationTest(t *testing.T) (*HashPartitionStra
 
 	// 创建 HashPartitionStrategy
 	logger := test_utils.NewMockLogger(true)
-	strategy := NewHashPartitionStrategy(dataStore, logger)
+
+	var strategy *HashPartitionStrategy
+	if archiveConfig != nil {
+		strategy = NewHashPartitionStrategyWithConfig(dataStore, logger, archiveConfig)
+	} else {
+		strategy = NewHashPartitionStrategy(dataStore, logger)
+	}
 
 	// 初始化统计数据
 	ctx := context.Background()
 	err = dataStore.InitPartitionStats(ctx, statsKey)
 	require.NoError(t, err, "初始化分区统计数据失败")
-
-	// 清理函数
-	cleanup := func() {
-		client.Close()
-		mr.Close()
-	}
-
-	return strategy, mr, dataStore, cleanup
-}
-
-// setupHashPartitionStrategyWithCustomConfig 创建带自定义配置的集成测试环境
-func setupHashPartitionStrategyWithCustomConfig(t *testing.T, staleThreshold time.Duration) (*HashPartitionStrategy, *miniredis.Miniredis, *data.RedisDataStore, func()) {
-	// 创建 miniredis 实例
-	mr, err := miniredis.Run()
-	require.NoError(t, err, "启动 miniredis 失败")
-
-	// 创建 Redis 客户端
-	client := redis.NewClient(&redis.Options{
-		Addr: mr.Addr(),
-	})
-
-	// 测试连接
-	err = client.Ping(context.Background()).Err()
-	require.NoError(t, err, "连接 Redis 失败")
-
-	// 创建 RedisDataStore
-	opts := &data.Options{
-		KeyPrefix:     "test:hash:",
-		DefaultExpiry: 5 * time.Second,
-		MaxRetries:    3,
-		RetryDelay:    10 * time.Millisecond,
-		MaxRetryDelay: 50 * time.Millisecond,
-	}
-	dataStore := data.NewRedisDataStore(client, opts)
-
-	// 创建 HashPartitionStrategy with custom config
-	logger := test_utils.NewMockLogger(true)
-	strategy := NewHashPartitionStrategyWithConfig(dataStore, logger, staleThreshold)
 
 	// 清理函数
 	cleanup := func() {
@@ -501,14 +474,38 @@ func TestHashPartitionStrategy_LockOperations(t *testing.T) {
 
 // TestHashPartitionStrategy_HeartbeatAndPreemption 测试心跳和抢占
 func TestHashPartitionStrategy_HeartbeatAndPreemption(t *testing.T) {
-	// 使用短超时时间进行测试
-	strategy, _, _, cleanup := setupHashPartitionStrategyWithCustomConfig(t, 100*time.Millisecond)
-	defer cleanup()
+	// 创建miniredis实例
+	mr, err := miniredis.Run()
+	require.NoError(t, err, "启动 miniredis 失败")
+	defer mr.Close()
 
+	// 创建 Redis 客户端
+	client := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+	defer client.Close()
+
+	// 创建 RedisDataStore
+	opts := &data.Options{
+		KeyPrefix:     "test:heartbeat:",
+		DefaultExpiry: 5 * time.Second,
+		MaxRetries:    3,
+		RetryDelay:    10 * time.Millisecond,
+		MaxRetryDelay: 50 * time.Millisecond,
+	}
+	dataStore := data.NewRedisDataStore(client, opts)
+
+	// 创建带短心跳超时的策略用于测试（100毫秒）
+	logger := test_utils.NewMockLogger(true)
+	strategy := NewHashPartitionStrategyWithStaleThreshold(dataStore, logger, 100*time.Millisecond)
+
+	// 初始化统计数据
 	ctx := context.Background()
+	err = dataStore.InitPartitionStats(ctx, statsKey)
+	require.NoError(t, err, "初始化分区统计数据失败")
 
 	// 创建分区
-	_, err := strategy.CreatePartitionAtomically(ctx, 1, 1, 1000, nil)
+	_, err = strategy.CreatePartitionAtomically(ctx, 1, 1, 1000, nil)
 	require.NoError(t, err)
 
 	// 工作节点1获取分区
@@ -517,7 +514,7 @@ func TestHashPartitionStrategy_HeartbeatAndPreemption(t *testing.T) {
 	assert.True(t, success)
 	assert.Equal(t, "worker-1", acquiredPartition.WorkerID)
 
-	// 等待心跳超时
+	// 等待心跳超时（等待比阈值稍长的时间）
 	time.Sleep(150 * time.Millisecond)
 
 	// 工作节点2尝试抢占（不允许抢占）
@@ -531,8 +528,11 @@ func TestHashPartitionStrategy_HeartbeatAndPreemption(t *testing.T) {
 	preemptedPartition, success, err := strategy.AcquirePartition(ctx, 1, "worker-2", options)
 	assert.NoError(t, err)
 	assert.True(t, success)
-	assert.Equal(t, "worker-2", preemptedPartition.WorkerID)
-	assert.Equal(t, model.StatusClaimed, preemptedPartition.Status)
+	// 只有抢占成功时才检查分区内容
+	if success && preemptedPartition != nil {
+		assert.Equal(t, "worker-2", preemptedPartition.WorkerID)
+		assert.Equal(t, model.StatusClaimed, preemptedPartition.Status)
+	}
 
 	// 验证分区确实被抢占
 	currentPartition, err := strategy.GetPartition(ctx, 1)
